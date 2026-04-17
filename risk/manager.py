@@ -9,8 +9,12 @@ is never silently bypassed on restart.
 import os
 import sys
 
-if os.path.exists("lock.file"):
+_TRADING_ENV = os.environ.get("TRADING_ENV", "production")
+_LOCK_FILE_PATH = os.environ.get("LOCK_FILE_PATH", "lock.file")
+
+if _TRADING_ENV != "test" and os.path.exists(_LOCK_FILE_PATH):
     print("SYSTEM HALTED: lock.file exists. A 10% drawdown event was detected.")
+    print(f"Lock file: {_LOCK_FILE_PATH}")
     print("Review the incident and manually delete lock.file to resume trading.")
     sys.exit(1)
 
@@ -54,6 +58,10 @@ class RiskManager:
         self.portfolio_equity = portfolio_equity
         self.circuit_breaker = circuit_breaker
         self.max_risk_per_trade = max_risk_per_trade
+        if max_risk_per_trade > 0.01:
+            raise ValueError(
+                f"max_risk_per_trade={max_risk_per_trade} exceeds the 1% hard limit per trade."
+            )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -65,6 +73,7 @@ class RiskManager:
         proposed_allocation_pct: float,
         current_positions: dict,
         price_data: dict,
+        daily_pnl_pct: float = 0.0,
     ) -> dict:
         """
         Gate every trade through three risk checks.
@@ -89,6 +98,8 @@ class RiskManager:
             circuit_level          : int
             correlation_warning    : bool
         """
+        equity = self.portfolio_equity  # snapshot to ensure consistent computation
+
         result = {
             "approved": False,
             "ticker": ticker,
@@ -101,13 +112,7 @@ class RiskManager:
         # ------------------------------------------------------------------
         # Gate 1: Circuit breaker
         # ------------------------------------------------------------------
-        # We call check() with current equity and a daily_pnl_pct of 0.0 here
-        # because the caller is responsible for passing daily P&L context.
-        # The daily P&L is tracked externally; we only apply the multiplier that
-        # the circuit breaker would currently assign based on its last known state.
-        # For a conservative default, derive daily_pnl_pct from equity vs. peak.
-        daily_pnl_pct = 0.0  # caller should update equity before approving trades
-        cb_status = self.circuit_breaker.check(self.portfolio_equity, daily_pnl_pct)
+        cb_status = self.circuit_breaker.check(equity, daily_pnl_pct)
         result["circuit_level"] = cb_status["level"]
 
         if cb_status["trading_suspended"]:
@@ -123,10 +128,10 @@ class RiskManager:
         # Gate 2: Max risk per trade (1% cap)
         # ------------------------------------------------------------------
         approved_dollar = min(
-            approved_allocation_pct * self.portfolio_equity,
-            self.max_risk_per_trade * self.portfolio_equity,
+            approved_allocation_pct * equity,
+            self.max_risk_per_trade * equity,
         )
-        approved_allocation_pct = approved_dollar / self.portfolio_equity
+        approved_allocation_pct = approved_dollar / equity
 
         # ------------------------------------------------------------------
         # Gate 3: Correlation check

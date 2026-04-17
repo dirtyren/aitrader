@@ -5,6 +5,7 @@ This is part of the FAIL-SAFE layer. It has ABSOLUTE VETO POWER and is hardcoded
 independent of the HMM model's opinion.
 """
 
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -32,6 +33,7 @@ class CircuitBreaker:
         self.daily_loss_limit_1 = daily_loss_limit_1
         self.daily_loss_limit_2 = daily_loss_limit_2
         self.drawdown_limit = drawdown_limit
+        self._suspension = TradingSuspension()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -71,6 +73,11 @@ class CircuitBreaker:
 
         # Level 2 — daily loss >= 3%
         if daily_pnl_pct <= -self.daily_loss_limit_2:
+            self._suspension = TradingSuspension(
+                suspended=True,
+                resume_time=datetime.now(timezone.utc) + timedelta(hours=24),
+                reason="3% daily loss threshold",
+            )
             return {
                 "level": 2,
                 "action": "HALT_24H",
@@ -97,21 +104,28 @@ class CircuitBreaker:
 
     def _emergency_shutdown(self):
         """
-        Write a lock.file to disk and terminate the process immediately.
+        Atomically write a lock file to disk and terminate the process immediately.
 
-        The lock.file must be manually deleted after an incident review
+        The lock file must be manually deleted after an incident review
         before trading can resume.
         """
+        from datetime import datetime, timezone
         timestamp = datetime.now(timezone.utc).isoformat()
-        reason = (
-            f"Emergency shutdown triggered at {timestamp}. "
-            f"Peak-to-valley drawdown exceeded {self.drawdown_limit * 100:.1f}% limit. "
-            f"Peak equity was {self.peak_equity:.2f}."
-        )
-        with open("lock.file", "w") as fh:
-            fh.write(f"{timestamp}\n{reason}\n")
-        print(f"EMERGENCY SHUTDOWN: {reason}")
-        sys.exit(1)
+        reason = "10% peak-to-valley drawdown threshold breached"
+        lock_path = os.environ.get("LOCK_FILE_PATH", "lock.file")
+        try:
+            tmp_path = lock_path + ".tmp"
+            with open(tmp_path, "w") as fh:
+                fh.write(f"LOCKED_AT={timestamp}\nREASON={reason}\n")
+            os.replace(tmp_path, lock_path)  # atomic rename on POSIX
+        except OSError as exc:
+            print(f"CRITICAL: failed to write lock file: {exc}", file=sys.stderr)
+        finally:
+            sys.exit(1)
+
+    def is_suspended(self) -> bool:
+        """Return True if trading is currently suspended via a timed halt."""
+        return self._suspension.is_active()
 
     def update_peak(self, current_equity: float):
         """Update peak equity if current_equity is a new high-water mark."""
