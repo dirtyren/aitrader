@@ -132,7 +132,10 @@ class RegimeClassifier:
             if history_list[i] != history_list[i - 1]
         )
 
-        if transitions > 4:
+        history_snapshot = history_list
+        # threshold = 4 transitions per 20 bars (spec requirement)
+        threshold = max(4, len(history_snapshot) // 5)
+        if transitions > threshold:
             if logger is not None:
                 logger.warning(
                     "HIGH_UNCERTAINTY: regime changed %d times in last 20 bars",
@@ -148,9 +151,8 @@ class RegimeClassifier:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    """Verify that RegimeClassifier can be instantiated and run end-to-end
-    using a synthetic dataset (no live data required).
-    """
+    # Verify that RegimeClassifier can be instantiated and run end-to-end
+    # using a synthetic dataset (no live data required).
     import pandas as pd
 
     print("Building synthetic feature data …")

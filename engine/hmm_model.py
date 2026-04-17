@@ -9,6 +9,7 @@ Input features (computed externally by feature_eng.py):
 
 from __future__ import annotations
 
+import warnings
 import numpy as np
 import pandas as pd
 import joblib
@@ -80,11 +81,15 @@ class HMMModel:
                     n_iter=100,
                     random_state=42,
                 )
-                model.fit(X)
-                log_likelihood = model.score(X)
+                with warnings.catch_warnings(record=True):
+                    warnings.simplefilter("always")
+                    model.fit(X)
+                log_likelihood = model.score(X) * n_samples
 
-                # n_params formula as specified
-                n_params = n * (n + 2 * n_features - 1 + 1)
+                # n_params formula for full-covariance HMM:
+                # transition: n*(n-1), initial: (n-1), means: n*d,
+                # full covariance: n*d*(d+1)//2
+                n_params = n * (n - 1) + (n - 1) + n * n_features + n * n_features * (n_features + 1) // 2
                 bic = -2.0 * log_likelihood + n_params * np.log(n_samples)
 
                 if bic < best_bic:
@@ -92,7 +97,7 @@ class HMMModel:
                     best_model = model
                     best_n = n
                     best_scaler = scaler
-            except Exception:
+            except (ValueError, np.linalg.LinAlgError):
                 # hmmlearn can occasionally fail to converge; skip this n
                 continue
 
@@ -134,8 +139,13 @@ class HMMModel:
             raise RuntimeError("Model is not fitted. Call fit() first.")
 
         X = self._scaler.transform(observations) if self._scaler is not None else observations
-        raw_state = int(self.model.predict(X)[-1])
-        state_probs = self.model.predict_proba(X)[-1]
+        # Causal Forward Algorithm: only conditions on observations up to time T
+        log_frameprob = self.model._compute_log_likelihood(X)
+        alphas, _ = self.model._do_forward_pass(log_frameprob)
+        # Normalize the last alpha vector to get state probabilities at time T
+        last_alpha = np.exp(alphas[-1])
+        state_probs = last_alpha / last_alpha.sum()
+        raw_state = int(np.argmax(state_probs))
         return raw_state, state_probs
 
     def get_state_probabilities(self, observations: np.ndarray) -> np.ndarray:
