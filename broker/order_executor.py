@@ -9,7 +9,7 @@ import logging
 import math
 from typing import Optional
 
-from broker.alpaca_client import AlpacaClient, BrokerAPIError
+from broker.alpaca_client import AlpacaClient, BrokerAPIError, OrderRejectedError, AuthenticationError, RateLimitError
 from strategies.base_strategy import SignalData
 
 
@@ -77,7 +77,15 @@ class OrderExecutor:
                 )
                 return False
 
-            self.client.cancel_order(order_id)
+            try:
+                self.client.cancel_order(order_id)
+            except Exception as cancel_exc:
+                self.logger.error(
+                    "HANDSHAKE_WARNING: order %s placed but cancel failed for %s: %s — "
+                    "manually check open orders",
+                    order_id, symbol, cancel_exc
+                )
+                return False
             self.logger.info(
                 "HANDSHAKE_OK: order %s placed and cancelled for %s",
                 order_id,
@@ -196,17 +204,33 @@ class OrderExecutor:
                 order.get("id", "unknown"),
             )
             return order
-        except Exception as exc:
-            self.logger.error(
-                "ORDER_FAILED: %s qty=%d — %s", ticker, shares, exc
-            )
-            return {
+        except OrderRejectedError as exc:
+            self.logger.warning("ORDER_REJECTED_BY_BROKER: %s — %s", ticker, exc)
+            result = {
                 "approved": True,
                 "ticker": ticker,
                 "shares": shares,
-                "rejection_reason": f"Order submission failed: {exc}",
                 "circuit_level": approval.get("circuit_level", 0),
             }
+            return {**result, "rejection_reason": str(exc)}
+        except (AuthenticationError, RateLimitError) as exc:
+            self.logger.critical("BROKER_CRITICAL_ERROR: %s — %s", ticker, exc)
+            result = {
+                "approved": True,
+                "ticker": ticker,
+                "shares": shares,
+                "circuit_level": approval.get("circuit_level", 0),
+            }
+            return {**result, "rejection_reason": f"CRITICAL: {exc}"}
+        except Exception as exc:
+            self.logger.error("ORDER_FAILED: %s — %s", ticker, exc)
+            result = {
+                "approved": True,
+                "ticker": ticker,
+                "shares": shares,
+                "circuit_level": approval.get("circuit_level", 0),
+            }
+            return {**result, "rejection_reason": str(exc)}
 
     # ------------------------------------------------------------------
     # Position closure

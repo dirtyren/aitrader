@@ -6,6 +6,7 @@ Never hardcode credentials.
 """
 
 import os
+import random
 import time
 import logging
 
@@ -98,16 +99,16 @@ class AlpacaClient:
         url = f"{self.base_url}{path}"
 
         for attempt in range(self._MAX_RETRIES + 1):
-            response = self._session.request(method, url, **kwargs)
+            response = self._session.request(method, url, timeout=10, **kwargs)
 
             if response.status_code == 429:
                 if attempt == self._MAX_RETRIES:
                     raise RateLimitError(
                         f"Rate limit exceeded after {self._MAX_RETRIES} retries on {method} {path}"
                     )
-                wait = 2 ** attempt
+                wait = (2 ** attempt) + random.uniform(0, 1)  # jitter up to 1 second
                 logger.warning(
-                    "Rate limited by Alpaca (attempt %d/%d). Waiting %ds before retry.",
+                    "Rate limited by Alpaca (attempt %d/%d). Waiting %.2fs before retry.",
                     attempt + 1,
                     self._MAX_RETRIES,
                     wait,
@@ -201,14 +202,23 @@ class AlpacaClient:
         data = response.json()
         # Alpaca wraps the quote inside {"quote": {...}}
         quote = data.get("quote", data)
-        ask_price = float(quote.get("ap", 0) or 0)
+        try:
+            ask_price = float(quote.get("ap") or 0)
+        except (TypeError, ValueError):
+            ask_price = 0.0
         if ask_price > 0:
             return ask_price
-        bid_price = float(quote.get("bp", 0) or 0)
+        try:
+            bid_price = float(quote.get("bp") or 0)
+        except (TypeError, ValueError):
+            bid_price = 0.0
         if bid_price > 0:
             return bid_price
         # Last resort: latest trade
-        trade_price = float(quote.get("lp", 0) or 0)
+        try:
+            trade_price = float(quote.get("lp") or 0)
+        except (TypeError, ValueError):
+            trade_price = 0.0
         if trade_price > 0:
             return trade_price
         raise BrokerAPIError(200, f"Could not determine a valid price for {symbol}")
