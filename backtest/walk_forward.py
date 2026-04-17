@@ -19,7 +19,7 @@ def _build_features(price_series: pd.Series) -> pd.DataFrame:
     pd.DataFrame with columns: log_return, volatility, volume_change
     """
     log_return = np.log(price_series / price_series.shift(1))
-    volatility = log_return.rolling(window=20, min_periods=1).std()
+    volatility = log_return.rolling(window=20, min_periods=20).std()
     volume_change = pd.Series(0.0, index=price_series.index)
 
     return pd.DataFrame(
@@ -72,7 +72,12 @@ class WalkForwardBacktest:
             window_id, train_start, train_end, test_start, test_end,
             total_return, sharpe_ratio, max_drawdown, regime_breakdown
         """
-        features = _build_features(price_series)
+        if len(price_series) < self.train_days + self.test_days:
+            raise ValueError(
+                f"price_series too short: need {self.train_days + self.test_days} bars, "
+                f"got {len(price_series)}"
+            )
+
         prices = price_series.dropna()
         n = len(prices)
         results: list[dict] = []
@@ -86,8 +91,14 @@ class WalkForwardBacktest:
             train_prices = prices.iloc[start:train_end_idx]
             test_prices = prices.iloc[train_end_idx:test_end_idx]
 
-            train_features = features.loc[train_prices.index].dropna()
-            test_features = features.loc[test_prices.index]
+            # Build features per-window to avoid train/test data leakage:
+            # Train features come only from the training slice.
+            # Full features (train+test combined) are used for signal generation
+            # so that rolling statistics at the start of the test window are
+            # anchored in train data rather than future test data.
+            train_features = _build_features(prices.iloc[start:train_end_idx]).dropna()
+            full_features = _build_features(prices.iloc[start:test_end_idx])
+            test_features = full_features.loc[test_prices.index]
 
             # 1. Fit HMM on training window
             hmm_model.fit(train_features)

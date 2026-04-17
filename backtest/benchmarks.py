@@ -46,6 +46,8 @@ def sma_200_strategy(price_series: pd.Series) -> dict:
     dict with keys: total_return, sharpe_ratio, max_drawdown, calmar_ratio,
     daily_returns
     """
+    if len(price_series) < 201:
+        raise ValueError(f"sma_200_strategy requires at least 201 bars, got {len(price_series)}")
     sma200 = price_series.rolling(window=200, min_periods=200).mean()
     allocation = (price_series > sma200).astype(float)
     # Before we have 200 bars of history keep allocation at 0
@@ -95,8 +97,8 @@ def random_entry_control(
     calmars: list[float] = []
 
     for i in range(n_simulations):
-        # Draw a new seed per simulation for independence
-        sim_seed = int(rng.integers(0, 2**31))
+        # Deterministic per simulation index regardless of n_simulations
+        sim_seed = seed + i
         sim_rng = np.random.default_rng(sim_seed)
 
         raw_alloc = sim_rng.integers(0, 2, size=len(price_series)).astype(float)

@@ -57,8 +57,9 @@ class PerformanceEngine:
 
         # 4. Transaction cost on each position CHANGE
         cost_per_trade = (self.slippage_bps + self.commission_bps) / 10_000.0
-        position_changes = (sigs_lagged.diff().abs() > 1e-10).astype(float)
-        trade_costs = position_changes * cost_per_trade
+        position_changes = sigs_lagged.diff().abs()
+        position_changes.iloc[0] = sigs_lagged.iloc[0]  # first bar: entry from 0 to initial position
+        trade_costs = (position_changes > 1e-10).astype(float) * cost_per_trade
 
         # Net daily log returns after costs
         net_log_rets = strat_log_rets - trade_costs
