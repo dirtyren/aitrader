@@ -1,0 +1,12 @@
+hmmlearn
+numpy
+pandas
+yfinance
+alpaca-trade-api
+streamlit
+plotly
+scikit-learn
+scipy
+python-dotenv
+pyyaml
+pytest
