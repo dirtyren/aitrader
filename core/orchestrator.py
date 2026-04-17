@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 import numpy as np
 
+from engine.hmm_model import HMMModel
+from engine.regime_classifier import RegimeClassifier
 from strategies.base_strategy import BaseStrategy, SignalData
 
 
@@ -29,8 +32,8 @@ class StrategyOrchestrator:
 
     def __init__(
         self,
-        hmm_model,
-        regime_classifier,
+        hmm_model: HMMModel,
+        regime_classifier: RegimeClassifier,
         strategy: BaseStrategy,
         logger: Optional[logging.Logger] = None,
     ) -> None:
@@ -39,6 +42,7 @@ class StrategyOrchestrator:
         self.strategy = strategy
         self.logger = logger or logging.getLogger("regime_trader.orchestrator")
         self._last_regime: Optional[str] = None
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -70,16 +74,17 @@ class StrategyOrchestrator:
         signal: SignalData = self.strategy.compute_signal(regime_result)
 
         # --- Regime-change detection & logging -----------------------
-        current_regime = regime_result["regime"]
-        if self._last_regime is not None and current_regime != self._last_regime:
-            self.logger.info(
-                "REGIME_CHANGE: %s -> %s | confidence=%.2f | stable=%s | alloc=%.2f",
-                self._last_regime,
-                current_regime,
-                regime_result["confidence"],
-                regime_result["stable"],
-                signal.allocation_pct,
-            )
-        self._last_regime = current_regime
+        with self._lock:
+            old_regime = self._last_regime
+            if old_regime is not None and old_regime != regime_result["regime"]:
+                self.logger.info(
+                    "REGIME_CHANGE: %s -> %s | confidence=%.2f | stable=%s | alloc=%.2f",
+                    old_regime,
+                    regime_result["regime"],
+                    regime_result["confidence"],
+                    regime_result["stable"],
+                    signal.allocation_pct,
+                )
+            self._last_regime = regime_result["regime"]
 
         return signal

@@ -95,6 +95,10 @@ class VolatilityAllocationStrategy(BaseStrategy):
             )
             damped_allocation = _UNCERTAINTY_CAP
 
+        # Ensure combined exposure never exceeds 100%
+        if damped_allocation * leverage > 1.0:
+            damped_allocation = 1.0 / leverage
+
         signal = SignalData(
             regime=regime,
             confidence=confidence,
