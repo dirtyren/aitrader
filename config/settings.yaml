@@ -1,1 +1,48 @@
-# HMM & trading configuration — populated in Task 8
+# regime_trader system configuration
+
+system:
+  name: regime_trader
+  version: "1.0.0"
+  trading_env: paper  # paper | live
+
+tickers:
+  primary:
+    - SPY
+    - QQQ
+    - IWM
+  watchlist:
+    - AAPL
+    - NVDA
+    - MSFT
+
+hmm:
+  min_regimes: 3
+  max_regimes: 7
+  n_iter: 100
+  covariance_type: full
+  train_days: 504   # 2 years of daily data
+  feature_window: 20  # rolling window for volatility
+
+strategy:
+  max_risk_per_trade: 0.01
+  leverage_bull: 1.25
+  uncertainty_threshold: 4  # regime changes per 20 bars
+
+risk:
+  daily_loss_limit_1: 0.02
+  daily_loss_limit_2: 0.03
+  drawdown_limit: 0.10
+
+backtest:
+  train_days: 252
+  test_days: 126
+  slippage_bps: 5.0
+  commission_bps: 2.0
+
+broker:
+  paper_trading: true
+  handshake_symbol: NVDA
+
+logging:
+  level: INFO
+  log_file: logs/regime_trader.log
