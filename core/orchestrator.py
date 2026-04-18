@@ -46,6 +46,7 @@ class StrategyOrchestrator:
         self.logger = logger or logging.getLogger("regime_trader.orchestrator")
         self._last_regime: Optional[str] = None
         self._lock = threading.Lock()
+        self._ticker_classifiers: dict[str, RegimeClassifier] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -92,6 +93,12 @@ class StrategyOrchestrator:
 
         return signal
 
+    def _get_ticker_classifier(self, ticker: str) -> RegimeClassifier:
+        """Return a per-ticker RegimeClassifier, creating one if needed."""
+        if ticker not in self._ticker_classifiers:
+            self._ticker_classifiers[ticker] = RegimeClassifier(self.hmm_model)
+        return self._ticker_classifiers[ticker]
+
     def process_portfolio(
         self,
         observations_map: dict[str, np.ndarray],
@@ -100,19 +107,22 @@ class StrategyOrchestrator:
         """
         Run regime detection + signal generation for each asset in the portfolio.
 
-        observations_map: {ticker: np.ndarray of features (log_return, volatility, volume_change)}
+        Each ticker gets its own RegimeClassifier instance to avoid mixing
+        regime state across assets.
 
-        For each ticker in portfolio.tickers:
-          - If observations available: call self.process(observations) to get SignalData
-          - If observations missing: return a safe default SignalData
-            (regime="Unknown", confidence=0.0, allocation_pct=0.5, leverage=1.0, stable=False, high_uncertainty=True)
+        observations_map: {ticker: np.ndarray of features (log_return, volatility, volume_change)}
 
         Returns {ticker: SignalData}
         """
         results: dict[str, SignalData] = {}
         for ticker in portfolio.tickers:
             if ticker in observations_map:
-                results[ticker] = self.process(observations_map[ticker])
+                classifier = self._get_ticker_classifier(ticker)
+                regime_result = classifier.update(
+                    observations_map[ticker], logger=self.logger
+                )
+                signal = self.strategy.compute_signal(regime_result)
+                results[ticker] = signal
             else:
                 self.logger.warning(
                     "PROCESS_PORTFOLIO: no observations for %s — using safe default", ticker

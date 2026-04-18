@@ -1,6 +1,7 @@
 """Structured logging configuration for regime_trader."""
 
 import logging
+import os
 
 
 def setup_logging(log_level=logging.INFO, log_file: str = None) -> logging.Logger:
@@ -30,13 +31,17 @@ def setup_logging(log_level=logging.INFO, log_file: str = None) -> logging.Logge
         root.addHandler(console_handler)
 
     if log_file is not None:
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
         # Only add a new file handler if one pointing to the same file isn't already attached
         existing_files = {
             h.baseFilename
             for h in root.handlers
             if isinstance(h, logging.FileHandler)
         }
-        if log_file not in existing_files:
+        if os.path.abspath(log_file) not in existing_files:
             file_handler = logging.FileHandler(log_file)
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)

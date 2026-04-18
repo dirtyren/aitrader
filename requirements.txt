@@ -4,6 +4,7 @@ pandas
 yfinance
 alpaca-trade-api
 streamlit
+streamlit-autorefresh
 plotly
 scikit-learn
 scipy

@@ -38,7 +38,15 @@ class HMMModel:
         Mapping from integer state to human-readable regime name.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        min_components: int = 3,
+        max_components: int = 7,
+        n_iter: int = 100,
+    ) -> None:
+        self.min_components = min_components
+        self.max_components = max_components
+        self.n_iter = n_iter
         self.model: GaussianHMM | None = None
         self.n_regimes: int | None = None
         self.regime_labels: dict[int, str] = {}
@@ -73,12 +81,12 @@ class HMMModel:
         best_n = None
         best_scaler = None
 
-        for n in range(3, 8):  # 3 to 7 inclusive
+        for n in range(self.min_components, self.max_components + 1):
             try:
                 model = GaussianHMM(
                     n_components=n,
                     covariance_type="full",
-                    n_iter=100,
+                    n_iter=self.n_iter,
                     random_state=42,
                 )
                 with warnings.catch_warnings(record=True):
@@ -149,7 +157,10 @@ class HMMModel:
         return raw_state, state_probs
 
     def get_state_probabilities(self, observations: np.ndarray) -> np.ndarray:
-        """Return the probability vector for the most recent bar.
+        """Return the causal probability vector for the most recent bar.
+
+        Uses the forward algorithm only (no backward pass) to avoid
+        conditioning on future observations.
 
         Parameters
         ----------
@@ -163,7 +174,10 @@ class HMMModel:
         if self.model is None:
             raise RuntimeError("Model is not fitted. Call fit() first.")
         X = self._scaler.transform(observations) if self._scaler is not None else observations
-        return self.model.predict_proba(X)[-1]
+        log_frameprob = self.model._compute_log_likelihood(X)
+        alphas, _ = self.model._do_forward_pass(log_frameprob)
+        last_alpha = np.exp(alphas[-1])
+        return last_alpha / last_alpha.sum()
 
     # ------------------------------------------------------------------
     # Regime labeling
@@ -203,9 +217,38 @@ class HMMModel:
         joblib.dump(self, path)
 
     @classmethod
-    def load(cls, path: str) -> "HMMModel":
-        """Load a previously saved :class:`HMMModel` from *path*."""
-        return joblib.load(path)
+    def load(cls, path: str, allowed_dir: str | None = None) -> "HMMModel":
+        """Load a previously saved :class:`HMMModel` from *path*.
+
+        WARNING: Uses joblib (pickle) which can execute arbitrary code.
+        Only load model files from trusted sources.
+
+        Parameters
+        ----------
+        path:
+            Path to the serialized model file.
+        allowed_dir:
+            If provided, *path* must resolve inside this directory.
+            Raises ValueError otherwise.
+        """
+        import os
+
+        real_path = os.path.realpath(path)
+        if allowed_dir is not None:
+            real_allowed = os.path.realpath(allowed_dir)
+            if not real_path.startswith(real_allowed + os.sep):
+                raise ValueError(
+                    f"Model path {real_path} is outside allowed directory {real_allowed}"
+                )
+        if not os.path.isfile(real_path):
+            raise FileNotFoundError(f"Model file not found: {real_path}")
+
+        obj = joblib.load(real_path)
+        if not isinstance(obj, cls):
+            raise TypeError(
+                f"Loaded object is {type(obj).__name__}, expected {cls.__name__}"
+            )
+        return obj
 
     # ------------------------------------------------------------------
     # Helpers

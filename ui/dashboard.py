@@ -2,10 +2,10 @@
 
 import json
 import os
-import time
 
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 _STATE_FILE = os.environ.get("STATE_FILE_PATH", "runtime/trading_state.json")
 
@@ -285,6 +285,9 @@ def main() -> None:
     st.set_page_config(page_title="regime_trader", layout="wide")
     st.title("Regime Trader — Live Dashboard")
 
+    # Non-blocking auto-refresh every 5 seconds
+    st_autorefresh(interval=5000, key="dashboard_refresh")
+
     # Load state
     state = load_state()
 
@@ -297,10 +300,6 @@ def main() -> None:
     with col2:
         render_risk_panel(state)
         render_chart_panel(state)
-
-    # Auto-refresh every 5 seconds
-    time.sleep(5)
-    st.rerun()
 
 
 if __name__ == "__main__":

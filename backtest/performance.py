@@ -55,11 +55,11 @@ class PerformanceEngine:
         # 3. Strategy log returns (allocation * log_return)
         strat_log_rets = sigs_lagged * log_rets
 
-        # 4. Transaction cost on each position CHANGE
-        cost_per_trade = (self.slippage_bps + self.commission_bps) / 10_000.0
+        # 4. Transaction cost proportional to turnover
+        cost_per_unit = (self.slippage_bps + self.commission_bps) / 10_000.0
         position_changes = sigs_lagged.diff().abs()
-        position_changes.iloc[0] = sigs_lagged.iloc[0]  # first bar: entry from 0 to initial position
-        trade_costs = (position_changes > 1e-10).astype(float) * cost_per_trade
+        position_changes.iloc[0] = sigs_lagged.iloc[0].abs()
+        trade_costs = position_changes * cost_per_unit
 
         # Net daily log returns after costs
         net_log_rets = strat_log_rets - trade_costs

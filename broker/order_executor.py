@@ -52,15 +52,14 @@ class OrderExecutor:
 
     def connectivity_handshake(self, symbol: str = "NVDA") -> bool:
         """
-        Verify two-way communication with the broker by placing and immediately
-        cancelling a 1-share market order.
+        Verify two-way communication with the broker by querying the account
+        endpoint and fetching a quote.
 
         Steps
         -----
-        1. Submit a 1-share market buy order for *symbol*.
-        2. Confirm the returned order_id is a non-empty string.
-        3. Immediately cancel the order.
-        4. Log: "HANDSHAKE_OK: order {order_id} placed and cancelled for {symbol}"
+        1. Call ``get_account()`` to verify authentication and connectivity.
+        2. Call ``get_quote(symbol)`` to verify market data access.
+        3. Log: "HANDSHAKE_OK: account verified, quote fetched for {symbol}"
 
         Returns
         -------
@@ -68,33 +67,21 @@ class OrderExecutor:
             True on success, False on any failure.
         """
         try:
-            order = self.client.submit_order(
-                symbol=symbol,
-                qty=1,
-                side="buy",
-                order_type="market",
-                time_in_force="day",
-            )
-            order_id = order.get("id", "")
-            if not order_id:
+            account = self.client.get_account()
+            if not account.get("id"):
+                self.logger.error("HANDSHAKE_FAILED: account response missing id")
+                return False
+
+            price = self.client.get_quote(symbol)
+            if price <= 0:
                 self.logger.error(
-                    "HANDSHAKE_FAILED: no order_id returned for %s", symbol
+                    "HANDSHAKE_FAILED: invalid quote price %.4f for %s", price, symbol
                 )
                 return False
 
-            try:
-                self.client.cancel_order(order_id)
-            except Exception as cancel_exc:
-                self.logger.error(
-                    "HANDSHAKE_WARNING: order %s placed but cancel failed for %s: %s — "
-                    "manually check open orders",
-                    order_id, symbol, cancel_exc
-                )
-                return False
             self.logger.info(
-                "HANDSHAKE_OK: order %s placed and cancelled for %s",
-                order_id,
-                symbol,
+                "HANDSHAKE_OK: account verified, quote fetched for %s (price=%.2f)",
+                symbol, price,
             )
             return True
 
@@ -113,6 +100,9 @@ class OrderExecutor:
         ticker: str,
         signal: SignalData,
         current_equity: float,
+        daily_pnl_pct: float = 0.0,
+        current_positions: dict | None = None,
+        price_data: dict | None = None,
     ) -> dict:
         """
         Convert a SignalData allocation into a real broker order.
@@ -141,8 +131,9 @@ class OrderExecutor:
         approval = self.risk_manager.approve_trade(
             ticker=ticker,
             proposed_allocation_pct=signal.allocation_pct,
-            current_positions={},   # caller may pass richer state; default empty
-            price_data={},
+            current_positions=current_positions or {},
+            price_data=price_data or {},
+            daily_pnl_pct=daily_pnl_pct,
         )
 
         if not approval.get("approved", False):
@@ -384,11 +375,32 @@ class OrderExecutor:
                     stable=signal_map[ticker].stable if ticker in signal_map else False,
                     high_uncertainty=signal_map[ticker].high_uncertainty if ticker in signal_map else True,
                 )
-                result = self.execute_signal(ticker, buy_signal, current_equity)
+                result = self.execute_signal(
+                    ticker, buy_signal, current_equity,
+                    daily_pnl_pct=daily_pnl_pct,
+                    current_positions=current_positions,
+                )
                 results.append(result)
                 n_buys += 1
             else:
-                # SELL: submit a partial sell for the delta shares
+                # SELL: check circuit breaker then submit partial sell
+                sell_approval = self.risk_manager.approve_trade(
+                    ticker=ticker,
+                    proposed_allocation_pct=abs(delta_dollar) / current_equity,
+                    current_positions=current_positions,
+                    price_data={},
+                    daily_pnl_pct=daily_pnl_pct,
+                )
+                if sell_approval.get("circuit_level", 0) >= 2 and sell_approval.get("approved", True) is False:
+                    self.logger.warning(
+                        "REBALANCE_SELL_BLOCKED: %s — circuit breaker level %d",
+                        ticker, sell_approval.get("circuit_level", 0),
+                    )
+                    results.append({"ticker": ticker, "approved": False,
+                                    "rejection_reason": "Circuit breaker blocked sell"})
+                    n_skipped += 1
+                    continue
+
                 try:
                     current_price = self.client.get_quote(ticker)
                     qty = math.floor(abs(delta_dollar) / current_price)
