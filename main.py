@@ -35,6 +35,7 @@ from risk.circuit_breakers import CircuitBreaker
 from risk.manager import RiskManager
 from broker.alpaca_client import AlpacaClient
 from broker.order_executor import OrderExecutor
+from core.portfolio import Portfolio
 
 
 def load_config(path: str = "config/settings.yaml") -> dict:
@@ -46,6 +47,7 @@ def build_system(config: dict, logger: logging.Logger):
     """Wire all components together."""
     # Data
     data_loader = DataLoader(config)
+    portfolio = Portfolio.from_config(config)
 
     # HMM Engine
     hmm_model = HMMModel(
@@ -76,7 +78,7 @@ def build_system(config: dict, logger: logging.Logger):
     alpaca = AlpacaClient()
     executor = OrderExecutor(alpaca, risk_manager, logger)
 
-    return data_loader, orchestrator, risk_manager, executor
+    return data_loader, orchestrator, risk_manager, executor, portfolio
 
 
 def main():
@@ -85,7 +87,7 @@ def main():
     logger.info("regime_trader starting up...")
 
     # Wire system
-    data_loader, orchestrator, risk_manager, executor = build_system(config, logger)
+    data_loader, orchestrator, risk_manager, executor, portfolio = build_system(config, logger)
 
     # Connectivity check
     logger.info("Running connectivity handshake...")
@@ -93,6 +95,7 @@ def main():
         logger.error("Connectivity handshake failed. Aborting.")
         sys.exit(1)
 
+    logger.info("Portfolio loaded: %s", portfolio.tickers)
     logger.info("System ready. Beginning live trading loop.")
     # TODO: implement live trading loop in future milestone
 

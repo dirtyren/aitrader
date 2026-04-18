@@ -32,6 +32,7 @@ def load_state() -> dict:
             "prices": [],
             "regimes": [],
             "volumes": [],
+            "portfolio": [],
         }
 
 
@@ -246,6 +247,33 @@ def render_chart_panel(state: dict) -> None:
         st.info("No volume data available.")
 
 
+def render_portfolio_panel(state: dict):
+    st.subheader("Portfolio")
+    assets = state.get("portfolio", [])
+    if not assets:
+        st.info("No portfolio data available.")
+        return
+
+    # Allocation pie chart: current vs target
+    import plotly.graph_objects as go
+    tickers = [a["ticker"] for a in assets]
+    current_w = [a.get("current_weight", 0.0) for a in assets]
+    target_w = [a.get("target_weight", 0.0) for a in assets]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Current", x=tickers, y=current_w))
+    fig.add_trace(go.Bar(name="Target", x=tickers, y=target_w))
+    fig.update_layout(barmode="group", height=250, margin=dict(t=20, b=20),
+                      yaxis_tickformat=".0%")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Per-asset regime table
+    rows = [{"Ticker": a["ticker"], "Regime": a.get("regime", "—"),
+             "Conf": f"{a.get('confidence', 0):.0%}",
+             "Drift": f"{a.get('drift', 0):+.1%}"} for a in assets]
+    st.dataframe(rows, use_container_width=True)
+
+
 # ---------------------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------------------
@@ -262,6 +290,7 @@ def main() -> None:
     with col1:
         render_regime_panel(state)
         render_signal_panel(state)
+        render_portfolio_panel(state)
     with col2:
         render_risk_panel(state)
         render_chart_panel(state)
