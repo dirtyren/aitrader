@@ -46,3 +46,32 @@ broker:
 logging:
   level: INFO
   log_file: logs/regime_trader.log
+
+portfolio:
+  rebalance_threshold: 0.05   # rebalance when any asset drifts >5% from target
+  max_single_asset: 0.40      # hard cap: no asset may exceed 40% of portfolio
+  assets:
+    - ticker: SPY
+      name: "S&P 500 ETF"
+      asset_class: equity
+      target_weight: 0.40
+      min_weight: 0.10
+      max_weight: 0.60
+    - ticker: QQQ
+      name: "Nasdaq 100 ETF"
+      asset_class: equity
+      target_weight: 0.30
+      min_weight: 0.05
+      max_weight: 0.50
+    - ticker: IWM
+      name: "Russell 2000 ETF"
+      asset_class: equity
+      target_weight: 0.20
+      min_weight: 0.00
+      max_weight: 0.40
+    - ticker: GLD
+      name: "Gold ETF"
+      asset_class: commodity
+      target_weight: 0.10
+      min_weight: 0.00
+      max_weight: 0.25

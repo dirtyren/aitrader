@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
 from engine.hmm_model import HMMModel
 from engine.regime_classifier import RegimeClassifier
 from strategies.base_strategy import BaseStrategy, SignalData
+
+if TYPE_CHECKING:
+    from core.portfolio import Portfolio
 
 
 class StrategyOrchestrator:
@@ -88,3 +91,38 @@ class StrategyOrchestrator:
             self._last_regime = regime_result["regime"]
 
         return signal
+
+    def process_portfolio(
+        self,
+        observations_map: dict[str, np.ndarray],
+        portfolio: "Portfolio",
+    ) -> dict[str, SignalData]:
+        """
+        Run regime detection + signal generation for each asset in the portfolio.
+
+        observations_map: {ticker: np.ndarray of features (log_return, volatility, volume_change)}
+
+        For each ticker in portfolio.tickers:
+          - If observations available: call self.process(observations) to get SignalData
+          - If observations missing: return a safe default SignalData
+            (regime="Unknown", confidence=0.0, allocation_pct=0.5, leverage=1.0, stable=False, high_uncertainty=True)
+
+        Returns {ticker: SignalData}
+        """
+        results: dict[str, SignalData] = {}
+        for ticker in portfolio.tickers:
+            if ticker in observations_map:
+                results[ticker] = self.process(observations_map[ticker])
+            else:
+                self.logger.warning(
+                    "PROCESS_PORTFOLIO: no observations for %s — using safe default", ticker
+                )
+                results[ticker] = SignalData(
+                    regime="Unknown",
+                    confidence=0.0,
+                    allocation_pct=0.5,
+                    leverage=1.0,
+                    stable=False,
+                    high_uncertainty=True,
+                )
+        return results

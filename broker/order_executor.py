@@ -5,12 +5,17 @@ Wraps AlpacaClient with risk management checks and provides a clean interface
 for the trading engine to interact with the broker.
 """
 
+from __future__ import annotations
+
 import logging
 import math
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from broker.alpaca_client import AlpacaClient, BrokerAPIError, OrderRejectedError, AuthenticationError, RateLimitError
 from strategies.base_strategy import SignalData
+
+if TYPE_CHECKING:
+    from core.portfolio import Portfolio
 
 
 class OrderExecutor:
@@ -312,5 +317,107 @@ class OrderExecutor:
 
         self.logger.info(
             "CLOSE_ALL_POSITIONS: closed %d position(s)", len(results)
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # Portfolio rebalancing
+    # ------------------------------------------------------------------
+
+    def rebalance_portfolio(
+        self,
+        portfolio: "Portfolio",
+        current_positions: dict[str, float],
+        signal_map: dict[str, "SignalData"],
+        current_equity: float,
+        daily_pnl_pct: float = 0.0,
+    ) -> list[dict]:
+        """
+        Rebalance portfolio to regime-adjusted target weights.
+
+        Steps:
+        1. Compute regime_adjusted_targets from portfolio + signal_map
+        2. For each asset in portfolio.tickers:
+           a. target_dollar = target_weight * current_equity
+           b. current_dollar = current_positions.get(ticker, 0.0)
+           c. delta_dollar = target_dollar - current_dollar
+           d. If abs(delta_dollar) < 0.01 * current_equity: skip (below 1% threshold)
+           e. If delta_dollar > 0: BUY — call execute_signal with approved allocation
+           f. If delta_dollar < 0: SELL — call close_position or partial sell
+        3. Collect and return list of order result dicts (one per trade attempted)
+
+        For buys: convert delta_dollar to allocation_pct = delta_dollar / current_equity,
+        create a SignalData with that allocation_pct and pass to execute_signal.
+
+        For sells: use alpaca_client.submit_order(ticker, qty, "sell") directly
+        where qty = floor(abs(delta_dollar) / current_price).
+        Skip if qty == 0.
+
+        Log summary: "REBALANCE: {n_buys} buys, {n_sells} sells, {n_skipped} skipped"
+        """
+        target_weights: dict[str, float] = portfolio.regime_adjusted_targets(signal_map)
+        threshold = 0.01 * current_equity
+
+        results: list[dict] = []
+        n_buys = 0
+        n_sells = 0
+        n_skipped = 0
+
+        for ticker in portfolio.tickers:
+            target_weight = target_weights.get(ticker, 0.0)
+            target_dollar = target_weight * current_equity
+            current_dollar = current_positions.get(ticker, 0.0)
+            delta_dollar = target_dollar - current_dollar
+
+            if abs(delta_dollar) < threshold:
+                n_skipped += 1
+                continue
+
+            if delta_dollar > 0:
+                # BUY: build a minimal SignalData carrying the required allocation
+                allocation_pct = delta_dollar / current_equity
+                buy_signal = SignalData(
+                    regime=signal_map[ticker].regime if ticker in signal_map else "Unknown",
+                    confidence=signal_map[ticker].confidence if ticker in signal_map else 0.0,
+                    allocation_pct=allocation_pct,
+                    leverage=signal_map[ticker].leverage if ticker in signal_map else 1.0,
+                    stable=signal_map[ticker].stable if ticker in signal_map else False,
+                    high_uncertainty=signal_map[ticker].high_uncertainty if ticker in signal_map else True,
+                )
+                result = self.execute_signal(ticker, buy_signal, current_equity)
+                results.append(result)
+                n_buys += 1
+            else:
+                # SELL: submit a partial sell for the delta shares
+                try:
+                    current_price = self.client.get_quote(ticker)
+                    qty = math.floor(abs(delta_dollar) / current_price)
+                    if qty == 0:
+                        n_skipped += 1
+                        continue
+                    order = self.client.submit_order(
+                        symbol=ticker,
+                        qty=qty,
+                        side="sell",
+                        order_type="market",
+                        time_in_force="day",
+                    )
+                    self.logger.info(
+                        "REBALANCE_SELL: %s qty=%d order_id=%s",
+                        ticker,
+                        qty,
+                        order.get("id", "unknown"),
+                    )
+                    results.append(order)
+                    n_sells += 1
+                except Exception as exc:
+                    self.logger.error(
+                        "REBALANCE_SELL_FAILED: %s — %s", ticker, exc
+                    )
+                    results.append({"ticker": ticker, "error": str(exc)})
+                    n_sells += 1
+
+        self.logger.info(
+            "REBALANCE: %d buys, %d sells, %d skipped", n_buys, n_sells, n_skipped
         )
         return results
