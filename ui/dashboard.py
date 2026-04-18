@@ -1,10 +1,13 @@
 """Streamlit real-time dashboard for regime_trader."""
 
 import json
+import os
 import time
 
 import plotly.graph_objects as go
 import streamlit as st
+
+_STATE_FILE = os.environ.get("STATE_FILE_PATH", "runtime/trading_state.json")
 
 
 # ---------------------------------------------------------------------------
@@ -12,9 +15,9 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 
 def load_state() -> dict:
-    """Read trading_state.json from project root. Return empty dict structure on error."""
+    """Read trading_state.json. Path overrideable via STATE_FILE_PATH env var."""
     try:
-        with open("trading_state.json", "r") as f:
+        with open(_STATE_FILE, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {

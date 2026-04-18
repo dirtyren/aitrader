@@ -1,1 +1,7 @@
 .worktrees/
+.env
+logs/
+runtime/*
+!runtime/.gitkeep
+__pycache__/
+*.pyc

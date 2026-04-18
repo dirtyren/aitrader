@@ -1,0 +1,11 @@
+.git
+.worktrees
+__pycache__
+*.pyc
+*.pyo
+.env
+lock.file
+logs/
+runtime/
+*.egg-info
+.pytest_cache
