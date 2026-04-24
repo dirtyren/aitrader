@@ -18,7 +18,7 @@ services:
       - TRADING_ENV=test  # prevents lock.file import-time sys.exit
       - STATE_FILE_PATH=/app/runtime/trading_state.json
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime

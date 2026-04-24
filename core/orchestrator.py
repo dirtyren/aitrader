@@ -121,7 +121,7 @@ class StrategyOrchestrator:
                 regime_result = classifier.update(
                     observations_map[ticker], logger=self.logger
                 )
-                signal = self.strategy.compute_signal(regime_result)
+                signal = self.strategy.compute_signal(regime_result, ticker=ticker)
                 results[ticker] = signal
             else:
                 self.logger.warning(

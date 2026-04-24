@@ -13,8 +13,6 @@ import logging
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()  # load .env if present
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -61,8 +59,9 @@ class AlpacaClient:
     _MAX_RETRIES = 5
 
     def __init__(self):
-        self.api_key = os.environ["ALPACA_API_KEY"]         # raises KeyError if missing
-        self.secret_key = os.environ["ALPACA_SECRET_KEY"]   # raises KeyError if missing
+        load_dotenv()
+        self.api_key = os.environ["ALPACA_API_KEY"]
+        self.secret_key = os.environ["ALPACA_SECRET_KEY"]
         self.base_url = os.environ.get(
             "ALPACA_BASE_URL", "https://paper-api.alpaca.markets"
         ).rstrip("/")

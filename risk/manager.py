@@ -46,22 +46,12 @@ class RiskManager:
         portfolio_equity: float,
         circuit_breaker: CircuitBreaker,
         max_risk_per_trade: float = 0.01,
+        max_rebalance_per_trade: float = 0.25,
     ):
-        """
-        Parameters
-        ----------
-        portfolio_equity  : float  — current total equity value of the portfolio.
-        circuit_breaker   : CircuitBreaker — pre-constructed circuit breaker instance.
-        max_risk_per_trade: float  — maximum fraction of portfolio equity that any
-                                     single position may represent (default 1%).
-        """
         self.portfolio_equity = portfolio_equity
         self.circuit_breaker = circuit_breaker
-        self.max_risk_per_trade = max_risk_per_trade
-        if max_risk_per_trade > 0.01:
-            raise ValueError(
-                f"max_risk_per_trade={max_risk_per_trade} exceeds the 1% hard limit per trade."
-            )
+        self.max_risk_per_trade = min(max_risk_per_trade, 0.05)
+        self.max_rebalance_per_trade = min(max_rebalance_per_trade, 0.50)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -155,6 +145,66 @@ class RiskManager:
         result["approved"] = True
         result["approved_allocation_pct"] = approved_allocation_pct
         return result
+
+    def approve_rebalance(
+        self,
+        ticker: str,
+        proposed_allocation_pct: float,
+        daily_pnl_pct: float = 0.0,
+    ) -> dict:
+        """Gate a rebalance trade through circuit breaker + rebalance cap only.
+
+        Skips the speculative per-trade cap and correlation check since
+        rebalancing targets are already validated by the portfolio model.
+        """
+        equity = self.portfolio_equity
+        result = {
+            "approved": False,
+            "ticker": ticker,
+            "approved_allocation_pct": 0.0,
+            "rejection_reason": "",
+            "circuit_level": 0,
+            "correlation_warning": False,
+        }
+
+        cb_status = self.circuit_breaker.check(equity, daily_pnl_pct)
+        result["circuit_level"] = cb_status["level"]
+
+        if cb_status["trading_suspended"]:
+            result["rejection_reason"] = (
+                f"Trading suspended by circuit breaker: {cb_status['action']}"
+            )
+            return result
+
+        multiplier = cb_status["multiplier"]
+        approved = proposed_allocation_pct * multiplier
+        approved = min(approved, self.max_rebalance_per_trade)
+
+        result["approved"] = True
+        result["approved_allocation_pct"] = approved
+        return result
+
+    def approve_sell(
+        self,
+        ticker: str,
+        daily_pnl_pct: float = 0.0,
+    ) -> dict:
+        """Gate a sell/reduce order through the circuit breaker only.
+
+        Sells reduce exposure, so correlation and per-trade caps don't apply.
+        Only block sells if the circuit breaker has triggered a full trading halt.
+        """
+        equity = self.portfolio_equity
+        cb_status = self.circuit_breaker.check(equity, daily_pnl_pct)
+        return {
+            "approved": not cb_status["trading_suspended"],
+            "ticker": ticker,
+            "rejection_reason": (
+                f"Trading suspended: {cb_status['action']}"
+                if cb_status["trading_suspended"] else ""
+            ),
+            "circuit_level": cb_status["level"],
+        }
 
     def update_equity(self, new_equity: float):
         """

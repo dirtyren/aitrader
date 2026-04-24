@@ -323,28 +323,11 @@ class OrderExecutor:
         current_equity: float,
         daily_pnl_pct: float = 0.0,
     ) -> list[dict]:
-        """
-        Rebalance portfolio to regime-adjusted target weights.
+        """Rebalance portfolio to regime-adjusted target weights.
 
-        Steps:
-        1. Compute regime_adjusted_targets from portfolio + signal_map
-        2. For each asset in portfolio.tickers:
-           a. target_dollar = target_weight * current_equity
-           b. current_dollar = current_positions.get(ticker, 0.0)
-           c. delta_dollar = target_dollar - current_dollar
-           d. If abs(delta_dollar) < 0.01 * current_equity: skip (below 1% threshold)
-           e. If delta_dollar > 0: BUY — call execute_signal with approved allocation
-           f. If delta_dollar < 0: SELL — call close_position or partial sell
-        3. Collect and return list of order result dicts (one per trade attempted)
-
-        For buys: convert delta_dollar to allocation_pct = delta_dollar / current_equity,
-        create a SignalData with that allocation_pct and pass to execute_signal.
-
-        For sells: use alpaca_client.submit_order(ticker, qty, "sell") directly
-        where qty = floor(abs(delta_dollar) / current_price).
-        Skip if qty == 0.
-
-        Log summary: "REBALANCE: {n_buys} buys, {n_sells} sells, {n_skipped} skipped"
+        Uses approve_rebalance for buys (larger per-trade cap than speculative
+        trades) and approve_sell for sells (circuit breaker only, no correlation
+        or per-trade cap since sells reduce exposure).
         """
         target_weights: dict[str, float] = portfolio.regime_adjusted_targets(signal_map)
         threshold = 0.01 * current_equity
@@ -365,39 +348,54 @@ class OrderExecutor:
                 continue
 
             if delta_dollar > 0:
-                # BUY: build a minimal SignalData carrying the required allocation
+                # BUY via rebalance-specific approval (larger cap)
                 allocation_pct = delta_dollar / current_equity
-                buy_signal = SignalData(
-                    regime=signal_map[ticker].regime if ticker in signal_map else "Unknown",
-                    confidence=signal_map[ticker].confidence if ticker in signal_map else 0.0,
-                    allocation_pct=allocation_pct,
-                    leverage=signal_map[ticker].leverage if ticker in signal_map else 1.0,
-                    stable=signal_map[ticker].stable if ticker in signal_map else False,
-                    high_uncertainty=signal_map[ticker].high_uncertainty if ticker in signal_map else True,
-                )
-                result = self.execute_signal(
-                    ticker, buy_signal, current_equity,
-                    daily_pnl_pct=daily_pnl_pct,
-                    current_positions=current_positions,
-                )
-                results.append(result)
-                n_buys += 1
-            else:
-                # SELL: check circuit breaker then submit partial sell
-                sell_approval = self.risk_manager.approve_trade(
+                approval = self.risk_manager.approve_rebalance(
                     ticker=ticker,
-                    proposed_allocation_pct=abs(delta_dollar) / current_equity,
-                    current_positions=current_positions,
-                    price_data={},
+                    proposed_allocation_pct=allocation_pct,
                     daily_pnl_pct=daily_pnl_pct,
                 )
-                if sell_approval.get("circuit_level", 0) >= 2 and sell_approval.get("approved", True) is False:
+                if not approval.get("approved", False):
                     self.logger.warning(
-                        "REBALANCE_SELL_BLOCKED: %s — circuit breaker level %d",
-                        ticker, sell_approval.get("circuit_level", 0),
+                        "REBALANCE_BUY_BLOCKED: %s — %s",
+                        ticker, approval.get("rejection_reason", "unknown"),
                     )
-                    results.append({"ticker": ticker, "approved": False,
-                                    "rejection_reason": "Circuit breaker blocked sell"})
+                    results.append(approval)
+                    n_skipped += 1
+                    continue
+
+                approved_pct = approval["approved_allocation_pct"]
+                try:
+                    price = self.client.get_quote(ticker)
+                    shares = math.floor(approved_pct * current_equity / price)
+                    if shares <= 0:
+                        n_skipped += 1
+                        continue
+                    order = self.client.submit_order(
+                        symbol=ticker, qty=shares, side="buy",
+                        order_type="market", time_in_force="day",
+                    )
+                    self.logger.info(
+                        "REBALANCE_BUY: %s qty=%d order_id=%s",
+                        ticker, shares, order.get("id", "unknown"),
+                    )
+                    results.append(order)
+                    n_buys += 1
+                except Exception as exc:
+                    self.logger.error("REBALANCE_BUY_FAILED: %s — %s", ticker, exc)
+                    results.append({"ticker": ticker, "error": str(exc)})
+            else:
+                # SELL: only gate through circuit breaker
+                sell_approval = self.risk_manager.approve_sell(
+                    ticker=ticker,
+                    daily_pnl_pct=daily_pnl_pct,
+                )
+                if not sell_approval.get("approved", False):
+                    self.logger.warning(
+                        "REBALANCE_SELL_BLOCKED: %s — %s",
+                        ticker, sell_approval.get("rejection_reason", "unknown"),
+                    )
+                    results.append(sell_approval)
                     n_skipped += 1
                     continue
 
@@ -408,26 +406,18 @@ class OrderExecutor:
                         n_skipped += 1
                         continue
                     order = self.client.submit_order(
-                        symbol=ticker,
-                        qty=qty,
-                        side="sell",
-                        order_type="market",
-                        time_in_force="day",
+                        symbol=ticker, qty=qty, side="sell",
+                        order_type="market", time_in_force="day",
                     )
                     self.logger.info(
                         "REBALANCE_SELL: %s qty=%d order_id=%s",
-                        ticker,
-                        qty,
-                        order.get("id", "unknown"),
+                        ticker, qty, order.get("id", "unknown"),
                     )
                     results.append(order)
                     n_sells += 1
                 except Exception as exc:
-                    self.logger.error(
-                        "REBALANCE_SELL_FAILED: %s — %s", ticker, exc
-                    )
+                    self.logger.error("REBALANCE_SELL_FAILED: %s — %s", ticker, exc)
                     results.append({"ticker": ticker, "error": str(exc)})
-                    n_sells += 1
 
         self.logger.info(
             "REBALANCE: %d buys, %d sells, %d skipped", n_buys, n_sells, n_skipped

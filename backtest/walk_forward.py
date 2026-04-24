@@ -8,27 +8,12 @@ import numpy as np
 import pandas as pd
 
 from backtest.performance import PerformanceEngine
+from core.feature_eng import build_features as _build_features_full
 from engine.regime_classifier import RegimeClassifier
 
 
-def _build_features(price_series: pd.Series) -> pd.DataFrame:
-    """Compute HMM input features from a price series.
-
-    Returns
-    -------
-    pd.DataFrame with columns: log_return, volatility, volume_change
-    """
-    log_return = np.log(price_series / price_series.shift(1))
-    volatility = log_return.rolling(window=20, min_periods=20).std()
-    volume_change = pd.Series(0.0, index=price_series.index)
-
-    return pd.DataFrame(
-        {
-            "log_return": log_return,
-            "volatility": volatility,
-            "volume_change": volume_change,
-        }
-    )
+def _build_features(price_series: pd.Series, volume_series: pd.Series = None) -> pd.DataFrame:
+    return _build_features_full(price_series, volume_series=volume_series, window=20)
 
 
 class WalkForwardBacktest:

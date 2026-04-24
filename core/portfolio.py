@@ -112,13 +112,37 @@ class Portfolio:
             else:
                 raw[asset.ticker] = asset.clamp(asset.target_weight * 0.5)
 
-        # Normalize to sum = 1.0
+        # Normalize to sum = 1.0, then enforce max_single_asset cap.
+        # Iteratively cap and redistribute excess to uncapped assets.
         total = sum(raw.values())
         if total <= 0:
-            # All signals flat — equal weight
             n = len(self.assets)
             return {a.ticker: 1.0 / n for a in self.assets}
-        return {ticker: w / total for ticker, w in raw.items()}
+
+        weights = {ticker: w / total for ticker, w in raw.items()}
+        for _ in range(10):
+            capped_tickers = set()
+            excess = 0.0
+            for ticker, w in weights.items():
+                if w > self.max_single_asset:
+                    excess += w - self.max_single_asset
+                    weights[ticker] = self.max_single_asset
+                    capped_tickers.add(ticker)
+            if excess == 0.0:
+                break
+            uncapped = [t for t in weights if t not in capped_tickers]
+            if not uncapped:
+                break
+            uncapped_total = sum(weights[t] for t in uncapped)
+            if uncapped_total > 0:
+                for t in uncapped:
+                    weights[t] += excess * (weights[t] / uncapped_total)
+            else:
+                per_asset = excess / len(uncapped)
+                for t in uncapped:
+                    weights[t] += per_asset
+
+        return weights
 
     def summary(self, positions: dict[str, float],
                 total_equity: float) -> pd.DataFrame:

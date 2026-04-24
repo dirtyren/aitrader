@@ -29,12 +29,11 @@ class VolatilityAllocationStrategy(BaseStrategy):
     """
 
     def __init__(self, allocation_map: Optional[dict[str, tuple[float, float]]] = None) -> None:
-        # Merge caller-supplied overrides on top of defaults
         self._allocation_map: dict[str, tuple[float, float]] = {
             **_DEFAULT_ALLOCATION_MAP,
             **(allocation_map or {}),
         }
-        self._last_stable_signal: Optional[SignalData] = None
+        self._last_stable_signals: dict[str, SignalData] = {}
 
     # ------------------------------------------------------------------
     # BaseStrategy interface
@@ -43,7 +42,7 @@ class VolatilityAllocationStrategy(BaseStrategy):
     def name(self) -> str:
         return "VolatilityAllocationStrategy"
 
-    def compute_signal(self, regime_result: dict) -> SignalData:
+    def compute_signal(self, regime_result: dict, ticker: str = "_default") -> SignalData:
         """Translate a regime classification dict into a SignalData.
 
         Parameters
@@ -52,19 +51,18 @@ class VolatilityAllocationStrategy(BaseStrategy):
             Dict produced by ``RegimeClassifier.update()``.  Expected keys:
             ``regime``, ``confidence``, ``stable``, ``high_uncertainty``,
             ``state``.
+        ticker:
+            Asset identifier for per-ticker signal caching.
         """
         regime: str = regime_result["regime"]
         confidence: float = float(regime_result["confidence"])
         stable: bool = bool(regime_result["stable"])
         high_uncertainty: bool = bool(regime_result["high_uncertainty"])
 
-        # --- Stability gate -------------------------------------------
-        # If the current bar is not stable, return the last stable signal.
-        # If no prior stable signal exists, return the safe default.
         if not stable:
-            if self._last_stable_signal is not None:
-                return self._last_stable_signal
-            # No prior stable signal — return safe default
+            cached = self._last_stable_signals.get(ticker)
+            if cached is not None:
+                return cached
             return SignalData(
                 regime=regime,
                 confidence=confidence,
@@ -75,27 +73,23 @@ class VolatilityAllocationStrategy(BaseStrategy):
                 notes="No stable signal yet; using safe default",
             )
 
-        # --- Regime lookup --------------------------------------------
         base_allocation, leverage = self._allocation_map.get(regime, _DEFAULT_FALLBACK)
         notes_parts: list[str] = []
 
         if regime not in self._allocation_map:
             notes_parts.append(f"Unrecognised regime '{regime}'; using safe default")
 
-        # --- Confidence dampening ------------------------------------
         damped_allocation = base_allocation * confidence
         notes_parts.append(
             f"base={base_allocation:.2f} * conf={confidence:.2f} -> damped={damped_allocation:.2f}"
         )
 
-        # --- Uncertainty override ------------------------------------
         if high_uncertainty and damped_allocation > _UNCERTAINTY_CAP:
             notes_parts.append(
                 f"high_uncertainty cap applied: {damped_allocation:.2f} -> {_UNCERTAINTY_CAP:.2f}"
             )
             damped_allocation = _UNCERTAINTY_CAP
 
-        # Ensure combined exposure never exceeds 100%
         if damped_allocation * leverage > 1.0:
             damped_allocation = 1.0 / leverage
 
@@ -109,6 +103,5 @@ class VolatilityAllocationStrategy(BaseStrategy):
             notes="; ".join(notes_parts),
         )
 
-        # Only cache the signal when stable=True (we are inside that branch)
-        self._last_stable_signal = signal
+        self._last_stable_signals[ticker] = signal
         return signal

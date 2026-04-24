@@ -10,10 +10,13 @@ tickers:
     - SPY
     - QQQ
     - IWM
-  watchlist:
-    - AAPL
+    - XLF
+    - GLD
     - NVDA
+    - AAPL
+    - TSLA
     - MSFT
+    - AMZN
 
 hmm:
   min_regimes: 3
@@ -25,6 +28,7 @@ hmm:
 
 strategy:
   max_risk_per_trade: 0.01
+  max_rebalance_per_trade: 0.25  # rebalance trades can move up to 25% equity
   leverage_bull: 1.25
   uncertainty_threshold: 4  # regime changes per 20 bars
 
@@ -49,29 +53,65 @@ logging:
 
 portfolio:
   rebalance_threshold: 0.05   # rebalance when any asset drifts >5% from target
-  max_single_asset: 0.40      # hard cap: no asset may exceed 40% of portfolio
+  max_single_asset: 0.20      # hard cap: no asset may exceed 20% of portfolio
   assets:
     - ticker: SPY
       name: "S&P 500 ETF"
       asset_class: equity
-      target_weight: 0.40
-      min_weight: 0.10
-      max_weight: 0.60
+      target_weight: 0.15
+      min_weight: 0.05
+      max_weight: 0.20
     - ticker: QQQ
       name: "Nasdaq 100 ETF"
       asset_class: equity
-      target_weight: 0.30
+      target_weight: 0.15
       min_weight: 0.05
-      max_weight: 0.50
+      max_weight: 0.20
     - ticker: IWM
       name: "Russell 2000 ETF"
       asset_class: equity
-      target_weight: 0.20
+      target_weight: 0.11
       min_weight: 0.00
-      max_weight: 0.40
+      max_weight: 0.15
+    - ticker: XLF
+      name: "Financial Select Sector SPDR"
+      asset_class: equity
+      target_weight: 0.07
+      min_weight: 0.00
+      max_weight: 0.10
     - ticker: GLD
       name: "Gold ETF"
       asset_class: commodity
-      target_weight: 0.10
+      target_weight: 0.07
       min_weight: 0.00
-      max_weight: 0.25
+      max_weight: 0.10
+    - ticker: NVDA
+      name: "NVIDIA"
+      asset_class: single_stock
+      target_weight: 0.07
+      min_weight: 0.00
+      max_weight: 0.10
+    - ticker: AAPL
+      name: "Apple"
+      asset_class: single_stock
+      target_weight: 0.11
+      min_weight: 0.00
+      max_weight: 0.15
+    - ticker: TSLA
+      name: "Tesla"
+      asset_class: single_stock
+      target_weight: 0.07
+      min_weight: 0.00
+      max_weight: 0.10
+    - ticker: MSFT
+      name: "Microsoft"
+      asset_class: single_stock
+      target_weight: 0.11
+      min_weight: 0.00
+      max_weight: 0.15
+    - ticker: AMZN
+      name: "Amazon"
+      asset_class: single_stock
+      target_weight: 0.09
+      min_weight: 0.00
+      max_weight: 0.10

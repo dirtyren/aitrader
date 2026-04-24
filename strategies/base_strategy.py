@@ -15,7 +15,7 @@ class SignalData:
 
 class BaseStrategy(ABC):
     @abstractmethod
-    def compute_signal(self, regime_result: dict) -> SignalData:
+    def compute_signal(self, regime_result: dict, ticker: str = "_default") -> SignalData:
         """Translate a regime classification dict to a SignalData."""
         ...
 
