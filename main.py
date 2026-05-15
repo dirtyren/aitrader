@@ -1,6 +1,15 @@
 """
-regime_trader — Autonomous Regime-Aware Trading System
+VWAP Wave Protocol — Autonomous Intraday Trading System
+
+NOTE: Mid-rewrite. This file is intentionally non-functional between
+Phase 0 and Phase 5; the bar-close scheduler in scheduler/loop.py
+becomes the new entry point. Run `pytest` for the current code.
 """
+import sys
+print("main.py is being rewritten as part of the VWAP Wave migration. "
+      "See docs/superpowers/plans/2026-05-14-vwap-wave-protocol.md "
+      "Phase 5 for the new entry point.", file=sys.stderr)
+sys.exit(2)
 import os
 import signal
 import sys
