@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+_DATA_BASE_URL = "https://data.alpaca.markets"
+
 # ---------------------------------------------------------------------------
 # Custom exceptions
 # ---------------------------------------------------------------------------
@@ -141,6 +143,33 @@ class AlpacaClient:
         # Should never be reached
         raise RateLimitError(f"Rate limit retry loop exhausted for {method} {path}")
 
+    def _data_request(self, method: str, path: str, **kwargs):
+        """Identical retry semantics to _request, but against the data host."""
+        url = f"{_DATA_BASE_URL}{path}"
+        for attempt in range(self._MAX_RETRIES + 1):
+            response = self._session.request(method, url, timeout=10, **kwargs)
+            if response.status_code == 429:
+                if attempt == self._MAX_RETRIES:
+                    raise RateLimitError(
+                        f"Rate limit exceeded after {self._MAX_RETRIES} retries on {method} {path}"
+                    )
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning("Data rate limited (attempt %d/%d). Waiting %.2fs.",
+                               attempt + 1, self._MAX_RETRIES, wait)
+                time.sleep(wait)
+                continue
+            if response.status_code == 401:
+                raise AuthenticationError("Invalid API credentials")
+            if response.status_code >= 400:
+                try:
+                    body = response.json()
+                    message = body.get("message", response.text)
+                except Exception:
+                    message = response.text
+                raise BrokerAPIError(response.status_code, message)
+            return response
+        raise RateLimitError(f"Rate limit retry loop exhausted for {method} {path}")
+
     # ------------------------------------------------------------------
     # Public API endpoints
     # ------------------------------------------------------------------
@@ -221,3 +250,29 @@ class AlpacaClient:
         if trade_price > 0:
             return trade_price
         raise BrokerAPIError(200, f"Could not determine a valid price for {symbol}")
+
+    def get_stock_bars(self, symbol: str, timeframe: str, start, end, limit: int = 10000) -> list[dict]:
+        """GET /v2/stocks/{symbol}/bars — returns list of bar dicts (Alpaca raw shape)."""
+        params = {
+            "timeframe": timeframe,
+            "start": start.isoformat().replace("+00:00", "Z"),
+            "end": end.isoformat().replace("+00:00", "Z"),
+            "limit": limit,
+            "adjustment": "raw",
+            "feed": "iex",
+        }
+        response = self._data_request("GET", f"/v2/stocks/{symbol}/bars", params=params)
+        return response.json().get("bars", []) or []
+
+    def get_crypto_bars(self, symbol: str, timeframe: str, start, end, limit: int = 10000) -> list[dict]:
+        """GET /v1beta3/crypto/us/bars — returns list of bar dicts for one symbol."""
+        params = {
+            "symbols": symbol,
+            "timeframe": timeframe,
+            "start": start.isoformat().replace("+00:00", "Z"),
+            "end": end.isoformat().replace("+00:00", "Z"),
+            "limit": limit,
+        }
+        response = self._data_request("GET", "/v1beta3/crypto/us/bars", params=params)
+        body = response.json().get("bars", {}) or {}
+        return body.get(symbol, []) or []
