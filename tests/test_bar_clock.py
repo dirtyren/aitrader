@@ -23,3 +23,21 @@ def test_next_boundary_exactly_on_boundary_advances():
 def test_next_boundary_15min():
     now = datetime(2026, 5, 14, 13, 22, tzinfo=timezone.utc)
     assert next_boundary(now, "15Min", grace_seconds=0) == datetime(2026, 5, 14, 13, 30, 0, tzinfo=timezone.utc)
+
+
+def test_sleep_until_calls_sleeper_with_positive_delta():
+    fake_now = datetime(2026, 5, 14, 13, 30, 0, tzinfo=timezone.utc)
+    target = datetime(2026, 5, 14, 13, 30, 5, tzinfo=timezone.utc)
+    slept = []
+    from scheduler.bar_clock import sleep_until
+    sleep_until(target, sleeper=slept.append, now_fn=lambda: fake_now)
+    assert slept == [5.0]
+
+
+def test_sleep_until_skips_when_target_in_past():
+    fake_now = datetime(2026, 5, 14, 13, 30, 5, tzinfo=timezone.utc)
+    target = datetime(2026, 5, 14, 13, 30, 0, tzinfo=timezone.utc)
+    slept = []
+    from scheduler.bar_clock import sleep_until
+    sleep_until(target, sleeper=slept.append, now_fn=lambda: fake_now)
+    assert slept == []
