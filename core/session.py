@@ -25,6 +25,7 @@ class SessionContext:
     avg_range_20d: float = 0.0          # populated externally; default 0 = unknown
     regime: str = "Undefined"
     touch_counts: dict[float, int] = field(default_factory=dict)
+    _inside_count: int = 0
 
     def __post_init__(self):
         self.vwap_bands = VWAPBands(sigma=self.sigma)
@@ -53,6 +54,7 @@ class SessionContext:
         self.day_low = float("inf")
         self.regime = "Undefined"
         self.touch_counts = {}
+        self._inside_count = 0
 
     def ingest(self, bar: Bar) -> None:
         boundary = session_start_for(bar.ts, self.asset_class)
@@ -64,6 +66,10 @@ class SessionContext:
         self.day_high = max(self.day_high, bar.high)
         self.day_low = min(self.day_low, bar.low)
 
+        # Track historical acceptance against the live (running) bands at this moment.
+        if self.lower_band <= bar.close <= self.upper_band:
+            self._inside_count += 1
+
     def atr(self, window: int = 14) -> float:
         return compute_atr(self.bars, window)
 
@@ -71,15 +77,14 @@ class SessionContext:
         return self.lower_band <= price <= self.upper_band
 
     def in_value_area_fraction(self) -> float:
-        """Fraction of bars whose CLOSE was inside the live value area at insertion time.
+        """Fraction of bars whose close was inside the live value area at insertion time.
 
-        Cheap approximation: uses current bands (not historical band evolution).
-        Sufficient for regime classification.
+        Tracked incrementally via _inside_count — historically accurate, matches
+        Auction Market Theory definition of "time spent in value".
         """
-        if not self.bars:
+        if self.bar_count == 0:
             return 0.0
-        inside = sum(1 for b in self.bars if self.lower_band <= b.close <= self.upper_band)
-        return inside / len(self.bars)
+        return self._inside_count / self.bar_count
 
     def fraction_above_vwap(self) -> float:
         if not self.bars:

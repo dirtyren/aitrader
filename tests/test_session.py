@@ -47,3 +47,34 @@ def test_session_in_value_area():
         ctx.ingest(_b(base + timedelta(minutes=5*i), p))
     # zero variance → bands collapse to vwap → "in value" tolerance check
     assert ctx.in_value_area(100.0)
+
+
+def test_session_in_value_fraction_running_bands():
+    """Verifies in_value_area_fraction uses LIVE bands (incremental), not final/static.
+
+    Trending bars: 20 bars marching up. Under running bands, only the first
+    couple of bars are 'inside' (because the bands tighten around the early
+    cluster). After several bars trend keeps closes outside the running ±1σ.
+    Fraction should be small (well below 0.5).
+    """
+    ctx = SessionContext(symbol="BTC/USD", asset_class=CRYPTO)
+    base = datetime(2026, 5, 14, 0, 5, tzinfo=timezone.utc)
+    for i in range(20):
+        c = 100 + i * 1.0
+        bar = Bar(symbol="BTC/USD", ts=base + timedelta(minutes=5*i),
+                  open=c - 0.5, high=c + 0.5, low=c - 0.5, close=c, volume=10)
+        ctx.ingest(bar)
+    fraction = ctx.in_value_area_fraction()
+    assert fraction < 0.30, f"trending fraction was {fraction}, expected <0.30"
+
+
+def test_session_in_value_fraction_balanced():
+    """Verifies the balanced case: bars hugging the mean stay 'inside' running bands."""
+    ctx = SessionContext(symbol="BTC/USD", asset_class=CRYPTO)
+    base = datetime(2026, 5, 14, 0, 5, tzinfo=timezone.utc)
+    for i in range(20):
+        # All bars at price 100 — zero variance → bands collapse to 100 → close=100 always inside
+        bar = Bar(symbol="BTC/USD", ts=base + timedelta(minutes=5*i),
+                  open=100, high=100.5, low=99.5, close=100, volume=10)
+        ctx.ingest(bar)
+    assert ctx.in_value_area_fraction() == 1.0
