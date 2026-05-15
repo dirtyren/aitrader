@@ -47,3 +47,19 @@ def test_get_crypto_bars():
         assert len(bars) == 1
         url = req.call_args[0][1]
         assert "v1beta3/crypto" in url
+
+
+def test_get_stock_bars_rejects_naive_datetime():
+    client = AlpacaClient()
+    with pytest.raises(ValueError, match="timezone-aware"):
+        client.get_stock_bars("AAPL", "5Min",
+                               start=datetime(2026, 5, 14, 13, 30),
+                               end=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc))
+
+
+def test_get_crypto_bars_rejects_naive_datetime():
+    client = AlpacaClient()
+    with pytest.raises(ValueError, match="timezone-aware"):
+        client.get_crypto_bars("BTC/USD", "5Min",
+                                 start=datetime(2026, 5, 14, 0, 0, tzinfo=timezone.utc),
+                                 end=datetime(2026, 5, 14, 0, 30))

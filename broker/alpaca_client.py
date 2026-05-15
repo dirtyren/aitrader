@@ -9,6 +9,7 @@ import os
 import random
 import time
 import logging
+from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
@@ -251,8 +252,12 @@ class AlpacaClient:
             return trade_price
         raise BrokerAPIError(200, f"Could not determine a valid price for {symbol}")
 
-    def get_stock_bars(self, symbol: str, timeframe: str, start, end, limit: int = 10000) -> list[dict]:
+    def get_stock_bars(self, symbol: str, timeframe: str,
+                       start: datetime, end: datetime,
+                       limit: int = 10000) -> list[dict]:
         """GET /v2/stocks/{symbol}/bars — returns list of bar dicts (Alpaca raw shape)."""
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("start and end must be timezone-aware")
         params = {
             "timeframe": timeframe,
             "start": start.isoformat().replace("+00:00", "Z"),
@@ -264,8 +269,12 @@ class AlpacaClient:
         response = self._data_request("GET", f"/v2/stocks/{symbol}/bars", params=params)
         return response.json().get("bars", []) or []
 
-    def get_crypto_bars(self, symbol: str, timeframe: str, start, end, limit: int = 10000) -> list[dict]:
+    def get_crypto_bars(self, symbol: str, timeframe: str,
+                        start: datetime, end: datetime,
+                        limit: int = 10000) -> list[dict]:
         """GET /v1beta3/crypto/us/bars — returns list of bar dicts for one symbol."""
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("start and end must be timezone-aware")
         params = {
             "symbols": symbol,
             "timeframe": timeframe,
