@@ -3,5 +3,8 @@
 logs/
 runtime/*
 !runtime/.gitkeep
+!runtime/bars_cache/
+runtime/bars_cache/*
+!runtime/bars_cache/.gitkeep
 __pycache__/
 *.pyc
