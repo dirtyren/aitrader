@@ -26,6 +26,7 @@ class SessionContext:
     regime: str = "Undefined"
     touch_counts: dict[float, int] = field(default_factory=dict)
     _inside_count: int = 0
+    _above_count: int = 0
 
     def __post_init__(self):
         self.vwap_bands = VWAPBands(sigma=self.sigma)
@@ -55,6 +56,7 @@ class SessionContext:
         self.regime = "Undefined"
         self.touch_counts = {}
         self._inside_count = 0
+        self._above_count = 0
 
     def ingest(self, bar: Bar) -> None:
         boundary = session_start_for(bar.ts, self.asset_class)
@@ -69,6 +71,8 @@ class SessionContext:
         # Track historical acceptance against the live (running) bands at this moment.
         if self.lower_band <= bar.close <= self.upper_band:
             self._inside_count += 1
+        if bar.close > self.vwap:
+            self._above_count += 1
 
     def atr(self, window: int = 14) -> float:
         return compute_atr(self.bars, window)
@@ -87,7 +91,11 @@ class SessionContext:
         return self._inside_count / self.bar_count
 
     def fraction_above_vwap(self) -> float:
-        if not self.bars:
+        """Fraction of bars whose close was above the live VWAP at insertion time.
+
+        Tracked incrementally via _above_count — historically accurate, matches
+        Auction Market Theory definition of "trend bias".
+        """
+        if self.bar_count == 0:
             return 0.0
-        above = sum(1 for b in self.bars if b.close > self.vwap)
-        return above / len(self.bars)
+        return self._above_count / self.bar_count
