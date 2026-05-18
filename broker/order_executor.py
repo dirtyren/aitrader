@@ -1,425 +1,84 @@
-"""
-order_executor.py — High-level order execution layer for the regime_trader system.
-
-Wraps AlpacaClient with risk management checks and provides a clean interface
-for the trading engine to interact with the broker.
-"""
-
 from __future__ import annotations
-
 import logging
-import math
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-from broker.alpaca_client import AlpacaClient, BrokerAPIError, OrderRejectedError, AuthenticationError, RateLimitError
-from strategies.base_strategy import SignalData
+from state.position_book import OpenPosition, PositionBook
+from strategies.base_setup import SetupSignal
+from risk.manager import RiskDecision
 
-if TYPE_CHECKING:
-    from core.portfolio import Portfolio
+logger = logging.getLogger(__name__)
 
 
 class OrderExecutor:
-    """
-    Translates trading signals into real broker orders.
+    """Translates an approved SetupSignal+RiskDecision into broker orders."""
 
-    Applies risk manager approval before every order and exposes helpers for
-    connectivity verification, position closure, and circuit-breaker-triggered
-    emergency unwinds.
-
-    Parameters
-    ----------
-    alpaca_client : AlpacaClient
-        Authenticated Alpaca HTTP client.
-    risk_manager :
-        A RiskManager instance — must expose ``approve_trade(**kwargs) -> dict``.
-    logger : logging.Logger, optional
-        If omitted a module-level logger is used (``regime_trader.order_executor``).
-    """
-
-    def __init__(
-        self,
-        alpaca_client: AlpacaClient,
-        risk_manager,
-        logger: Optional[logging.Logger] = None,
-    ):
+    def __init__(self, alpaca_client, book: PositionBook,
+                 logger: logging.Logger | None = None):
         self.client = alpaca_client
-        self.risk_manager = risk_manager
-        self.logger = logger or logging.getLogger("regime_trader.order_executor")
+        self.book = book
+        self.logger = logger or logging.getLogger("vwap_wave.executor")
 
-    # ------------------------------------------------------------------
-    # Connectivity
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _alpaca_side(side: str) -> str:
+        return "buy" if side == "long" else "sell"
 
-    def connectivity_handshake(self, symbol: str = "NVDA") -> bool:
-        """
-        Verify two-way communication with the broker by querying the account
-        endpoint and fetching a quote.
+    def submit(self, signal: SetupSignal, decision: RiskDecision,
+               asset_class: str) -> Optional[OpenPosition]:
+        if not decision.approved:
+            self.logger.info("ORDER_REJECTED symbol=%s reason=%s",
+                             signal.symbol, decision.reason)
+            return None
 
-        Steps
-        -----
-        1. Call ``get_account()`` to verify authentication and connectivity.
-        2. Call ``get_quote(symbol)`` to verify market data access.
-        3. Log: "HANDSHAKE_OK: account verified, quote fetched for {symbol}"
+        alp_side = self._alpaca_side(signal.side)
 
-        Returns
-        -------
-        bool
-            True on success, False on any failure.
-        """
         try:
-            account = self.client.get_account()
-            if not account.get("id"):
-                self.logger.error("HANDSHAKE_FAILED: account response missing id")
-                return False
-
-            price = self.client.get_quote(symbol)
-            if price <= 0:
-                self.logger.error(
-                    "HANDSHAKE_FAILED: invalid quote price %.4f for %s", price, symbol
+            if asset_class == "equity":
+                order = self.client.submit_bracket_order(
+                    symbol=signal.symbol,
+                    qty=decision.qty,
+                    side=alp_side,
+                    limit_price=signal.entry,
+                    stop_loss=signal.stop,
+                    take_profit=signal.target,
+                    time_in_force="day",
                 )
-                return False
-
-            self.logger.info(
-                "HANDSHAKE_OK: account verified, quote fetched for %s (price=%.2f)",
-                symbol, price,
-            )
-            return True
-
-        except Exception as exc:
-            self.logger.error(
-                "HANDSHAKE_FAILED: unexpected error for %s: %s", symbol, exc
-            )
-            return False
-
-    # ------------------------------------------------------------------
-    # Signal execution
-    # ------------------------------------------------------------------
-
-    def execute_signal(
-        self,
-        ticker: str,
-        signal: SignalData,
-        current_equity: float,
-        daily_pnl_pct: float = 0.0,
-        current_positions: dict | None = None,
-        price_data: dict | None = None,
-    ) -> dict:
-        """
-        Convert a SignalData allocation into a real broker order.
-
-        Steps
-        -----
-        1. Call ``risk_manager.approve_trade()`` — return rejection dict if not approved.
-        2. Fetch current price via ``alpaca_client.get_quote(ticker)``.
-        3. Compute shares: ``floor(approved_allocation_pct * current_equity / current_price)``.
-        4. If shares > 0: submit a market buy order.
-        5. Return the order result dict or a rejection dict.
-
-        Parameters
-        ----------
-        ticker         : str        — instrument symbol.
-        signal         : SignalData — output from the strategy orchestrator.
-        current_equity : float      — current portfolio equity in dollars.
-
-        Returns
-        -------
-        dict
-            Order result from the broker, or a rejection dict with key
-            ``"approved": False`` and ``"rejection_reason"`` explaining why.
-        """
-        # Gate 1: Risk manager approval
-        approval = self.risk_manager.approve_trade(
-            ticker=ticker,
-            proposed_allocation_pct=signal.allocation_pct,
-            current_positions=current_positions or {},
-            price_data=price_data or {},
-            daily_pnl_pct=daily_pnl_pct,
-        )
-
-        if not approval.get("approved", False):
-            reason = approval.get("rejection_reason", "Unknown rejection reason")
-            self.logger.warning(
-                "TRADE_REJECTED: %s — %s", ticker, reason
-            )
-            return {
-                "approved": False,
-                "ticker": ticker,
-                "rejection_reason": reason,
-                "circuit_level": approval.get("circuit_level", 0),
-            }
-
-        approved_allocation_pct = approval["approved_allocation_pct"]
-
-        # Gate 2: Fetch current price
-        try:
-            current_price = self.client.get_quote(ticker)
-        except Exception as exc:
-            self.logger.error(
-                "EXECUTE_SIGNAL_FAILED: could not get quote for %s: %s", ticker, exc
-            )
-            return {
-                "approved": False,
-                "ticker": ticker,
-                "rejection_reason": f"Failed to fetch quote: {exc}",
-                "circuit_level": approval.get("circuit_level", 0),
-            }
-
-        # Gate 3: Compute share quantity
-        shares = math.floor(approved_allocation_pct * current_equity / current_price)
-
-        if shares <= 0:
-            self.logger.info(
-                "EXECUTE_SIGNAL_SKIP: %s — computed 0 shares "
-                "(allocation_pct=%.4f, equity=%.2f, price=%.2f)",
-                ticker,
-                approved_allocation_pct,
-                current_equity,
-                current_price,
-            )
-            return {
-                "approved": True,
-                "ticker": ticker,
-                "shares": 0,
-                "rejection_reason": "Computed share quantity is 0",
-                "circuit_level": approval.get("circuit_level", 0),
-            }
-
-        # Submit order
-        try:
-            order = self.client.submit_order(
-                symbol=ticker,
-                qty=shares,
-                side="buy",
-                order_type="market",
-                time_in_force="day",
-            )
-            self.logger.info(
-                "ORDER_SUBMITTED: %s qty=%d order_id=%s",
-                ticker,
-                shares,
-                order.get("id", "unknown"),
-            )
-            return order
-        except OrderRejectedError as exc:
-            self.logger.warning("ORDER_REJECTED_BY_BROKER: %s — %s", ticker, exc)
-            result = {
-                "approved": True,
-                "ticker": ticker,
-                "shares": shares,
-                "circuit_level": approval.get("circuit_level", 0),
-            }
-            return {**result, "rejection_reason": str(exc)}
-        except (AuthenticationError, RateLimitError) as exc:
-            self.logger.critical("BROKER_CRITICAL_ERROR: %s — %s", ticker, exc)
-            result = {
-                "approved": True,
-                "ticker": ticker,
-                "shares": shares,
-                "circuit_level": approval.get("circuit_level", 0),
-            }
-            return {**result, "rejection_reason": f"CRITICAL: {exc}"}
-        except Exception as exc:
-            self.logger.error("ORDER_FAILED: %s — %s", ticker, exc)
-            result = {
-                "approved": True,
-                "ticker": ticker,
-                "shares": shares,
-                "circuit_level": approval.get("circuit_level", 0),
-            }
-            return {**result, "rejection_reason": str(exc)}
-
-    # ------------------------------------------------------------------
-    # Position closure
-    # ------------------------------------------------------------------
-
-    def close_position(self, ticker: str) -> dict:
-        """
-        Market sell all shares of *ticker*.
-
-        Fetches the current held quantity from open positions and submits a
-        market sell order for the full size.
-
-        Returns
-        -------
-        dict
-            Order result from the broker, or an error dict.
-        """
-        try:
-            positions = self.client.get_positions()
-            qty = 0
-            for pos in positions:
-                if pos.get("symbol", "").upper() == ticker.upper():
-                    qty = int(float(pos.get("qty", 0)))
-                    break
-
-            if qty <= 0:
-                self.logger.info(
-                    "CLOSE_POSITION_SKIP: no open position for %s", ticker
+            elif asset_class == "crypto":
+                # Crypto: market entry + engine-managed virtual stop/target
+                order = self.client.submit_order(
+                    symbol=signal.symbol,
+                    qty=decision.qty,
+                    side=alp_side,
+                    order_type="market",
+                    time_in_force="gtc",
                 )
-                return {"ticker": ticker, "shares": 0, "message": "No open position"}
-
-            order = self.client.submit_order(
-                symbol=ticker,
-                qty=qty,
-                side="sell",
-                order_type="market",
-                time_in_force="day",
-            )
-            self.logger.info(
-                "CLOSE_POSITION: %s qty=%d order_id=%s",
-                ticker,
-                qty,
-                order.get("id", "unknown"),
-            )
-            return order
-
-        except Exception as exc:
-            self.logger.error(
-                "CLOSE_POSITION_FAILED: %s — %s", ticker, exc
-            )
-            return {"ticker": ticker, "error": str(exc)}
-
-    def close_all_positions(self) -> list:
-        """
-        Close all open positions.
-
-        Called by the circuit breaker at Level 2+ (emergency unwind).
-
-        Returns
-        -------
-        list[dict]
-            List of order result dicts (one per closed position).
-        """
-        results = []
-        try:
-            positions = self.client.get_positions()
-        except Exception as exc:
-            self.logger.error(
-                "CLOSE_ALL_POSITIONS_FAILED: could not fetch positions — %s", exc
-            )
-            return [{"error": str(exc)}]
-
-        for pos in positions:
-            ticker = pos.get("symbol", "")
-            if not ticker:
-                continue
-            result = self.close_position(ticker)
-            results.append(result)
-
-        self.logger.info(
-            "CLOSE_ALL_POSITIONS: closed %d position(s)", len(results)
-        )
-        return results
-
-    # ------------------------------------------------------------------
-    # Portfolio rebalancing
-    # ------------------------------------------------------------------
-
-    def rebalance_portfolio(
-        self,
-        portfolio: "Portfolio",
-        current_positions: dict[str, float],
-        signal_map: dict[str, "SignalData"],
-        current_equity: float,
-        daily_pnl_pct: float = 0.0,
-    ) -> list[dict]:
-        """Rebalance portfolio to regime-adjusted target weights.
-
-        Uses approve_rebalance for buys (larger per-trade cap than speculative
-        trades) and approve_sell for sells (circuit breaker only, no correlation
-        or per-trade cap since sells reduce exposure).
-        """
-        target_weights: dict[str, float] = portfolio.regime_adjusted_targets(signal_map)
-        threshold = 0.01 * current_equity
-
-        results: list[dict] = []
-        n_buys = 0
-        n_sells = 0
-        n_skipped = 0
-
-        for ticker in portfolio.tickers:
-            target_weight = target_weights.get(ticker, 0.0)
-            target_dollar = target_weight * current_equity
-            current_dollar = current_positions.get(ticker, 0.0)
-            delta_dollar = target_dollar - current_dollar
-
-            if abs(delta_dollar) < threshold:
-                n_skipped += 1
-                continue
-
-            if delta_dollar > 0:
-                # BUY via rebalance-specific approval (larger cap)
-                allocation_pct = delta_dollar / current_equity
-                approval = self.risk_manager.approve_rebalance(
-                    ticker=ticker,
-                    proposed_allocation_pct=allocation_pct,
-                    daily_pnl_pct=daily_pnl_pct,
-                )
-                if not approval.get("approved", False):
-                    self.logger.warning(
-                        "REBALANCE_BUY_BLOCKED: %s — %s",
-                        ticker, approval.get("rejection_reason", "unknown"),
-                    )
-                    results.append(approval)
-                    n_skipped += 1
-                    continue
-
-                approved_pct = approval["approved_allocation_pct"]
-                try:
-                    price = self.client.get_quote(ticker)
-                    shares = math.floor(approved_pct * current_equity / price)
-                    if shares <= 0:
-                        n_skipped += 1
-                        continue
-                    order = self.client.submit_order(
-                        symbol=ticker, qty=shares, side="buy",
-                        order_type="market", time_in_force="day",
-                    )
-                    self.logger.info(
-                        "REBALANCE_BUY: %s qty=%d order_id=%s",
-                        ticker, shares, order.get("id", "unknown"),
-                    )
-                    results.append(order)
-                    n_buys += 1
-                except Exception as exc:
-                    self.logger.error("REBALANCE_BUY_FAILED: %s — %s", ticker, exc)
-                    results.append({"ticker": ticker, "error": str(exc)})
             else:
-                # SELL: only gate through circuit breaker
-                sell_approval = self.risk_manager.approve_sell(
-                    ticker=ticker,
-                    daily_pnl_pct=daily_pnl_pct,
-                )
-                if not sell_approval.get("approved", False):
-                    self.logger.warning(
-                        "REBALANCE_SELL_BLOCKED: %s — %s",
-                        ticker, sell_approval.get("rejection_reason", "unknown"),
-                    )
-                    results.append(sell_approval)
-                    n_skipped += 1
-                    continue
+                raise ValueError(f"Unknown asset_class: {asset_class}")
+        except Exception as exc:
+            self.logger.error("ORDER_SUBMIT_FAILED symbol=%s error=%s",
+                              signal.symbol, exc, exc_info=True)
+            return None
 
-                try:
-                    current_price = self.client.get_quote(ticker)
-                    qty = math.floor(abs(delta_dollar) / current_price)
-                    if qty == 0:
-                        n_skipped += 1
-                        continue
-                    order = self.client.submit_order(
-                        symbol=ticker, qty=qty, side="sell",
-                        order_type="market", time_in_force="day",
-                    )
-                    self.logger.info(
-                        "REBALANCE_SELL: %s qty=%d order_id=%s",
-                        ticker, qty, order.get("id", "unknown"),
-                    )
-                    results.append(order)
-                    n_sells += 1
-                except Exception as exc:
-                    self.logger.error("REBALANCE_SELL_FAILED: %s — %s", ticker, exc)
-                    results.append({"ticker": ticker, "error": str(exc)})
-
-        self.logger.info(
-            "REBALANCE: %d buys, %d sells, %d skipped", n_buys, n_sells, n_skipped
+        pos = OpenPosition(
+            symbol=signal.symbol, setup=signal.setup, side=signal.side,
+            qty=decision.qty, entry_px=signal.entry, stop_px=signal.stop,
+            target_px=signal.target, opened_at=signal.ts,
+            order_id=order.get("id", ""),
         )
-        return results
+        self.book.add(pos)
+        self.logger.info("ORDER_SUBMITTED setup=%s symbol=%s side=%s qty=%s "
+                         "entry=%.4f stop=%.4f target=%.4f order_id=%s",
+                         signal.setup, signal.symbol, signal.side, decision.qty,
+                         signal.entry, signal.stop, signal.target, order.get("id"))
+        return pos
+
+    def close_position(self, symbol: str, side: str, qty: float) -> dict | None:
+        """Submit a market close order. Used for virtual stops / time stops."""
+        try:
+            return self.client.submit_order(
+                symbol=symbol, qty=qty,
+                side="sell" if side == "long" else "buy",
+                order_type="market", time_in_force="gtc",
+            )
+        except Exception as exc:
+            self.logger.error("CLOSE_FAILED symbol=%s error=%s", symbol, exc, exc_info=True)
+            return None
