@@ -1,146 +1,56 @@
-"""Tests for risk.manager.RiskManager."""
-
 import os
-import pytest
-import pandas as pd
-
-os.environ.setdefault("TRADING_ENV", "test")
-
-from risk.circuit_breakers import CircuitBreaker
+from datetime import datetime, timezone
 from risk.manager import RiskManager
+from risk.filters import (
+    FilterPipeline, SystemHaltedFilter, ConcurrentPositionFilter,
+    ConsecutiveLossFilter,
+)
+from risk.sizing import SizingConfig
+from risk.circuit_breakers import CircuitBreaker
+from state.daily_ledger import DailyLedger
+from state.position_book import PositionBook
+from strategies.base_setup import SetupSignal
 
 
-def _make_rm(equity=100_000.0, max_risk=0.01, max_rebalance=0.25):
-    cb = CircuitBreaker(
-        peak_equity=equity,
-        daily_loss_limit_1=0.02,
-        daily_loss_limit_2=0.03,
-        drawdown_limit=0.10,
-    )
-    return RiskManager(
-        portfolio_equity=equity,
-        circuit_breaker=cb,
-        max_risk_per_trade=max_risk,
-        max_rebalance_per_trade=max_rebalance,
-    )
+def _signal():
+    return SetupSignal(setup="x", symbol="AAPL", side="long",
+                       entry=100, stop=99, target=102, atr=1.0,
+                       level=100, ts=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc))
 
 
-class TestApproveTrade:
-    def test_basic_approval(self):
-        rm = _make_rm()
-        result = rm.approve_trade(
-            ticker="SPY",
-            proposed_allocation_pct=0.005,
-            current_positions={},
-            price_data={},
-        )
-        assert result["approved"]
-        assert result["approved_allocation_pct"] <= 0.01
-
-    def test_capped_to_max_risk(self):
-        rm = _make_rm()
-        result = rm.approve_trade(
-            ticker="SPY",
-            proposed_allocation_pct=0.10,
-            current_positions={},
-            price_data={},
-        )
-        assert result["approved"]
-        assert result["approved_allocation_pct"] <= rm.max_risk_per_trade
-
-    def test_rejected_by_circuit_breaker(self):
-        rm = _make_rm()
-        result = rm.approve_trade(
-            ticker="SPY",
-            proposed_allocation_pct=0.005,
-            current_positions={},
-            price_data={},
-            daily_pnl_pct=-0.035,
-        )
-        assert not result["approved"]
-        assert result["circuit_level"] == 2
-
-    def test_high_correlation_rejection(self):
-        rm = _make_rm()
-        prices_spy = pd.Series([100 + i * 0.5 for i in range(50)])
-        prices_qqq = pd.Series([200 + i * 0.5 for i in range(50)])
-        result = rm.approve_trade(
-            ticker="QQQ",
-            proposed_allocation_pct=0.005,
-            current_positions={"SPY": 0.3},
-            price_data={"SPY": prices_spy, "QQQ": prices_qqq},
-        )
-        assert result["correlation_warning"]
-
-    def test_circuit_level1_halves_allocation(self):
-        rm = _make_rm()
-        result = rm.approve_trade(
-            ticker="SPY",
-            proposed_allocation_pct=0.008,
-            current_positions={},
-            price_data={},
-            daily_pnl_pct=-0.02,
-        )
-        assert result["approved"]
-        assert result["approved_allocation_pct"] <= 0.004 + 1e-9
+def _build_rm(ledger, book, lock_path="/nonexistent"):
+    cb = CircuitBreaker(peak_equity=100000, daily_loss_limit_1=0.015,
+                        daily_loss_limit_2=0.025, drawdown_limit=0.05)
+    pipeline = FilterPipeline([
+        SystemHaltedFilter(circuit_breaker=cb, lock_file_path=lock_path),
+        ConcurrentPositionFilter(max_concurrent=4),
+        ConsecutiveLossFilter(limit=2, scope="per_symbol"),
+    ])
+    # Notional cap raised to 0.60 so the risk-per-trade limit binds (matches test_sizing fix).
+    sizing = SizingConfig(max_risk_per_trade=0.005, max_notional_per_trade_pct=0.60)
+    return RiskManager(circuit_breaker=cb, pipeline=pipeline, sizing_equity=sizing,
+                       sizing_crypto=sizing, ledger=ledger, book=book)
 
 
-class TestApproveRebalance:
-    def test_allows_larger_allocation(self):
-        rm = _make_rm()
-        result = rm.approve_rebalance(
-            ticker="SPY",
-            proposed_allocation_pct=0.20,
-        )
-        assert result["approved"]
-        assert result["approved_allocation_pct"] == pytest.approx(0.20)
-
-    def test_capped_at_max_rebalance(self):
-        rm = _make_rm(max_rebalance=0.25)
-        result = rm.approve_rebalance(
-            ticker="SPY",
-            proposed_allocation_pct=0.40,
-        )
-        assert result["approved"]
-        assert result["approved_allocation_pct"] == pytest.approx(0.25)
-
-    def test_rejected_by_circuit_breaker_halt(self):
-        rm = _make_rm()
-        result = rm.approve_rebalance(
-            ticker="SPY",
-            proposed_allocation_pct=0.10,
-            daily_pnl_pct=-0.035,
-        )
-        assert not result["approved"]
+def test_evaluate_passes_then_sizes():
+    ledger = DailyLedger(initial_equity=100000)
+    book = PositionBook()
+    rm = _build_rm(ledger, book)
+    decision = rm.evaluate(_signal(), ctx=None, asset_class="equity")
+    assert decision.approved
+    assert decision.qty == 500
+    assert decision.notional == 500 * 100
 
 
-class TestApproveSell:
-    def test_sell_approved_normally(self):
-        rm = _make_rm()
-        result = rm.approve_sell(ticker="SPY")
-        assert result["approved"]
-
-    def test_sell_blocked_on_halt(self):
-        rm = _make_rm()
-        result = rm.approve_sell(ticker="SPY", daily_pnl_pct=-0.035)
-        assert not result["approved"]
-
-    def test_sell_approved_at_level1(self):
-        rm = _make_rm()
-        result = rm.approve_sell(ticker="SPY", daily_pnl_pct=-0.02)
-        assert result["approved"]
-
-
-class TestUpdateEquity:
-    def test_updates_both(self):
-        rm = _make_rm(equity=100_000.0)
-        rm.update_equity(120_000.0)
-        assert rm.portfolio_equity == 120_000.0
-        assert rm.circuit_breaker.peak_equity == 120_000.0
-
-    def test_peak_not_lowered(self):
-        rm = _make_rm(equity=100_000.0)
-        rm.update_equity(120_000.0)
-        rm.update_equity(110_000.0)
-        assert rm.circuit_breaker.peak_equity == 120_000.0
-        assert rm.portfolio_equity == 110_000.0
+def test_evaluate_rejected_by_concurrent():
+    from state.position_book import OpenPosition
+    ledger = DailyLedger(initial_equity=100000)
+    book = PositionBook()
+    for s in ("MSFT", "NVDA", "TSLA", "GOOGL"):
+        book.add(OpenPosition(symbol=s, setup="x", side="long", qty=1,
+                              entry_px=1, stop_px=0.5, target_px=2,
+                              opened_at=datetime.now(timezone.utc), order_id="x"))
+    rm = _build_rm(ledger, book)
+    decision = rm.evaluate(_signal(), ctx=None, asset_class="equity")
+    assert not decision.approved
+    assert "concurrent" in decision.reason.lower()
