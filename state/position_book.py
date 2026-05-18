@@ -16,6 +16,13 @@ class OpenPosition:
     order_id: str
     breakeven_moved: bool = False
     bars_held: int = 0
+    stop_order_id: str | None = None    # bracket stop-leg id (equity); None for crypto / virtual
+    initial_stop_px: float | None = None  # original stop at entry; survives breakeven moves for R calc
+
+    @property
+    def initial_risk_per_share(self) -> float:
+        ref = self.initial_stop_px if self.initial_stop_px is not None else self.stop_px
+        return abs(self.entry_px - ref)
 
     @property
     def risk_per_share(self) -> float:
