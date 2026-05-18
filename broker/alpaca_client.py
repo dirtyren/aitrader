@@ -234,6 +234,39 @@ class AlpacaClient:
         response = self._request("GET", f"/v2/orders/{order_id}")
         return response.json()
 
+    def replace_order(
+        self,
+        order_id: str,
+        qty: float | None = None,
+        time_in_force: str | None = None,
+        limit_price: float | None = None,
+        stop_price: float | None = None,
+        trail: float | None = None,
+        client_order_id: str | None = None,
+    ) -> dict:
+        """PATCH /v2/orders/{order_id} — replace fields on an open order.
+
+        Used to move a bracket child stop on breakeven without cancel+resubmit.
+        Only provided fields are sent; passing nothing is rejected.
+        """
+        payload: dict = {}
+        if qty is not None:
+            payload["qty"] = qty
+        if time_in_force is not None:
+            payload["time_in_force"] = time_in_force
+        if limit_price is not None:
+            payload["limit_price"] = limit_price
+        if stop_price is not None:
+            payload["stop_price"] = stop_price
+        if trail is not None:
+            payload["trail"] = trail
+        if client_order_id is not None:
+            payload["client_order_id"] = client_order_id
+        if not payload:
+            raise ValueError("replace_order requires at least one field to update")
+        response = self._request("PATCH", f"/v2/orders/{order_id}", json=payload)
+        return response.json()
+
     def cancel_order(self, order_id: str) -> bool:
         """
         DELETE /v2/orders/{order_id} — cancel an open order.

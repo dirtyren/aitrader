@@ -41,3 +41,41 @@ def test_submit_crypto_market_order_uses_notional_optional():
         body = req.call_args[1]["json"]
         assert body["symbol"] == "BTC/USD"
         assert body["time_in_force"] == "gtc"
+
+
+def test_replace_order_patches_only_provided_fields():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "leg-1", "stop_price": 100.0})) as req:
+        order = client.replace_order("leg-1", stop_price=100.0)
+        assert order["id"] == "leg-1"
+        method, url = req.call_args[0]
+        assert method == "PATCH"
+        assert url.endswith("/v2/orders/leg-1")
+        body = req.call_args[1]["json"]
+        assert body == {"stop_price": 100.0}
+
+
+def test_replace_order_supports_multiple_fields():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-9"})):
+        client.replace_order("ord-9", qty=5, limit_price=101.5,
+                             stop_price=99.5, time_in_force="day")
+        body = client._session.request.call_args[1]["json"]
+        assert body == {
+            "qty": 5,
+            "limit_price": 101.5,
+            "stop_price": 99.5,
+            "time_in_force": "day",
+        }
+
+
+def test_replace_order_rejects_empty_update():
+    client = AlpacaClient()
+    try:
+        client.replace_order("ord-9")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError when no fields provided")
