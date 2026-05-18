@@ -17,6 +17,39 @@ logger = logging.getLogger(__name__)
 _EXIT_KINDS = ("stop", "target", "time_stop")
 
 
+def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
+                           actions: list[PositionAction], last_bar: Bar,
+                           pos_before: OpenPosition | None) -> list[TradeRecord]:
+    """Append a TradeRecord per stop/target/time_stop action and return them.
+
+    Uses pos_before because PositionManager.on_bar closes the book entry on
+    exit kinds. R_realized is computed against initial_risk_per_share so
+    breakeven-moved positions still report the original risk.
+    """
+    recorded: list[TradeRecord] = []
+    if pos_before is None:
+        return recorded
+    for a in actions:
+        if a.kind not in _EXIT_KINDS:
+            continue
+        sign = 1 if pos_before.side == "long" else -1
+        pnl = sign * (a.price - pos_before.entry_px) * pos_before.qty
+        risk = pos_before.initial_risk_per_share
+        r_realized = (sign * (a.price - pos_before.entry_px)) / risk if risk > 0 else 0.0
+        rec = TradeRecord(
+            symbol=symbol, setup=pos_before.setup,
+            entry_ts=pos_before.opened_at, exit_ts=last_bar.ts,
+            entry_px=pos_before.entry_px, exit_px=a.price,
+            side=pos_before.side, qty=pos_before.qty,
+            R_realized=r_realized, pnl_usd=pnl,
+        )
+        ledger.record(rec)
+        recorded.append(rec)
+        logger.info("POSITION_CLOSED symbol=%s reason=%s exit=%.4f r=%.2f pnl=%.2f",
+                    symbol, a.kind, a.price, r_realized, pnl)
+    return recorded
+
+
 @dataclass
 class VWAPWaveEngine:
     """One-tick bar-close orchestrator.
@@ -72,22 +105,4 @@ class VWAPWaveEngine:
 
     def _record_exits(self, symbol: str, actions: list[PositionAction],
                       last_bar: Bar, pos_before: OpenPosition | None) -> None:
-        if pos_before is None:
-            return
-        for a in actions:
-            if a.kind not in _EXIT_KINDS:
-                continue
-            exit_px = a.price
-            sign = 1 if pos_before.side == "long" else -1
-            pnl = sign * (exit_px - pos_before.entry_px) * pos_before.qty
-            risk = pos_before.initial_risk_per_share
-            r_realized = (sign * (exit_px - pos_before.entry_px)) / risk if risk > 0 else 0.0
-            self.ledger.record(TradeRecord(
-                symbol=symbol, setup=pos_before.setup,
-                entry_ts=pos_before.opened_at, exit_ts=last_bar.ts,
-                entry_px=pos_before.entry_px, exit_px=exit_px,
-                side=pos_before.side, qty=pos_before.qty,
-                R_realized=r_realized, pnl_usd=pnl,
-            ))
-            logger.info("POSITION_CLOSED symbol=%s reason=%s exit=%.4f r=%.2f pnl=%.2f",
-                        symbol, a.kind, exit_px, r_realized, pnl)
+        record_exits_to_ledger(self.ledger, symbol, actions, last_bar, pos_before)
