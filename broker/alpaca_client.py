@@ -188,7 +188,7 @@ class AlpacaClient:
     def submit_order(
         self,
         symbol: str,
-        qty: int,
+        qty: float,
         side: str,
         order_type: str = "market",
         time_in_force: str = "day",
@@ -200,6 +200,31 @@ class AlpacaClient:
             "side": side,
             "type": order_type,
             "time_in_force": time_in_force,
+        }
+        response = self._request("POST", "/v2/orders", json=payload)
+        return response.json()
+
+    def submit_bracket_order(
+        self,
+        symbol: str,
+        qty: float,
+        side: str,
+        limit_price: float,
+        stop_loss: float,
+        take_profit: float,
+        time_in_force: str = "day",
+    ) -> dict:
+        """POST /v2/orders with order_class='bracket' (entry as limit + OCO stop/target)."""
+        payload = {
+            "symbol": symbol,
+            "qty": qty,
+            "side": side,
+            "type": "limit",
+            "limit_price": limit_price,
+            "time_in_force": time_in_force,
+            "order_class": "bracket",
+            "stop_loss": {"stop_price": stop_loss},
+            "take_profit": {"limit_price": take_profit},
         }
         response = self._request("POST", "/v2/orders", json=payload)
         return response.json()
