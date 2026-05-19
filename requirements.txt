@@ -12,3 +12,4 @@ joblib==1.4.2
 pytz==2024.1
 pandas-market-calendars==4.4.0
 pyarrow==17.0.0
+python-dateutil==2.9.0
