@@ -34,6 +34,7 @@ class CircuitBreaker:
         self.daily_loss_limit_2 = daily_loss_limit_2
         self.drawdown_limit = drawdown_limit
         self._suspension = TradingSuspension()
+        self.level: int = 0    # last computed by check(); read by RiskManager + dashboard
 
     # ------------------------------------------------------------------
     # Public interface
@@ -62,6 +63,7 @@ class CircuitBreaker:
         # Level 3 — peak-to-valley drawdown (checked first; most severe)
         drawdown = self.peak_to_valley_drawdown(current_equity)
         if drawdown >= self.drawdown_limit:
+            self.level = 3
             self._emergency_shutdown()  # calls sys.exit(1) — code below unreachable
             # Defensive return for test environments that mock sys.exit
             return {
@@ -78,6 +80,7 @@ class CircuitBreaker:
                 resume_time=datetime.now(timezone.utc) + timedelta(hours=24),
                 reason="3% daily loss threshold",
             )
+            self.level = 2
             return {
                 "level": 2,
                 "action": "HALT_24H",
@@ -87,6 +90,7 @@ class CircuitBreaker:
 
         # Level 1 — daily loss >= 2%
         if daily_pnl_pct <= -self.daily_loss_limit_1:
+            self.level = 1
             return {
                 "level": 1,
                 "action": "REDUCE_50",
@@ -95,6 +99,7 @@ class CircuitBreaker:
             }
 
         # Level 0 — all clear
+        self.level = 0
         return {
             "level": 0,
             "action": "CLEAR",

@@ -47,6 +47,7 @@ from risk.sizing import SizingConfig
 from scheduler.bar_clock import next_boundary, sleep_until
 from scheduler.loop import VWAPWaveEngine
 from state.daily_ledger import DailyLedger
+from state.dashboard_state import DashboardSnapshot, write_dashboard_state
 from state.position_book import PositionBook
 from strategies.setup_fade_extreme import FadeExtremeSetup
 from strategies.setup_price_discovery import PriceDiscoverySetup
@@ -135,6 +136,33 @@ def build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:
         SetupCooldownFilter(cooldown_bars=cfg["setups"]["price_discovery"]["cooldown_bars"]),
         RiskBudgetFilter(daily_open_risk_cap_pct=cfg["risk"]["max_daily_risk_open"]),
     ])
+
+
+def _collect_snapshot(symbols, contexts, book, ledger, cb,
+                      recent_rejects: list[dict] | None = None) -> DashboardSnapshot:
+    rows = []
+    for sym, _ in symbols:
+        ctx = contexts[sym]
+        pos = book.get(sym)
+        rows.append({
+            "symbol": sym,
+            "regime": ctx.regime,
+            "vwap": None if ctx.bar_count == 0 else ctx.vwap,
+            "upper": None if ctx.bar_count == 0 else ctx.upper_band,
+            "lower": None if ctx.bar_count == 0 else ctx.lower_band,
+            "open_position": None if pos is None else {
+                "side": pos.side, "qty": pos.qty,
+                "entry": pos.entry_px, "stop": pos.stop_px, "target": pos.target_px,
+            },
+        })
+    return DashboardSnapshot(
+        timestamp=datetime.now(timezone.utc),
+        equity=ledger.equity,
+        day_pnl=ledger.day_pnl,
+        circuit_level=cb.level,
+        symbols=rows,
+        recent_filter_rejects=(recent_rejects or [])[-20:],
+    )
 
 
 def main():
@@ -234,6 +262,12 @@ def main():
             account = alpaca.get_account()
             equity = float(account.get("equity") or account.get("portfolio_value") or ledger.equity)
             rm.update_equity(equity)
+
+            daily_pnl_pct = ledger.day_pnl / initial_equity if initial_equity > 0 else 0.0
+            cb.check(equity, daily_pnl_pct)
+
+            snap = _collect_snapshot(symbols, contexts, book, ledger, cb)
+            write_dashboard_state("runtime/trading_state.json", snap)
         except Exception as exc:
             logger.error("CYCLE_ERROR: %s", exc, exc_info=True)
 
