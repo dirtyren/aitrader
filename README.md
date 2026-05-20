@@ -126,6 +126,29 @@ print(result.metrics)
 
 A runnable `scripts/run_backtest.py` can be added as a follow-up.
 
+### Walk-Forward Optimization
+
+```bash
+python -m scripts.run_wfo --config config/wfo.yaml
+```
+
+Tunes setup parameters per `(symbol, timeframe)` over rolling IS/OOS windows
+across the broker's tradable universe. Output lands under
+`runtime/wfo/<run_id>/`:
+
+- `results.parquet` — every `(symbol, timeframe, walk, combo)` IS/OOS row.
+- `live_overrides.yaml` — per-symbol best `(timeframe, setup, params)` for
+  symbols whose aggregate **WFE ≥ 0.5** AND total OOS P&L > 0 (Pardo gate).
+- `summary.md` — ranked human-readable table.
+
+`runtime/wfo/latest` is a symlink the CLI updates on success. `main.py` reads
+`runtime/wfo/latest/live_overrides.yaml` at boot when present and layers it on
+top of `config/settings.yaml`. No silent overwrite — operator promotes by
+manually editing `settings.yaml`.
+
+Tunables: `config/wfo.yaml` (universe scan, IS/OOS lengths in days/months,
+parameter grids per setup, fitness floor, gate thresholds).
+
 ## Circuit Breakers / Lock-File Recovery
 
 Three escalating tiers (tunable in `config/settings.yaml`):
