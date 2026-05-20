@@ -3,11 +3,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Union
 
 from dateutil.relativedelta import relativedelta
 
-Duration = Union[timedelta, relativedelta]
+Duration = timedelta | relativedelta
 
 _DURATION_RE = re.compile(r"^(\d+)(d|mo)$")
 

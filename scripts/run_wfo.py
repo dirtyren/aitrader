@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -124,7 +123,6 @@ def main() -> int:
     history = wfo_cfg["history"]
 
     def bars_loader(symbol: str, asset_class: str, timeframe: str):
-        from datetime import datetime, timezone
         start = datetime.fromisoformat(str(history["start"])).replace(tzinfo=timezone.utc)
         end = datetime.fromisoformat(str(history["end"])).replace(tzinfo=timezone.utc)
         return data.get_bars(symbol, asset_class, timeframe,

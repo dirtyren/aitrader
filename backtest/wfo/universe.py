@@ -5,7 +5,6 @@ import json
 import logging
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
