@@ -69,6 +69,21 @@ def load_config(path: str = "config/settings.yaml") -> dict:
         return yaml.safe_load(f)
 
 
+def apply_overrides(cfg: dict, overrides_path: str | None,
+                    *, enabled: bool = True) -> dict:
+    """Layer per-symbol WFO overrides on top of the loaded settings."""
+    if not enabled or not overrides_path:
+        return cfg
+    from pathlib import Path
+    if not Path(overrides_path).exists():
+        return cfg
+    payload = yaml.safe_load(Path(overrides_path).read_text()) or {}
+    symbols = payload.get("symbols") or {}
+    if symbols:
+        cfg["_per_symbol_overrides"] = symbols
+    return cfg
+
+
 def build_asset_class_configs(cfg: dict) -> dict[str, AssetClassConfig]:
     out: dict[str, AssetClassConfig] = {}
     for name, raw in cfg["asset_classes"].items():
@@ -167,6 +182,9 @@ def _collect_snapshot(symbols, contexts, book, ledger, cb,
 
 def main():
     cfg = load_config()
+    overrides_cfg = cfg.get("overrides") or {}
+    cfg = apply_overrides(cfg, overrides_cfg.get("path"),
+                          enabled=overrides_cfg.get("enabled", True))
     logger = setup_logging(log_file=cfg["logging"]["log_file"])
     logger.info("vwap_wave starting up; env=%s", cfg["system"]["trading_env"])
 

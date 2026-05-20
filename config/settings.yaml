@@ -126,3 +126,7 @@ broker:
 logging:
   level: INFO
   log_file: logs/vwap_wave.log
+
+overrides:
+  path: runtime/wfo/latest/live_overrides.yaml
+  enabled: true
