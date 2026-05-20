@@ -90,3 +90,71 @@ def test_aggregate_emits_one_row_per_setup_timeframe():
     ])
     out = aggregate_results(df, GateConfig(wfe_min=0.5, require_positive_oos_pnl=True))
     assert set(out["setup"]) == {"price_discovery", "vwap_bounce"}
+
+
+import yaml
+
+from backtest.wfo.report import emit_live_overrides, emit_summary_md
+
+
+def _agg_passing():
+    return pd.DataFrame([
+        {"symbol": "AAPL", "timeframe": "15Min", "setup": "price_discovery",
+         "walks": 30, "sum_is_sharpe": 30.0, "sum_oos_sharpe": 22.0,
+         "wfe": 0.733, "total_oos_pnl": 4_213.5, "mean_oos_sharpe": 0.733,
+         "passed": True, "winning_fingerprint_last_walk": "fp_apl"},
+        {"symbol": "AAPL", "timeframe": "30Min", "setup": "vwap_bounce",
+         "walks": 30, "sum_is_sharpe": 28.0, "sum_oos_sharpe": 14.0,
+         "wfe": 0.5, "total_oos_pnl": 2_000.0, "mean_oos_sharpe": 0.467,
+         "passed": True, "winning_fingerprint_last_walk": "fp_avb"},
+        {"symbol": "TSLA", "timeframe": "5Min", "setup": "price_discovery",
+         "walks": 30, "sum_is_sharpe": 10.0, "sum_oos_sharpe": 1.0,
+         "wfe": 0.1, "total_oos_pnl": -500.0, "mean_oos_sharpe": 0.033,
+         "passed": False, "winning_fingerprint_last_walk": "fp_tpd"},
+    ])
+
+
+def _last_walk_combos():
+    """Map fingerprint → (setup_values, pm_values)."""
+    return {
+        "fp_apl": ({"atr_mult_stop": 1.25, "target_R": 2.0, "arm_window_bars": 6},
+                   {"max_hold_bars": 12, "breakeven_at_R": 1.0}),
+        "fp_avb": ({"atr_mult_stop": 1.5, "target_R": 2.5, "arm_window_bars": 4},
+                   {"max_hold_bars": 8, "breakeven_at_R": 0.75}),
+        "fp_tpd": ({"atr_mult_stop": 1.0}, {"max_hold_bars": 12, "breakeven_at_R": 1.0}),
+    }
+
+
+def test_emit_live_overrides_picks_highest_oos_sharpe_per_symbol(tmp_path):
+    out_path = tmp_path / "live_overrides.yaml"
+    emit_live_overrides(_agg_passing(), _last_walk_combos(), out_path,
+                        run_id="2026-05-19T00-00_test", git_sha="b273796",
+                        gate=GateConfig(wfe_min=0.5))
+    data = yaml.safe_load(out_path.read_text())
+    # AAPL → 15Min wins (mean_oos_sharpe 0.733 > 0.467)
+    assert data["symbols"]["AAPL"]["timeframe"] == "15Min"
+    assert data["symbols"]["AAPL"]["setup"] == "price_discovery"
+    assert data["symbols"]["AAPL"]["setup_params"]["target_R"] == 2.0
+    # TSLA failed → not present
+    assert "TSLA" not in data["symbols"]
+
+
+def test_emit_live_overrides_empty_when_none_pass(tmp_path):
+    df = _agg_passing().assign(passed=False)
+    out_path = tmp_path / "live_overrides.yaml"
+    emit_live_overrides(df, _last_walk_combos(), out_path,
+                        run_id="r", git_sha="s",
+                        gate=GateConfig(wfe_min=0.5))
+    data = yaml.safe_load(out_path.read_text())
+    assert data["symbols"] == {}
+
+
+def test_emit_summary_md_contains_all_groups(tmp_path):
+    out_path = tmp_path / "summary.md"
+    emit_summary_md(_agg_passing(), out_path,
+                    run_id="r", git_sha="s",
+                    gate=GateConfig(wfe_min=0.5))
+    text = out_path.read_text()
+    assert "AAPL" in text and "TSLA" in text
+    assert "price_discovery" in text
+    assert "passed" in text.lower()
