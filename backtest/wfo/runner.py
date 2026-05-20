@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from joblib import Parallel, delayed
@@ -201,8 +202,15 @@ class WFORunner:
         timeframes = self.cfg["timeframes"]
         n_jobs = self.cfg["run"]["parallelism"]
 
-        writer = pq.ParquetWriter(parquet_path, _PARQUET_SCHEMA)
+        completed = self._load_completed_keys(parquet_path)
+        # Open writer in append mode by reading existing rows once and
+        # rewriting them as the writer's first batch (ParquetWriter cannot
+        # itself open in append mode; this preserves the durability invariant).
+        writer = pq.ParquetWriter(parquet_path.with_suffix(".parquet.tmp"),
+                                  _PARQUET_SCHEMA)
         try:
+            if completed:
+                self._copy_existing_rows(parquet_path, writer)
             for symbol, asset_class in self.symbols:
                 for timeframe in timeframes:
                     bars = self.bars_loader(symbol, asset_class, timeframe)
@@ -211,7 +219,7 @@ class WFORunner:
                                        symbol, timeframe)
                         continue
                     tasks = self._build_tasks(symbol, asset_class, timeframe,
-                                              bars, walks, combos)
+                                              bars, walks, combos, completed)
                     if not tasks:
                         continue
                     rows = Parallel(n_jobs=n_jobs, backend="loky")(
@@ -220,7 +228,23 @@ class WFORunner:
                     self._write_rows(writer, rows)
         finally:
             writer.close()
+        # Atomic swap of the rewritten file into place
+        parquet_path.with_suffix(".parquet.tmp").replace(parquet_path)
         return parquet_path
+
+    @staticmethod
+    def _load_completed_keys(parquet_path: Path) -> set[tuple[str, str, int, str]]:
+        if not parquet_path.exists():
+            return set()
+        df = pd.read_parquet(parquet_path,
+                             columns=["symbol", "timeframe", "walk_idx", "fingerprint"])
+        return set(zip(df["symbol"], df["timeframe"],
+                       df["walk_idx"].astype(int), df["fingerprint"]))
+
+    @staticmethod
+    def _copy_existing_rows(parquet_path: Path, writer: pq.ParquetWriter) -> None:
+        existing = pa.parquet.read_table(parquet_path, schema=_PARQUET_SCHEMA)
+        writer.write_table(existing)
 
     @staticmethod
     def _parse_dt(value) -> datetime:
@@ -229,7 +253,8 @@ class WFORunner:
         from datetime import timezone
         return datetime.fromisoformat(str(value)).replace(tzinfo=timezone.utc)
 
-    def _build_tasks(self, symbol, asset_class, timeframe, bars, walks, combos):
+    def _build_tasks(self, symbol, asset_class, timeframe, bars, walks, combos,
+                     completed):
         out: list[RunTask] = []
         for walk in walks:
             is_bars = _slice_bars(bars, walk.is_start, walk.is_end)
@@ -237,6 +262,9 @@ class WFORunner:
             if not is_bars:
                 continue
             for combo in combos:
+                key = (symbol, timeframe, walk.idx, combo.fingerprint)
+                if key in completed:
+                    continue
                 out.append(RunTask(
                     symbol=symbol, asset_class=asset_class, timeframe=timeframe,
                     walk=walk, is_bars=is_bars, oos_bars=oos_bars, combo=combo,

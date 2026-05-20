@@ -182,3 +182,28 @@ def test_runner_skips_pair_with_empty_bars(tmp_path, caplog):
     df = pd.read_parquet(tmp_path / "results.parquet")
     assert set(df["symbol"].unique()) == {"BTC/USD"}
     assert any("BARS_UNAVAILABLE" in r.message for r in caplog.records)
+
+
+def test_runner_resume_skips_completed_tasks(tmp_path):
+    bars = {"BTC/USD": _flat_bars("BTC/USD", n=300,
+                                   base=datetime(2026, 1, 1, tzinfo=timezone.utc))}
+    cfg = _runner_cfg(history_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                      history_end=datetime(2026, 1, 4, tzinfo=timezone.utc))
+    runner = WFORunner(
+        cfg=cfg, asset_class_configs={"crypto": CRYPTO},
+        symbols=[("BTC/USD", "crypto")],
+        bars_loader=lambda sym, ac, tf: bars[sym],
+        output_dir=tmp_path,
+    )
+    runner.run()
+    df_first = pd.read_parquet(tmp_path / "results.parquet")
+    n_first = len(df_first)
+
+    # Re-run: every task already in parquet → no new rows
+    runner.run()
+    df_second = pd.read_parquet(tmp_path / "results.parquet")
+    assert len(df_second) == n_first
+    # No duplicate (symbol, timeframe, walk_idx, fingerprint) keys
+    keys = list(zip(df_second["symbol"], df_second["timeframe"],
+                    df_second["walk_idx"], df_second["fingerprint"]))
+    assert len(keys) == len(set(keys))
