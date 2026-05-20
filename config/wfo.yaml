@@ -1,0 +1,71 @@
+# Walk-Forward Optimization meta-config.
+# Loaded by scripts/run_wfo.py alongside config/settings.yaml.
+
+run:
+  output_root: runtime/wfo
+  random_seed: 42
+  parallelism: -1                    # joblib n_jobs; -1 = all cores
+
+history:
+  start: "2024-01-01"
+  end: "2026-04-30"
+  initial_equity: 100000
+
+windowing:
+  in_sample: "6mo"                   # parser: <int>(d|mo)
+  out_of_sample: "1mo"
+  step: null                         # null → step == out_of_sample
+
+universe:
+  source: alpaca_scan                # alpaca_scan | symbols
+  symbols: []                        # used iff source: symbols
+  alpaca_scan:
+    classes: [us_equity, crypto]
+    min_dollar_volume_20d: 5000000
+    top_n_per_class:
+      us_equity: 100
+      crypto: null
+    cache_dir: runtime/wfo/universe_cache
+
+timeframes:
+  - 5Min
+  - 15Min
+  - 30Min
+  - 1Hour
+
+fitness:
+  metric: sharpe
+  min_trades: 20
+
+gate:
+  wfe_min: 0.5
+  require_positive_oos_pnl: true
+
+grid:
+  price_discovery:
+    enabled: [true]
+    atr_mult_stop:    [0.75, 1.0, 1.25, 1.5]
+    target_R:         [1.0, 1.5, 2.0, 2.5]
+    arm_window_bars:  [4, 6, 8]
+    cooldown_bars:    [12]
+  fade_extreme:
+    enabled: [true]
+    atr_mult_stop:    [0.5, 0.75, 1.0]
+    scale_offsets_atr: [[0.0, 0.25, 0.5]]
+    scale_weights:     [[0.4, 0.35, 0.25]]
+    cooldown_bars:    [12]
+  return_to_value:
+    enabled: [true]
+    atr_mult_stop:    [0.75, 1.0, 1.25]
+    arm_window_bars:  [4, 6, 8]
+    cooldown_bars:    [12]
+  vwap_bounce:
+    enabled: [true]
+    atr_mult_stop:    [1.0, 1.25, 1.5]
+    target_R:         [1.5, 2.0, 2.5]
+    arm_window_bars:  [4, 6]
+    cooldown_bars:    [8]
+
+position_management:
+  max_hold_bars:     [8, 12, 16]
+  breakeven_at_R:    [0.75, 1.0, 1.25]
