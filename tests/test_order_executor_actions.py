@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 from datetime import datetime, timezone
 
+from broker.alpaca_client import OrderRejectedError
 from broker.order_executor import OrderExecutor
 from core.position_manager import PositionAction
 from state.position_book import OpenPosition, PositionBook
@@ -115,3 +116,54 @@ def test_equity_breakeven_logs_only_when_stop_leg_id_missing():
     client.replace_order.assert_not_called()
     client.submit_order.assert_not_called()
     client.cancel_order.assert_not_called()
+
+
+# ---- breakeven: benign Alpaca rejections become warnings, not errors -------
+
+def _last_error_calls(logger_mock):
+    return [c.args[0] for c in logger_mock.error.call_args_list]
+
+
+def _last_warning_calls(logger_mock):
+    return [c.args[0] for c in logger_mock.warning.call_args_list]
+
+
+def test_breakeven_long_too_close_to_quote_logs_warning_not_error():
+    ex, client = _make_executor()
+    _seed_open_position(ex.book, stop_order_id="sl-1")
+    client.replace_order.side_effect = OrderRejectedError(
+        "stop_loss.stop_price must be <= base_price - 0.01")
+    ex.handle_actions([_action("breakeven", price=100.0)],
+                      asset_class="equity", parent_order_id="parent-1")
+    assert not _last_error_calls(ex.logger), "benign rejection must not log ERROR"
+    assert any("BREAKEVEN_SKIPPED" in s for s in _last_warning_calls(ex.logger))
+
+
+def test_breakeven_short_too_close_to_quote_logs_warning_not_error():
+    ex, client = _make_executor()
+    _seed_open_position(ex.book, side="short", stop_order_id="sl-1")
+    client.replace_order.side_effect = OrderRejectedError(
+        "stop_loss.stop_price must be >= base_price + 0.01")
+    ex.handle_actions([_action("breakeven", side="short", price=100.0)],
+                      asset_class="equity", parent_order_id="parent-1")
+    assert not _last_error_calls(ex.logger)
+    assert any("BREAKEVEN_SKIPPED" in s for s in _last_warning_calls(ex.logger))
+
+
+def test_breakeven_order_already_closed_logs_warning_not_error():
+    ex, client = _make_executor()
+    _seed_open_position(ex.book, stop_order_id="sl-1")
+    client.replace_order.side_effect = OrderRejectedError("order is not open")
+    ex.handle_actions([_action("breakeven", price=100.0)],
+                      asset_class="equity", parent_order_id="parent-1")
+    assert not _last_error_calls(ex.logger)
+    assert any("BREAKEVEN_SKIPPED" in s for s in _last_warning_calls(ex.logger))
+
+
+def test_breakeven_unexpected_exception_still_logs_error():
+    ex, client = _make_executor()
+    _seed_open_position(ex.book, stop_order_id="sl-1")
+    client.replace_order.side_effect = RuntimeError("network exploded")
+    ex.handle_actions([_action("breakeven", price=100.0)],
+                      asset_class="equity", parent_order_id="parent-1")
+    assert any("BREAKEVEN_REPLACE_FAILED" in s for s in _last_error_calls(ex.logger))

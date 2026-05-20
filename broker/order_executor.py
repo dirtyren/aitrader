@@ -2,12 +2,23 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from broker.alpaca_client import OrderRejectedError
 from core.position_manager import PositionAction
 from state.position_book import OpenPosition, PositionBook
 from strategies.base_setup import SetupSignal
 from risk.manager import RiskDecision
 
 logger = logging.getLogger(__name__)
+
+# Alpaca error fragments that indicate a breakeven replace is benign:
+#  - "must be (>=|<=) base_price ± 0.01": stop drifted past current quote
+#    between bar-close decision and PATCH; original bracket stop still protects.
+#  - "order is not open": bracket child already filled or canceled.
+_BENIGN_BREAKEVEN_FRAGMENTS = (
+    "must be >= base_price",
+    "must be <= base_price",
+    "order is not open",
+)
 
 
 class OrderExecutor:
@@ -41,6 +52,11 @@ class OrderExecutor:
         if not decision.approved:
             self.logger.info("ORDER_REJECTED symbol=%s reason=%s",
                              signal.symbol, decision.reason)
+            return None
+
+        if self.book.was_just_exited(signal.symbol):
+            self.logger.info("ORDER_SKIPPED_RECENTLY_EXITED symbol=%s setup=%s",
+                             signal.symbol, signal.setup)
             return None
 
         alp_side = self._alpaca_side(signal.side)
@@ -160,6 +176,14 @@ class OrderExecutor:
             self.client.replace_order(stop_leg, stop_price=a.price)
             self.logger.info("BREAKEVEN_REPLACED symbol=%s stop_leg=%s new_stop=%.4f",
                              a.symbol, stop_leg, a.price)
+        except OrderRejectedError as exc:
+            msg = str(exc)
+            if any(frag in msg for frag in _BENIGN_BREAKEVEN_FRAGMENTS):
+                self.logger.warning("BREAKEVEN_SKIPPED symbol=%s stop_leg=%s reason=%s",
+                                    a.symbol, stop_leg, msg)
+                return
+            self.logger.error("BREAKEVEN_REPLACE_FAILED symbol=%s stop_leg=%s error=%s",
+                              a.symbol, stop_leg, exc, exc_info=True)
         except Exception as exc:
             self.logger.error("BREAKEVEN_REPLACE_FAILED symbol=%s stop_leg=%s error=%s",
                               a.symbol, stop_leg, exc, exc_info=True)

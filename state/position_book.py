@@ -36,6 +36,12 @@ class OpenPosition:
 class PositionBook:
     def __init__(self) -> None:
         self._positions: dict[str, OpenPosition] = {}
+        # Symbols whose position closed during the current cycle. The engine
+        # clears this at tick start; the executor consults it to skip same-cycle
+        # bracket re-entries (Alpaca rejects bracket entries while the prior
+        # closing order is still settling, and re-entering on the bar that just
+        # stopped us out is rarely the intended behavior).
+        self._just_exited: set[str] = set()
 
     def add(self, p: OpenPosition) -> None:
         if p.symbol in self._positions:
@@ -46,7 +52,16 @@ class PositionBook:
         return self._positions.get(symbol)
 
     def close(self, symbol: str) -> OpenPosition | None:
-        return self._positions.pop(symbol, None)
+        pos = self._positions.pop(symbol, None)
+        if pos is not None:
+            self._just_exited.add(symbol)
+        return pos
+
+    def was_just_exited(self, symbol: str) -> bool:
+        return symbol in self._just_exited
+
+    def clear_just_exited(self) -> None:
+        self._just_exited.clear()
 
     def symbols(self) -> list[str]:
         return list(self._positions.keys())

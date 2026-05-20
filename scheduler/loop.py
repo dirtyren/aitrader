@@ -77,6 +77,9 @@ class VWAPWaveEngine:
         total_bars = sum(len(v) for v in fresh_bars.values())
         logger.info("CYCLE_TICK ts=%s symbols_with_bars=%d total_bars=%d",
                     now.isoformat(), len(fresh_bars), total_bars)
+        # Reset per-cycle book of just-closed symbols before Phase A so exits
+        # this tick can gate re-entries in Phase B.
+        self.book.clear_just_exited()
         # Phase A: ingest bars + manage open positions
         for symbol, asset_class in self.symbols:
             new_bars = fresh_bars.get(symbol) or []

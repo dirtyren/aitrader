@@ -32,6 +32,25 @@ def test_close_removes():
     assert book.get("AAPL") is None
 
 
+def test_close_marks_just_exited_until_cleared():
+    book = PositionBook()
+    p = OpenPosition(symbol="AAPL", setup="x", side="long", qty=1,
+                     entry_px=1.0, stop_px=0.5, target_px=2.0,
+                     opened_at=datetime.now(timezone.utc), order_id="x")
+    book.add(p)
+    assert not book.was_just_exited("AAPL")
+    book.close("AAPL")
+    assert book.was_just_exited("AAPL")
+    book.clear_just_exited()
+    assert not book.was_just_exited("AAPL")
+
+
+def test_was_just_exited_only_for_actually_closed_symbols():
+    book = PositionBook()
+    book.close("NEVER_HELD")  # closing absent symbol shouldn't taint the set
+    assert not book.was_just_exited("NEVER_HELD")
+
+
 def test_aggregate_open_risk():
     book = PositionBook()
     book.add(OpenPosition(symbol="AAPL", setup="x", side="long", qty=10,

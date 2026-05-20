@@ -82,3 +82,54 @@ def test_submit_equity_no_legs_keeps_stop_order_id_none():
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos.stop_order_id is None
+
+
+def test_submit_skips_when_symbol_just_exited_this_cycle():
+    """Symbol whose bracket exited earlier in the same cycle: skip re-entry.
+
+    Alpaca rejects bracket entries while a closing order is still settling,
+    and re-entering on the same bar that just stopped us out is rarely the
+    intended behavior anyway.
+    """
+    client = MagicMock()
+    book = PositionBook()
+    ex = OrderExecutor(client, book, logger=MagicMock())
+
+    # Simulate a same-cycle bracket exit via the public API.
+    from state.position_book import OpenPosition
+    book.add(OpenPosition(
+        symbol="AMZN", setup="return_to_value", side="long", qty=1,
+        entry_px=265.0, stop_px=264.0, target_px=267.0,
+        opened_at=datetime(2026, 5, 20, 19, 40, tzinfo=timezone.utc),
+        order_id="parent-amzn",
+    ))
+    book.close("AMZN")  # bracket stop fired this cycle
+
+    sig = _signal(symbol="AMZN", side="long")
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+    pos = ex.submit(sig, decision, asset_class="equity")
+    assert pos is None
+    client.submit_bracket_order.assert_not_called()
+    client.submit_order.assert_not_called()
+
+
+def test_submit_proceeds_after_just_exited_cleared():
+    client = MagicMock()
+    client.submit_bracket_order.return_value = {"id": "ord-x"}
+    book = PositionBook()
+    from state.position_book import OpenPosition
+    book.add(OpenPosition(
+        symbol="AMZN", setup="return_to_value", side="long", qty=1,
+        entry_px=265.0, stop_px=264.0, target_px=267.0,
+        opened_at=datetime(2026, 5, 20, 19, 40, tzinfo=timezone.utc),
+        order_id="parent-amzn",
+    ))
+    book.close("AMZN")
+    book.clear_just_exited()  # next cycle starts
+
+    ex = OrderExecutor(client, book, logger=MagicMock())
+    sig = _signal(symbol="AMZN", side="long")
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+    pos = ex.submit(sig, decision, asset_class="equity")
+    assert pos is not None
+    client.submit_bracket_order.assert_called_once()
