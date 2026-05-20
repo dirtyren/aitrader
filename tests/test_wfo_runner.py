@@ -184,7 +184,7 @@ def test_runner_skips_pair_with_empty_bars(tmp_path, caplog):
     assert any("BARS_UNAVAILABLE" in r.message for r in caplog.records)
 
 
-def test_runner_resume_skips_completed_tasks(tmp_path):
+def test_runner_resume_skips_completed_tasks(tmp_path, monkeypatch):
     bars = {"BTC/USD": _flat_bars("BTC/USD", n=300,
                                    base=datetime(2026, 1, 1, tzinfo=timezone.utc))}
     cfg = _runner_cfg(history_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -199,11 +199,20 @@ def test_runner_resume_skips_completed_tasks(tmp_path):
     df_first = pd.read_parquet(tmp_path / "results.parquet")
     n_first = len(df_first)
 
-    # Re-run: every task already in parquet → no new rows
+    # Wrap _run_one and count invocations.
+    import backtest.wfo.runner as runner_mod
+    original = runner_mod._run_one
+    calls: list = []
+    def counting(task):
+        calls.append(task.combo.fingerprint)
+        return original(task)
+    monkeypatch.setattr(runner_mod, "_run_one", counting)
+
     runner.run()
     df_second = pd.read_parquet(tmp_path / "results.parquet")
     assert len(df_second) == n_first
-    # No duplicate (symbol, timeframe, walk_idx, fingerprint) keys
     keys = list(zip(df_second["symbol"], df_second["timeframe"],
                     df_second["walk_idx"], df_second["fingerprint"]))
     assert len(keys) == len(set(keys))
+    # The real resumability assertion: zero new task invocations on the second run.
+    assert calls == []
