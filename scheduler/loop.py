@@ -74,6 +74,9 @@ class VWAPWaveEngine:
     position_manager: PositionManager
 
     def tick(self, now: datetime, fresh_bars: dict[str, list[Bar]]) -> None:
+        total_bars = sum(len(v) for v in fresh_bars.values())
+        logger.info("CYCLE_TICK ts=%s symbols_with_bars=%d total_bars=%d",
+                    now.isoformat(), len(fresh_bars), total_bars)
         # Phase A: ingest bars + manage open positions
         for symbol, asset_class in self.symbols:
             new_bars = fresh_bars.get(symbol) or []
@@ -101,6 +104,9 @@ class VWAPWaveEngine:
                     logger.info("SIGNAL_REJECTED symbol=%s setup=%s reason=%s",
                                 signal.symbol, signal.setup, decision.reason)
                     continue
+                logger.info("SIGNAL_FIRED symbol=%s setup=%s side=%s entry=%.4f stop=%.4f target=%.4f",
+                            signal.symbol, signal.setup, signal.side,
+                            signal.entry, signal.stop, signal.target)
                 self.executor.submit(signal, decision, asset_class)
 
     def _record_exits(self, symbol: str, actions: list[PositionAction],

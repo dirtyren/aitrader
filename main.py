@@ -369,6 +369,9 @@ def main():
             daily_pnl_pct = ledger.day_pnl / initial_equity if initial_equity > 0 else 0.0
             cb.check(equity, daily_pnl_pct)
 
+            logger.info("CYCLE_DONE equity=%.2f day_pnl=%.2f open_positions=%d",
+                        equity, ledger.day_pnl, book.count())
+
             snap = _collect_snapshot(symbols, contexts, book, ledger, cb)
             write_dashboard_state("runtime/trading_state.json", snap)
         except Exception as exc:
