@@ -108,3 +108,77 @@ def test_run_one_idempotent_for_same_input():
     row_b = _run_one(task)
     # Stable across runs (Phase-8 determinism gate)
     assert row_a == row_b
+
+
+from pathlib import Path
+
+from backtest.wfo.runner import WFORunner
+
+
+def _runner_cfg(*, history_start, history_end):
+    return {
+        "run": {"parallelism": 1, "random_seed": 42, "output_root": "runtime/wfo"},
+        "history": {"start": history_start, "end": history_end,
+                    "initial_equity": 100_000.0},
+        "windowing": {"in_sample": "1d", "out_of_sample": "1d", "step": None},
+        "timeframes": ["5Min"],
+        "fitness": {"metric": "sharpe", "min_trades": 1},
+        "gate": {"wfe_min": 0.5, "require_positive_oos_pnl": True},
+        "grid": {
+            "price_discovery": {
+                "enabled": [True],
+                "atr_mult_stop": [1.0, 1.5],
+                "target_R": [1.5],
+                "arm_window_bars": [6],
+                "cooldown_bars": [12],
+            },
+        },
+        "position_management": {"max_hold_bars": [12], "breakeven_at_R": [1.0]},
+        "risk": {
+            "max_risk_per_trade": 0.005, "max_notional_per_trade_pct": 0.20,
+            "max_concurrent_positions": 4, "max_daily_risk_open": 0.02,
+            "consecutive_loss_limit": 2, "loss_filter_scope": "per_symbol",
+            "circuit_breaker": {"daily_loss_limit_1": 0.02,
+                                "daily_loss_limit_2": 0.03,
+                                "drawdown_limit": 0.10},
+        },
+        "filters": {"opening_blackout_min": 0, "volume_deficit_pct": 0.30},
+    }
+
+
+def test_runner_smoke_writes_results_parquet(tmp_path):
+    bars = {"BTC/USD": _flat_bars("BTC/USD", n=300,
+                                   base=datetime(2026, 1, 1, tzinfo=timezone.utc))}
+    runner = WFORunner(
+        cfg=_runner_cfg(history_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                        history_end=datetime(2026, 1, 4, tzinfo=timezone.utc)),
+        asset_class_configs={"crypto": CRYPTO},
+        symbols=[("BTC/USD", "crypto")],
+        bars_loader=lambda sym, ac, tf: bars[sym],
+        output_dir=tmp_path,
+    )
+    parquet_path = runner.run()
+    assert parquet_path.exists()
+    df = pd.read_parquet(parquet_path)
+    # 2 walks × 2 combos = 4 rows
+    assert len(df) == 4
+    assert set(df["fingerprint"].unique()).__len__() == 2
+
+
+def test_runner_skips_pair_with_empty_bars(tmp_path, caplog):
+    runner = WFORunner(
+        cfg=_runner_cfg(history_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                        history_end=datetime(2026, 1, 4, tzinfo=timezone.utc)),
+        asset_class_configs={"crypto": CRYPTO},
+        symbols=[("BTC/USD", "crypto"), ("ETH/USD", "crypto")],
+        bars_loader=lambda sym, ac, tf: (
+            _flat_bars(sym, 300, base=datetime(2026, 1, 1, tzinfo=timezone.utc))
+            if sym == "BTC/USD" else []
+        ),
+        output_dir=tmp_path,
+    )
+    with caplog.at_level("WARNING"):
+        runner.run()
+    df = pd.read_parquet(tmp_path / "results.parquet")
+    assert set(df["symbol"].unique()) == {"BTC/USD"}
+    assert any("BARS_UNAVAILABLE" in r.message for r in caplog.records)
