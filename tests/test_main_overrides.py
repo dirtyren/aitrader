@@ -86,3 +86,26 @@ def test_build_setups_uses_override_for_overridden_symbol():
     # Non-overridden symbol still gets all setups with global params
     spy = build_setups(cfg, "SPY")
     assert len(spy) == 4
+
+
+def test_position_manager_for_uses_override_values():
+    from main import position_manager_for
+    from state.position_book import PositionBook
+
+    cfg = {
+        "position_management": {"max_hold_bars": 12, "breakeven_at_R": 1.0},
+        "_per_symbol_overrides": {
+            "AAPL": {"timeframe": "15Min", "setup": "price_discovery",
+                     "setup_params": {},
+                     "position_management": {"max_hold_bars": 8,
+                                             "breakeven_at_R": 0.75}},
+        },
+    }
+    book = PositionBook()
+    aapl_pm = position_manager_for("AAPL", cfg, book)
+    assert aapl_pm._max_hold_bars == 8
+    assert aapl_pm._breakeven_at_R == 0.75
+
+    spy_pm = position_manager_for("SPY", cfg, book)
+    assert spy_pm._max_hold_bars == 12
+    assert spy_pm._breakeven_at_R == 1.0

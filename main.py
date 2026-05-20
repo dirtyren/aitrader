@@ -172,6 +172,29 @@ def _build_setups_from_override(symbol: str, override: dict):
     return [factory(symbol, override["setup_params"])]
 
 
+def position_manager_for(symbol: str, cfg: dict, book) -> PositionManager:
+    overrides = cfg.get("_per_symbol_overrides") or {}
+    pm_cfg = (overrides.get(symbol, {}).get("position_management")
+              if symbol in overrides else cfg["position_management"])
+    return PositionManager(
+        book,
+        max_hold_bars=pm_cfg["max_hold_bars"],
+        breakeven_at_R=pm_cfg["breakeven_at_R"],
+    )
+
+
+class _PerSymbolPositionManager:
+    """Routes on_bar(symbol, bar) to a per-symbol PositionManager."""
+
+    def __init__(self, per_symbol: dict, fallback):
+        self._per_symbol = per_symbol
+        self._fallback = fallback
+
+    def on_bar(self, symbol, bar):
+        pm = self._per_symbol.get(symbol, self._fallback)
+        return pm.on_bar(symbol, bar)
+
+
 def build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:
     news_windows = [
         NewsBlackout(start=datetime.fromisoformat(w["start"]),
@@ -278,11 +301,20 @@ def main():
         ledger=ledger, book=book,
     )
     executor = OrderExecutor(alpaca, book, logger=logger)
-    pm = PositionManager(
-        book,
-        max_hold_bars=cfg["position_management"]["max_hold_bars"],
-        breakeven_at_R=cfg["position_management"]["breakeven_at_R"],
-    )
+
+    # When overrides exist, each symbol may want its own PositionManager. The
+    # engine still receives a single PM; we wire a dispatcher that routes
+    # on_bar(symbol, bar) to the right per-symbol PM.
+    overrides = cfg.get("_per_symbol_overrides") or {}
+    if overrides:
+        per_symbol_pms = {sym: position_manager_for(sym, cfg, book)
+                          for sym, _ in symbols}
+        pm = _PerSymbolPositionManager(per_symbol_pms,
+                                       fallback=position_manager_for("__default__",
+                                                                     cfg, book))
+    else:
+        pm = position_manager_for("__default__", cfg, book)
+
     engine = VWAPWaveEngine(
         symbols=symbols, contexts=contexts, setups=setups,
         risk_manager=rm, executor=executor, book=book, ledger=ledger,
