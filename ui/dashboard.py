@@ -30,7 +30,7 @@ def _read_state() -> dict | None:
 
 
 state = _read_state()
-if state is None:
+if not state or "equity" not in state:
     st.warning("No state file yet. Start the engine via `python main.py`.")
     st.stop()
 
