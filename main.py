@@ -102,6 +102,9 @@ def build_asset_class_configs(cfg: dict) -> dict[str, AssetClassConfig]:
 
 
 def build_setups(cfg: dict, symbol: str):
+    overrides = cfg.get("_per_symbol_overrides") or {}
+    if symbol in overrides:
+        return _build_setups_from_override(symbol, overrides[symbol])
     s = cfg["setups"]
     setups = []
     if s["price_discovery"]["enabled"]:
@@ -132,6 +135,41 @@ def build_setups(cfg: dict, symbol: str):
             arm_window_bars=s["vwap_bounce"]["arm_window_bars"],
         ))
     return setups
+
+
+_OVERRIDE_FACTORIES = {
+    "price_discovery": lambda symbol, p: PriceDiscoverySetup(
+        symbol,
+        atr_mult_stop=p["atr_mult_stop"],
+        target_R=p["target_R"],
+        arm_window_bars=p["arm_window_bars"],
+    ),
+    "fade_extreme": lambda symbol, p: FadeExtremeSetup(
+        symbol,
+        atr_mult_stop=p["atr_mult_stop"],
+        scale_offsets_atr=p.get("scale_offsets_atr", [0.0, 0.25, 0.5]),
+        scale_weights=p.get("scale_weights", [0.4, 0.35, 0.25]),
+    ),
+    "return_to_value": lambda symbol, p: ReturnToValueSetup(
+        symbol,
+        atr_mult_stop=p["atr_mult_stop"],
+        arm_window_bars=p["arm_window_bars"],
+    ),
+    "vwap_bounce": lambda symbol, p: VWAPBounceSetup(
+        symbol,
+        atr_mult_stop=p["atr_mult_stop"],
+        target_R=p["target_R"],
+        arm_window_bars=p["arm_window_bars"],
+    ),
+}
+
+
+def _build_setups_from_override(symbol: str, override: dict):
+    setup_name = override["setup"]
+    factory = _OVERRIDE_FACTORIES.get(setup_name)
+    if factory is None:
+        raise ValueError(f"Unknown setup in override for {symbol}: {setup_name!r}")
+    return [factory(symbol, override["setup_params"])]
 
 
 def build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:

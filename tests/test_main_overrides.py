@@ -47,3 +47,42 @@ def test_apply_overrides_disabled_flag_short_circuits(tmp_path):
     cfg = {"setups": {}}
     out = apply_overrides(cfg, str(overrides_path), enabled=False)
     assert "_per_symbol_overrides" not in out
+
+
+def test_build_setups_uses_override_for_overridden_symbol():
+    from main import build_setups
+    cfg = {
+        "setups": {
+            "price_discovery": {"enabled": True, "atr_mult_stop": 0.5,
+                                "target_R": 1.0, "arm_window_bars": 6,
+                                "cooldown_bars": 12},
+            "fade_extreme": {"enabled": True, "atr_mult_stop": 0.75,
+                             "scale_offsets_atr": [0.0, 0.25, 0.5],
+                             "scale_weights": [0.4, 0.35, 0.25],
+                             "cooldown_bars": 12},
+            "return_to_value": {"enabled": True, "atr_mult_stop": 1.0,
+                                "arm_window_bars": 6, "cooldown_bars": 12},
+            "vwap_bounce": {"enabled": True, "atr_mult_stop": 1.25,
+                            "target_R": 2.0, "arm_window_bars": 4,
+                            "cooldown_bars": 8},
+        },
+        "_per_symbol_overrides": {
+            "AAPL": {
+                "timeframe": "15Min",
+                "setup": "price_discovery",
+                "setup_params": {"atr_mult_stop": 1.25, "target_R": 2.0,
+                                 "arm_window_bars": 6},
+                "position_management": {"max_hold_bars": 12, "breakeven_at_R": 1.0},
+            },
+        },
+    }
+    aapl = build_setups(cfg, "AAPL")
+    assert len(aapl) == 1
+    s = aapl[0]
+    assert type(s).__name__ == "PriceDiscoverySetup"
+    assert s.atr_mult_stop == 1.25
+    assert s.target_R == 2.0
+
+    # Non-overridden symbol still gets all setups with global params
+    spy = build_setups(cfg, "SPY")
+    assert len(spy) == 4
