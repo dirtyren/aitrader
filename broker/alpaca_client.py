@@ -10,9 +10,17 @@ import random
 import time
 import logging
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 import requests
 from dotenv import load_dotenv
+
+
+def _round_to_tick(price: float) -> float:
+    """Round to Alpaca's allowed tick: $0.01 at/above $1, $0.0001 below."""
+    d = Decimal(str(price))
+    tick = Decimal("0.01") if d >= Decimal("1") else Decimal("0.0001")
+    return float(d.quantize(tick, rounding=ROUND_HALF_UP))
 
 logger = logging.getLogger(__name__)
 
@@ -220,11 +228,11 @@ class AlpacaClient:
             "qty": qty,
             "side": side,
             "type": "limit",
-            "limit_price": limit_price,
+            "limit_price": _round_to_tick(limit_price),
             "time_in_force": time_in_force,
             "order_class": "bracket",
-            "stop_loss": {"stop_price": stop_loss},
-            "take_profit": {"limit_price": take_profit},
+            "stop_loss": {"stop_price": _round_to_tick(stop_loss)},
+            "take_profit": {"limit_price": _round_to_tick(take_profit)},
         }
         response = self._request("POST", "/v2/orders", json=payload)
         return response.json()
@@ -255,9 +263,9 @@ class AlpacaClient:
         if time_in_force is not None:
             payload["time_in_force"] = time_in_force
         if limit_price is not None:
-            payload["limit_price"] = limit_price
+            payload["limit_price"] = _round_to_tick(limit_price)
         if stop_price is not None:
-            payload["stop_price"] = stop_price
+            payload["stop_price"] = _round_to_tick(stop_price)
         if trail is not None:
             payload["trail"] = trail
         if client_order_id is not None:

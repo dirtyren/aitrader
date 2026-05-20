@@ -79,3 +79,47 @@ def test_replace_order_rejects_empty_update():
         pass
     else:
         raise AssertionError("expected ValueError when no fields provided")
+
+
+def test_submit_bracket_order_rounds_sub_penny_prices():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "x"})) as req:
+        client.submit_bracket_order(
+            symbol="PLTR", qty=10, side="buy",
+            limit_price=88.117777,
+            stop_loss=85.123456789,
+            take_profit=88.11253636949422,
+        )
+        body = req.call_args[1]["json"]
+        assert body["limit_price"] == 88.12
+        assert body["stop_loss"]["stop_price"] == 85.12
+        assert body["take_profit"]["limit_price"] == 88.11
+
+
+def test_submit_bracket_order_sub_dollar_uses_four_decimals():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "x"})) as req:
+        client.submit_bracket_order(
+            symbol="PENNY", qty=100, side="buy",
+            limit_price=0.123456789,
+            stop_loss=0.111111111,
+            take_profit=0.999949999,
+        )
+        body = req.call_args[1]["json"]
+        assert body["limit_price"] == 0.1235
+        assert body["stop_loss"]["stop_price"] == 0.1111
+        assert body["take_profit"]["limit_price"] == 0.9999
+
+
+def test_replace_order_rounds_sub_penny_prices():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "leg-1"})) as req:
+        client.replace_order("leg-1",
+                             limit_price=42.987654321,
+                             stop_price=41.111111111)
+        body = req.call_args[1]["json"]
+        assert body["limit_price"] == 42.99
+        assert body["stop_price"] == 41.11
