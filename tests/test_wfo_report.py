@@ -158,3 +158,32 @@ def test_emit_summary_md_contains_all_groups(tmp_path):
     assert "AAPL" in text and "TSLA" in text
     assert "price_discovery" in text
     assert "passed" in text.lower()
+
+
+def test_update_latest_symlink_atomic(tmp_path):
+    from backtest.wfo.report import update_latest_symlink
+    runs = tmp_path / "runs"
+    run1 = runs / "run1"
+    run2 = runs / "run2"
+    run1.mkdir(parents=True)
+    run2.mkdir(parents=True)
+    latest = runs / "latest"
+
+    update_latest_symlink(latest, run1)
+    assert latest.is_symlink()
+    assert latest.resolve() == run1.resolve()
+
+    update_latest_symlink(latest, run2)
+    assert latest.resolve() == run2.resolve()
+
+
+def test_update_latest_symlink_skipped_when_zero_passed(tmp_path):
+    from backtest.wfo.report import update_latest_symlink_if_passing
+    runs = tmp_path / "runs"
+    run1 = runs / "run1"
+    run1.mkdir(parents=True)
+    latest = runs / "latest"
+
+    aggregated = _agg_passing().assign(passed=False)
+    update_latest_symlink_if_passing(latest, run1, aggregated)
+    assert not latest.exists()
