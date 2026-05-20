@@ -109,3 +109,26 @@ def test_position_manager_for_uses_override_values():
     spy_pm = position_manager_for("SPY", cfg, book)
     assert spy_pm._max_hold_bars == 12
     assert spy_pm._breakeven_at_R == 1.0
+
+
+def test_timeframe_for_resolves_override_then_default():
+    from main import timeframe_for
+    cfg = {
+        "scheduler": {"bar_timeframe": "5Min"},
+        "_per_symbol_overrides": {"AAPL": {"timeframe": "15Min"}},
+    }
+    assert timeframe_for("AAPL", cfg) == "15Min"
+    assert timeframe_for("SPY", cfg) == "5Min"
+
+
+def test_finest_timeframe_picks_shortest_period():
+    from main import finest_timeframe
+    cfg = {
+        "scheduler": {"bar_timeframe": "5Min"},
+        "_per_symbol_overrides": {
+            "AAPL": {"timeframe": "15Min"},
+            "BTC/USD": {"timeframe": "30Min"},
+        },
+    }
+    symbols = [("AAPL", "us_equity"), ("BTC/USD", "crypto"), ("SPY", "us_equity")]
+    assert finest_timeframe(symbols, cfg) == "5Min"

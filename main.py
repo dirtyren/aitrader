@@ -183,6 +183,19 @@ def position_manager_for(symbol: str, cfg: dict, book) -> PositionManager:
     )
 
 
+def timeframe_for(symbol: str, cfg: dict) -> str:
+    overrides = cfg.get("_per_symbol_overrides") or {}
+    if symbol in overrides and "timeframe" in overrides[symbol]:
+        return overrides[symbol]["timeframe"]
+    return cfg["scheduler"]["bar_timeframe"]
+
+
+def finest_timeframe(symbols: list[tuple[str, str]], cfg: dict) -> str:
+    from scheduler.bar_clock import parse_timeframe_minutes
+    candidates = {timeframe_for(sym, cfg) for sym, _ in symbols}
+    return min(candidates, key=parse_timeframe_minutes)
+
+
 class _PerSymbolPositionManager:
     """Routes on_bar(symbol, bar) to a per-symbol PositionManager."""
 
@@ -321,9 +334,10 @@ def main():
         position_manager=pm,
     )
 
-    timeframe = cfg["scheduler"]["bar_timeframe"]
+    timeframe = finest_timeframe(symbols, cfg)
     grace = cfg["scheduler"]["wake_grace_seconds"]
-    logger.info("vwap_wave loop starting; symbols=%d", len(symbols))
+    logger.info("vwap_wave loop starting; symbols=%d finest_tf=%s",
+                len(symbols), timeframe)
 
     while not _shutdown:
         now = datetime.now(timezone.utc)
@@ -338,9 +352,10 @@ def main():
             for sym, ac_name in symbols:
                 ctx = contexts[sym]
                 ac = ac_configs[ac_name]
+                sym_tf = timeframe_for(sym, cfg)
                 start = session_start_for(cycle_now, ac)
-                bars = data.get_bars(sym, ac_name, timeframe, start=start, end=cycle_now,
-                                     use_cache=False)
+                bars = data.get_bars(sym, ac_name, sym_tf,
+                                     start=start, end=cycle_now, use_cache=False)
                 last_known_ts = ctx.bars[-1].ts if ctx.bars else None
                 new_bars = [b for b in bars if last_known_ts is None or b.ts > last_known_ts]
                 if new_bars:
