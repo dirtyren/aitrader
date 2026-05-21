@@ -79,8 +79,43 @@ def _merge_lines(raw_lines: list[str]) -> list[ParsedLine]:
     return out
 
 
+_BLOCK = 64 * 1024
+
+
 def tail(path: str | Path, n: int) -> list[ParsedLine]:
+    """Return up to the last n logical log entries.
+
+    Reads the file backwards in 64 KiB blocks, accumulates raw lines,
+    and stops once at least n header lines are buffered (so traceback
+    continuations attached to the n-th oldest header are also included).
+    """
     p = Path(path)
     if not p.exists():
         return []
-    return []  # implemented in next task
+    size = p.stat().st_size
+    if size == 0:
+        return []
+
+    parts: list[bytes] = []
+    pos = size
+    header_count = 0
+    with p.open("rb") as f:
+        while pos > 0 and header_count <= n:
+            read_size = min(_BLOCK, pos)
+            pos -= read_size
+            f.seek(pos)
+            block = f.read(read_size)
+            parts.append(block)
+            joined = b"".join(reversed(parts))
+            text = joined.decode("utf-8", errors="replace")
+            header_count = sum(
+                1 for line in text.splitlines()
+                if _HEADER_RE.match(line)
+            )
+
+    text = b"".join(reversed(parts)).decode("utf-8", errors="replace")
+    raw_lines = text.splitlines()
+    if pos > 0 and raw_lines:
+        raw_lines = raw_lines[1:]
+    merged = _merge_lines(raw_lines)
+    return merged[-n:] if n < len(merged) else merged
