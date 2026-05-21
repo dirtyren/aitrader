@@ -2,7 +2,7 @@ services:
   trader:
     build: .
     command: python main.py
-    env_file: .env
+    env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
       - LOCK_FILE_PATH=/app/runtime/lock.file
@@ -17,6 +17,7 @@ services:
     environment:
       - TRADING_ENV=test  # prevents lock.file import-time sys.exit
       - STATE_FILE_PATH=/app/runtime/trading_state.json
+      - PYTHONPATH=/app
     ports:
       - "127.0.0.1:8501:8501"
     volumes:
