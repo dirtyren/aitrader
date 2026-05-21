@@ -43,7 +43,9 @@ st.set_page_config(page_title="VWAP Wave", layout="wide")
 st_autorefresh(interval=5_000, key="vwap_wave_refresh")
 st.title("VWAP Wave Protocol")
 
-overview_tab, logs_tab = st.tabs(["Overview", "Logs"])
+from ui.wfo import tab as wfo_tab
+
+overview_tab, logs_tab, wfo_tab_panel = st.tabs(["Overview", "Logs", "WFO"])
 
 with overview_tab:
     state = _read_state()
@@ -82,3 +84,6 @@ with overview_tab:
 
 with logs_tab:
     render_logs(_resolve_log_file())
+
+with wfo_tab_panel:
+    wfo_tab.render()
