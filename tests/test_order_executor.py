@@ -1,5 +1,7 @@
+import logging
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
+from broker.alpaca_client import InsufficientBuyingPowerError
 from broker.order_executor import OrderExecutor
 from strategies.base_setup import SetupSignal
 from state.position_book import PositionBook
@@ -111,6 +113,82 @@ def test_submit_skips_when_symbol_just_exited_this_cycle():
     assert pos is None
     client.submit_bracket_order.assert_not_called()
     client.submit_order.assert_not_called()
+
+
+def test_submit_logs_dtbp_rejection_at_warning_without_stack_trace(caplog):
+    client = MagicMock()
+    client.submit_bracket_order.side_effect = InsufficientBuyingPowerError(
+        403, "insufficient day trading buying power"
+    )
+    book = PositionBook()
+    ex = OrderExecutor(client, book)  # use real logger so caplog captures it
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+    with caplog.at_level(logging.WARNING, logger="vwap_wave.executor"):
+        pos = ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity")
+    assert pos is None
+    rec = next(r for r in caplog.records if "ORDER_REJECTED_DTBP" in r.getMessage())
+    assert rec.levelno == logging.WARNING
+    assert rec.exc_info is None
+    msg = rec.getMessage()
+    assert "PLTR" in msg
+    assert "qty=10" in msg
+
+
+def test_dtbp_rejection_short_circuits_subsequent_equity_submits_in_same_cycle():
+    client = MagicMock()
+    client.submit_bracket_order.side_effect = InsufficientBuyingPowerError(
+        403, "insufficient day trading buying power"
+    )
+    book = PositionBook()
+    ex = OrderExecutor(client, book, logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+
+    # First submit triggers the broker call and gets rejected.
+    assert ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity") is None
+    assert client.submit_bracket_order.call_count == 1
+
+    # Subsequent equity submit in the same cycle must NOT call the broker.
+    assert ex.submit(_signal(symbol="AAPL"), decision, asset_class="equity") is None
+    assert client.submit_bracket_order.call_count == 1
+
+
+def test_dtbp_short_circuit_does_not_block_crypto_submits():
+    client = MagicMock()
+    client.submit_bracket_order.side_effect = InsufficientBuyingPowerError(
+        403, "insufficient day trading buying power"
+    )
+    client.submit_order.return_value = {"id": "ord-c"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=0.1, notional=5000)
+
+    ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity")
+    # Crypto entry path is unaffected — DTBP only constrains marginable equities.
+    pos = ex.submit(_signal(symbol="BTC/USD", side="long"), decision,
+                    asset_class="crypto")
+    assert pos is not None
+    client.submit_order.assert_called_once()
+
+
+def test_reset_cycle_clears_dtbp_short_circuit():
+    client = MagicMock()
+    client.submit_bracket_order.side_effect = [
+        InsufficientBuyingPowerError(403, "insufficient day trading buying power"),
+        {"id": "ord-next"},
+    ]
+    book = PositionBook()
+    ex = OrderExecutor(client, book, logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+
+    assert ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity") is None
+    # Same-cycle short-circuit
+    assert ex.submit(_signal(symbol="AAPL"), decision, asset_class="equity") is None
+    assert client.submit_bracket_order.call_count == 1
+
+    ex.reset_cycle()
+    pos = ex.submit(_signal(symbol="AAPL"), decision, asset_class="equity")
+    assert pos is not None
+    assert client.submit_bracket_order.call_count == 2
 
 
 def test_submit_proceeds_after_just_exited_cleared():

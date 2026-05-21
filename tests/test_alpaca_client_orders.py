@@ -1,10 +1,15 @@
 import os
+import pytest
 from unittest.mock import patch, MagicMock
 
 os.environ.setdefault("ALPACA_API_KEY", "test")
 os.environ.setdefault("ALPACA_SECRET_KEY", "test")
 
-from broker.alpaca_client import AlpacaClient
+from broker.alpaca_client import (
+    AlpacaClient,
+    BrokerAPIError,
+    InsufficientBuyingPowerError,
+)
 
 
 def _resp(status, body):
@@ -111,6 +116,44 @@ def test_submit_bracket_order_sub_dollar_uses_four_decimals():
         assert body["limit_price"] == 0.1235
         assert body["stop_loss"]["stop_price"] == 0.1111
         assert body["take_profit"]["limit_price"] == 0.9999
+
+
+def test_403_with_dtbp_message_raises_insufficient_buying_power_error():
+    client = AlpacaClient()
+    body = {"message": "insufficient day trading buying power"}
+    with patch.object(client._session, "request", return_value=_resp(403, body)):
+        with pytest.raises(InsufficientBuyingPowerError) as exc_info:
+            client.submit_bracket_order(
+                symbol="PLTR", qty=10, side="buy",
+                limit_price=88.0, stop_loss=87.0, take_profit=89.0,
+            )
+    assert isinstance(exc_info.value, BrokerAPIError)
+    assert exc_info.value.status_code == 403
+    assert "day trading buying power" in exc_info.value.message
+
+
+def test_403_with_plain_buying_power_message_also_raises_dtbp_error():
+    client = AlpacaClient()
+    body = {"message": "insufficient buying power"}
+    with patch.object(client._session, "request", return_value=_resp(403, body)):
+        with pytest.raises(InsufficientBuyingPowerError):
+            client.submit_bracket_order(
+                symbol="PLTR", qty=10, side="buy",
+                limit_price=88.0, stop_loss=87.0, take_profit=89.0,
+            )
+
+
+def test_403_with_unrelated_message_still_raises_plain_broker_api_error():
+    client = AlpacaClient()
+    body = {"message": "forbidden: trading disabled for account"}
+    with patch.object(client._session, "request", return_value=_resp(403, body)):
+        with pytest.raises(BrokerAPIError) as exc_info:
+            client.submit_bracket_order(
+                symbol="PLTR", qty=10, side="buy",
+                limit_price=88.0, stop_loss=87.0, take_profit=89.0,
+            )
+    assert not isinstance(exc_info.value, InsufficientBuyingPowerError)
+    assert exc_info.value.status_code == 403
 
 
 def test_replace_order_rounds_sub_penny_prices():

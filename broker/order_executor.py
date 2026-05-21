@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from broker.alpaca_client import OrderRejectedError
+from broker.alpaca_client import InsufficientBuyingPowerError, OrderRejectedError
 from core.position_manager import PositionAction
 from state.position_book import OpenPosition, PositionBook
 from strategies.base_setup import SetupSignal
@@ -29,6 +29,11 @@ class OrderExecutor:
         self.client = alpaca_client
         self.book = book
         self.logger = logger or logging.getLogger("vwap_wave.executor")
+        self._dtbp_exhausted = False
+
+    def reset_cycle(self) -> None:
+        """Clear per-cycle short-circuit flags. Call at the top of each main-loop tick."""
+        self._dtbp_exhausted = False
 
     @staticmethod
     def _alpaca_side(side: str) -> str:
@@ -59,6 +64,11 @@ class OrderExecutor:
                              signal.symbol, signal.setup)
             return None
 
+        if asset_class == "equity" and self._dtbp_exhausted:
+            self.logger.info("ORDER_SKIPPED_DTBP_EXHAUSTED symbol=%s setup=%s",
+                             signal.symbol, signal.setup)
+            return None
+
         alp_side = self._alpaca_side(signal.side)
 
         try:
@@ -83,6 +93,14 @@ class OrderExecutor:
                 )
             else:
                 raise ValueError(f"Unknown asset_class: {asset_class}")
+        except InsufficientBuyingPowerError as exc:
+            self._dtbp_exhausted = True
+            self.logger.warning(
+                "ORDER_REJECTED_DTBP symbol=%s setup=%s qty=%s notional=%.2f detail=%s",
+                signal.symbol, signal.setup, decision.qty,
+                decision.qty * signal.entry, exc.message,
+            )
+            return None
         except Exception as exc:
             self.logger.error("ORDER_SUBMIT_FAILED symbol=%s error=%s",
                               signal.symbol, exc, exc_info=True)

@@ -7,6 +7,7 @@ Never hardcode credentials.
 
 import os
 import random
+import re
 import time
 import logging
 from datetime import datetime
@@ -50,6 +51,17 @@ class BrokerAPIError(Exception):
         self.status_code = status_code
         self.message = message
         super().__init__(f"BrokerAPIError({status_code}): {message}")
+
+
+class InsufficientBuyingPowerError(BrokerAPIError):
+    """Raised on Alpaca 403 with an 'insufficient (day trading )?buying power' message.
+
+    Distinct from generic BrokerAPIError so callers can react with a non-alarming
+    structured log + same-cycle short-circuit instead of a stack-trace ERROR.
+    """
+
+
+_DTBP_MESSAGE_RE = re.compile(r"insufficient(?: day trading)? buying power", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +156,8 @@ class AlpacaClient:
                     message = body.get("message", response.text)
                 except Exception:
                     message = response.text
+                if response.status_code == 403 and _DTBP_MESSAGE_RE.search(message or ""):
+                    raise InsufficientBuyingPowerError(response.status_code, message)
                 raise BrokerAPIError(response.status_code, message)
 
             # Success
