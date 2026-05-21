@@ -14,8 +14,8 @@ services:
   dashboard:
     build: .
     command: streamlit run ui/dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    env_file: ./config/.env
     environment:
-      - TRADING_ENV=test  # prevents lock.file import-time sys.exit
       - STATE_FILE_PATH=/app/runtime/trading_state.json
       - PYTHONPATH=/app
     ports:
