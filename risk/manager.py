@@ -38,10 +38,14 @@ class RiskManager:
         self.sizing_crypto = sizing_crypto
         self.ledger = ledger
         self.book = book
+        self.available_cash: float | None = None
 
     def update_equity(self, equity: float) -> None:
         self.ledger.equity = equity
         self.circuit_breaker.peak_equity = max(self.circuit_breaker.peak_equity, equity)
+
+    def update_cash(self, cash: float | None) -> None:
+        self.available_cash = float(cash) if cash is not None else None
 
     def evaluate(self, signal: SetupSignal, ctx, asset_class: str) -> RiskDecision:
         result = self.pipeline.check(signal, ctx, self.ledger, self.book)
@@ -52,7 +56,10 @@ class RiskManager:
 
         sizing = self.sizing_crypto if asset_class == "crypto" else self.sizing_equity
         try:
-            qty, notional = size_position(self.ledger.equity, signal.entry, signal.stop, sizing)
+            qty, notional = size_position(
+                self.ledger.equity, signal.entry, signal.stop, sizing,
+                available_cash=self.available_cash,
+            )
         except ValueError as exc:
             return RiskDecision.reject(str(exc))
 

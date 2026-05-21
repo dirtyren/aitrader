@@ -348,6 +348,7 @@ def main():
 
         try:
             cycle_now = datetime.now(timezone.utc)
+            executor.reset_cycle()
             fresh_bars: dict[str, list] = {}
             for sym, ac_name in symbols:
                 ctx = contexts[sym]
@@ -365,6 +366,9 @@ def main():
             account = alpaca.get_account()
             equity = float(account.get("equity") or account.get("portfolio_value") or ledger.equity)
             rm.update_equity(equity)
+            cash_raw = (account.get("non_marginable_buying_power")
+                        or account.get("cash"))
+            rm.update_cash(float(cash_raw) if cash_raw is not None else None)
 
             daily_pnl_pct = ledger.day_pnl / initial_equity if initial_equity > 0 else 0.0
             cb.check(equity, daily_pnl_pct)
