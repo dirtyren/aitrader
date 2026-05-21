@@ -4,11 +4,14 @@ Atomicity: tmp + os.replace. Last writer wins under concurrent approves.
 """
 from __future__ import annotations
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger("wfo.approval")
 
 
 class GateFailedApproveError(ValueError):
@@ -68,6 +71,8 @@ def approve_symbol(active_path: Path, audit_path: Path, symbol: str,
         "ts": _now_iso(), "action": "approve", "symbol": symbol,
         "run_id": run_id, "prev_run_id": prev_run_id, "operator": operator,
     })
+    logger.info("WFO_APPROVE symbol=%s run_id=%s prev_run_id=%s operator=%s",
+                symbol, run_id, prev_run_id, operator)
 
 
 def revert_symbol(active_path: Path, audit_path: Path, symbol: str,
@@ -81,6 +86,8 @@ def revert_symbol(active_path: Path, audit_path: Path, symbol: str,
         "ts": _now_iso(), "action": "revert", "symbol": symbol,
         "run_id": None, "prev_run_id": prev_run_id, "operator": operator,
     })
+    logger.info("WFO_REVERT symbol=%s prev_run_id=%s operator=%s",
+                symbol, prev_run_id, operator)
 
 
 def read_audit_tail(audit_path: Path, n: int = 50) -> list[dict]:

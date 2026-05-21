@@ -12,6 +12,7 @@ Status transitions:
 """
 from __future__ import annotations
 import json
+import logging
 import os
 from dataclasses import dataclass, asdict, field, replace
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
+
+logger = logging.getLogger("wfo.job_state")
 
 JobStatus = Literal["queued", "starting", "running",
                     "completed", "cancelled", "failed"]
@@ -116,6 +119,7 @@ def enqueue(jobs_root: Path, *, payload: dict, wfo_template: dict,
         wfo_config_path=str(config_path),
     )
     _write_atomic(_path_for(jobs_root, "queue", job_id), rec.to_dict())
+    logger.info("WFO_JOB_ENQUEUED job_id=%s run_id=%s", rec.job_id, rec.run_id)
     return rec
 
 
@@ -131,6 +135,7 @@ def claim_next(jobs_root: Path) -> JobRecord | None:
     dst = _path_for(jobs_root, "active", rec.job_id)
     _write_atomic(dst, rec.to_dict())
     src.unlink()
+    logger.info("WFO_JOB_CLAIMED job_id=%s run_id=%s", rec.job_id, rec.run_id)
     return rec
 
 
@@ -139,6 +144,7 @@ def mark_running(jobs_root: Path, job_id: str, *, pid: int) -> JobRecord:
     rec = _read_record(path)
     rec = replace(rec, status="running", pid=pid, started_at=_now_iso())
     _write_atomic(path, rec.to_dict())
+    logger.info("WFO_JOB_RUNNING job_id=%s pid=%d", rec.job_id, pid)
     return rec
 
 
@@ -165,6 +171,8 @@ def finalize(jobs_root: Path, job_id: str, *, status: JobStatus,
     cancel = jobs_root / "active" / f"{job_id}.cancel"
     if cancel.exists():
         cancel.unlink()
+    logger.info("WFO_JOB_FINALIZED job_id=%s status=%s exit_code=%s error=%s",
+                rec.job_id, status, exit_code, error)
     return rec
 
 
@@ -204,6 +212,7 @@ def detect_orphans(jobs_root: Path) -> list[JobRecord]:
 def write_cancel_sentinel(jobs_root: Path, job_id: str) -> None:
     _ensure_dirs(jobs_root)
     (jobs_root / "active" / f"{job_id}.cancel").touch()
+    logger.info("WFO_JOB_CANCEL_REQUESTED job_id=%s", job_id)
 
 
 def has_cancel_sentinel(jobs_root: Path, job_id: str) -> bool:
