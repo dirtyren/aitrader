@@ -141,10 +141,11 @@ across the broker's tradable universe. Output lands under
   symbols whose aggregate **WFE ≥ 0.5** AND total OOS P&L > 0 (Pardo gate).
 - `summary.md` — ranked human-readable table.
 
-`runtime/wfo/latest` is a symlink the CLI updates on success. `main.py` reads
-`runtime/wfo/latest/live_overrides.yaml` at boot when present and layers it on
-top of `config/settings.yaml`. No silent overwrite — operator promotes by
-manually editing `settings.yaml`.
+`runtime/wfo/<run_id>/live_overrides.yaml` is the immutable per-run candidate.
+The dashboard's WFO tab approves per-symbol candidates into
+`runtime/wfo/active/live_overrides.yaml`, which `main.py` reads at boot and
+layers on top of `config/settings.yaml`. Approvals take effect on the next
+trader restart; an audit log is kept at `runtime/wfo/active/audit.jsonl`.
 
 Tunables: `config/wfo.yaml` (universe scan, IS/OOS lengths in days/months,
 parameter grids per setup, fitness floor, gate thresholds).

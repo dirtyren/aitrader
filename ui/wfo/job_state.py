@@ -99,12 +99,17 @@ def _build_run_id(job_id: str) -> str:
 
 def enqueue(jobs_root: Path, *, payload: dict, wfo_template: dict,
             job_id: str | None = None) -> JobRecord:
+    """Write the frozen wfo_template to disk and queue a JobRecord.
+
+    `wfo_template` is the final config the CLI will read. Callers from
+    `forms.render_form` pre-merge their FormPayload via
+    `forms.merge_payload_into_template` before calling here. `payload` is
+    stored in the JobRecord for display/audit and is not re-merged."""
     _ensure_dirs(jobs_root)
     if job_id is None:
         job_id = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S_%f")[:-3]
-    config = _merge_payload_into_template(payload, wfo_template)
     config_path = jobs_root / "configs" / f"{job_id}.yaml"
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    config_path.write_text(yaml.safe_dump(wfo_template, sort_keys=False))
     rec = JobRecord(
         job_id=job_id, run_id=_build_run_id(job_id), status="queued",
         queued_at=_now_iso(), form_payload=payload,
@@ -112,24 +117,6 @@ def enqueue(jobs_root: Path, *, payload: dict, wfo_template: dict,
     )
     _write_atomic(_path_for(jobs_root, "queue", job_id), rec.to_dict())
     return rec
-
-
-def _merge_payload_into_template(payload: dict, template: dict) -> dict:
-    """Apply payload over a deep-copied template. Real merge logic lives in
-    ui/wfo/forms.py; this is a thin shim so enqueue can be called with raw
-    template + payload in tests."""
-    import copy
-    out = copy.deepcopy(template)
-    out.setdefault("universe", {}).update(payload.get("universe", {}))
-    out.setdefault("windowing", {}).update(payload.get("windowing", {}))
-    out.setdefault("gate", {}).update(payload.get("gate", {}))
-    if "history" in payload:
-        out["history"].update(payload["history"])
-    if "timeframes" in payload:
-        out["timeframes"] = payload["timeframes"]
-    if "fitness" in payload:
-        out.setdefault("fitness", {}).update(payload["fitness"])
-    return out
 
 
 def claim_next(jobs_root: Path) -> JobRecord | None:
