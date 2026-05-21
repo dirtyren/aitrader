@@ -139,3 +139,32 @@ def test_settings_yaml_overrides_path_points_to_active():
     cfg = yaml.safe_load(Path("config/settings.yaml").read_text())
     assert cfg["overrides"]["path"] == "runtime/wfo/active/live_overrides.yaml"
     assert cfg["overrides"]["enabled"] is True
+
+
+def test_apply_overrides_tolerates_provenance_keys(tmp_path):
+    """The dashboard writes a `_provenance` block per symbol; apply_overrides
+    must keep working — downstream consumers read named keys only."""
+    overrides_path = tmp_path / "live_overrides.yaml"
+    overrides_path.write_text(yaml.safe_dump({
+        "symbols": {
+            "AAPL": {
+                "timeframe": "15Min",
+                "setup": "price_discovery",
+                "setup_params": {"atr_mult_stop": 1.25, "target_R": 2.0,
+                                 "arm_window_bars": 6},
+                "position_management": {"max_hold_bars": 12, "breakeven_at_R": 1.0},
+                "metadata": {"walks": 30, "wfe": 0.78},
+                "_provenance": {
+                    "run_id": "2026-05-21T14-02_a3f1c2",
+                    "approved_at": "2026-05-21T15:11:08Z",
+                    "approved_by": "dashboard",
+                },
+            },
+        },
+    }))
+    cfg = {"setups": {}}
+    out = apply_overrides(cfg, str(overrides_path))
+    assert "AAPL" in out["_per_symbol_overrides"]
+    entry = out["_per_symbol_overrides"]["AAPL"]
+    assert entry["setup"] == "price_discovery"
+    assert "_provenance" in entry  # passed through, not stripped
