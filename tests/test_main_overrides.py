@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import yaml
 
@@ -132,3 +133,9 @@ def test_finest_timeframe_picks_shortest_period():
     }
     symbols = [("AAPL", "us_equity"), ("BTC/USD", "crypto"), ("SPY", "us_equity")]
     assert finest_timeframe(symbols, cfg) == "5Min"
+
+
+def test_settings_yaml_overrides_path_points_to_active():
+    cfg = yaml.safe_load(Path("config/settings.yaml").read_text())
+    assert cfg["overrides"]["path"] == "runtime/wfo/active/live_overrides.yaml"
+    assert cfg["overrides"]["enabled"] is True

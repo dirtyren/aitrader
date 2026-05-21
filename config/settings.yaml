@@ -128,5 +128,5 @@ logging:
   log_file: logs/vwap_wave.log
 
 overrides:
-  path: runtime/wfo/latest/live_overrides.yaml
+  path: runtime/wfo/active/live_overrides.yaml
   enabled: true
