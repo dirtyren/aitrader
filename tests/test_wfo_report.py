@@ -160,30 +160,13 @@ def test_emit_summary_md_contains_all_groups(tmp_path):
     assert "passed" in text.lower()
 
 
-def test_update_latest_symlink_atomic(tmp_path):
-    from backtest.wfo.report import update_latest_symlink
-    runs = tmp_path / "runs"
-    run1 = runs / "run1"
-    run2 = runs / "run2"
-    run1.mkdir(parents=True)
-    run2.mkdir(parents=True)
-    latest = runs / "latest"
-
-    update_latest_symlink(latest, run1)
-    assert latest.is_symlink()
-    assert latest.resolve() == run1.resolve()
-
-    update_latest_symlink(latest, run2)
-    assert latest.resolve() == run2.resolve()
+def test_update_latest_symlink_helpers_removed():
+    """The dashboard owns promotion now — these helpers are dead code."""
+    import backtest.wfo.report as report
+    assert not hasattr(report, "update_latest_symlink")
+    assert not hasattr(report, "update_latest_symlink_if_passing")
 
 
-def test_update_latest_symlink_skipped_when_zero_passed(tmp_path):
-    from backtest.wfo.report import update_latest_symlink_if_passing
-    runs = tmp_path / "runs"
-    run1 = runs / "run1"
-    run1.mkdir(parents=True)
-    latest = runs / "latest"
-
-    aggregated = _agg_passing().assign(passed=False)
-    update_latest_symlink_if_passing(latest, run1, aggregated)
-    assert not latest.exists()
+def test_run_wfo_does_not_import_symlink_helper():
+    import scripts.run_wfo as cli
+    assert "update_latest_symlink_if_passing" not in dir(cli)

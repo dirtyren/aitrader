@@ -155,23 +155,3 @@ def emit_summary_md(aggregated: pd.DataFrame, out_path: Path, *,
             f"{'✓' if r['passed'] else '✗'} |"
         )
     _atomic_write(out_path, "\n".join(lines) + "\n")
-
-
-def update_latest_symlink(latest: Path, target: Path) -> None:
-    """Atomically point `latest` symlink at `target` (relative)."""
-    latest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = latest.with_suffix(latest.suffix + ".tmp_link")
-    if tmp.is_symlink() or tmp.exists():
-        tmp.unlink()
-    tmp.symlink_to(target.relative_to(latest.parent), target_is_directory=True)
-    os.replace(tmp, latest)
-
-
-def update_latest_symlink_if_passing(latest: Path, target: Path,
-                                     aggregated: pd.DataFrame) -> bool:
-    """Only swap `latest` when the run produced at least one passing row."""
-    if aggregated["passed"].any():
-        update_latest_symlink(latest, target)
-        return True
-    logger.info("LATEST_NOT_UPDATED reason=zero_passing_groups")
-    return False

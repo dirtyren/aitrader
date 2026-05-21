@@ -15,7 +15,6 @@ import yaml
 from backtest.wfo.grid import expand_grid
 from backtest.wfo.report import (
     GateConfig, aggregate_results, emit_live_overrides, emit_summary_md,
-    update_latest_symlink_if_passing,
 )
 from backtest.wfo.runner import WFORunner
 from backtest.wfo.universe import scan_alpaca_universe
@@ -161,9 +160,6 @@ def main() -> int:
     emit_summary_md(aggregated, output_dir / "summary.md",
                     run_id=run_id, git_sha=manifest["git_sha"],
                     gate=GateConfig(**wfo_cfg["gate"]))
-
-    latest = Path(wfo_cfg["run"]["output_root"]) / "latest"
-    update_latest_symlink_if_passing(latest, output_dir, aggregated)
 
     manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
     manifest["evaluated_groups"] = int(len(aggregated))
