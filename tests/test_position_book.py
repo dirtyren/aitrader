@@ -61,3 +61,41 @@ def test_aggregate_open_risk():
                           opened_at=datetime.now(timezone.utc), order_id="y"))
     # AAPL risk = 10 x 1 = 10; MSFT risk = 5 x 1 = 5; total 15
     assert book.aggregate_open_risk_usd() == 15.0
+
+
+def test_open_position_adopted_defaults_false():
+    p = OpenPosition(symbol="AAPL", setup="price_discovery", side="long",
+                     qty=10, entry_px=100.0, stop_px=99.0, target_px=102.0,
+                     opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+                     order_id="abc")
+    assert p.adopted is False
+
+
+def test_open_position_adopted_can_be_set_true():
+    p = OpenPosition(symbol="AAPL", setup="adopted", side="long",
+                     qty=10, entry_px=100.0, stop_px=None, target_px=None,
+                     opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+                     order_id="", adopted=True)
+    assert p.adopted is True
+
+
+def test_open_position_with_none_stop_yields_zero_risk():
+    p = OpenPosition(symbol="AAPL", setup="adopted", side="long",
+                     qty=10, entry_px=100.0, stop_px=None, target_px=None,
+                     opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+                     order_id="", adopted=True)
+    assert p.risk_per_share == 0.0
+    assert p.initial_risk_per_share == 0.0
+    assert p.open_risk_usd == 0.0
+
+
+def test_aggregate_open_risk_skips_none_stop_positions():
+    book = PositionBook()
+    book.add(OpenPosition(symbol="AAPL", setup="x", side="long", qty=10,
+                          entry_px=100.0, stop_px=99.0, target_px=102.0,
+                          opened_at=datetime.now(timezone.utc), order_id="a"))
+    book.add(OpenPosition(symbol="BTC/USD", setup="adopted", side="long", qty=1,
+                          entry_px=50_000.0, stop_px=None, target_px=None,
+                          opened_at=datetime.now(timezone.utc), order_id="",
+                          adopted=True))
+    assert book.aggregate_open_risk_usd() == 10.0  # only the AAPL position contributes

@@ -10,22 +10,27 @@ class OpenPosition:
     side: str               # "long" | "short"
     qty: float
     entry_px: float
-    stop_px: float
-    target_px: float
+    stop_px: float | None
+    target_px: float | None
     opened_at: datetime
     order_id: str
     breakeven_moved: bool = False
     bars_held: int = 0
-    stop_order_id: str | None = None    # bracket stop-leg id (equity); None for crypto / virtual
+    stop_order_id: str | None = None    # bracket stop-leg id (equity); None for crypto / virtual / adopted-no-bracket
     initial_stop_px: float | None = None  # original stop at entry; survives breakeven moves for R calc
+    adopted: bool = False               # True for positions reconciled from broker (monitor-only)
 
     @property
     def initial_risk_per_share(self) -> float:
         ref = self.initial_stop_px if self.initial_stop_px is not None else self.stop_px
+        if ref is None:
+            return 0.0
         return abs(self.entry_px - ref)
 
     @property
     def risk_per_share(self) -> float:
+        if self.stop_px is None:
+            return 0.0
         return abs(self.entry_px - self.stop_px)
 
     @property
