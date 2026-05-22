@@ -87,3 +87,215 @@ def test_index_bracket_children_ignores_unrelated_order_types():
         {"id": "m1", "symbol": "AAPL", "type": "market", "side": "buy"},
     ]
     assert _index_bracket_children(orders) == {}
+
+
+from datetime import datetime, timezone
+import logging
+from unittest.mock import MagicMock
+from state.position_book import PositionBook, OpenPosition
+from state.reconciler import Reconciler, ReconcileReport
+
+
+def _trader_pos(symbol="AAPL", qty=10, side="long",
+                stop=99.0, target=102.0, entry=100.0):
+    return OpenPosition(
+        symbol=symbol, setup="price_discovery", side=side, qty=qty,
+        entry_px=entry, stop_px=stop, target_px=target,
+        opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+        order_id="o1", stop_order_id="leg1", initial_stop_px=stop,
+    )
+
+
+def _broker_position(symbol="AAPL", qty="10", side="long",
+                     entry="100.0", asset_class="us_equity"):
+    return {"symbol": symbol, "qty": qty, "side": side,
+            "avg_entry_price": entry, "asset_class": asset_class}
+
+
+def _fake_alpaca(positions=None, orders=None):
+    alp = MagicMock()
+    alp.get_positions.return_value = positions or []
+    alp.list_orders.return_value = orders or []
+    return alp
+
+
+def test_reconcile_empty_book_empty_broker():
+    book = PositionBook()
+    r = Reconciler(_fake_alpaca(), ac_configs={})
+    report = r.reconcile(book)
+    assert isinstance(report, ReconcileReport)
+    assert report.closed == []
+    assert report.adopted_equity == []
+    assert report.adopted_crypto == []
+    assert report.drift == []
+    assert report.equity_no_bracket == []
+
+
+def test_reconcile_book_matches_broker_no_changes():
+    book = PositionBook()
+    book.add(_trader_pos("AAPL", qty=10))
+    alp = _fake_alpaca(positions=[_broker_position("AAPL", qty="10")])
+    r = Reconciler(alp, ac_configs={})
+    report = r.reconcile(book)
+    assert report.closed == []
+    assert report.adopted_equity == []
+    assert book.count() == 1
+    assert book.get("AAPL").adopted is False
+
+
+def test_reconcile_closes_position_when_broker_says_gone():
+    book = PositionBook()
+    book.add(_trader_pos("AAPL"))
+    alp = _fake_alpaca(positions=[])
+    r = Reconciler(alp, ac_configs={})
+    report = r.reconcile(book)
+    assert report.closed == ["AAPL"]
+    assert book.get("AAPL") is None
+
+
+def test_reconcile_adopts_equity_with_alive_bracket():
+    book = PositionBook()
+    bracket_parent = {
+        "id": "p1", "symbol": "AAPL", "type": "limit", "side": "buy",
+        "legs": [
+            {"id": "stop1", "symbol": "AAPL", "type": "stop",
+             "stop_price": "99.0", "side": "sell"},
+            {"id": "tgt1", "symbol": "AAPL", "type": "limit",
+             "limit_price": "102.0", "side": "sell"},
+        ],
+    }
+    alp = _fake_alpaca(
+        positions=[_broker_position("AAPL", qty="10", entry="100.0")],
+        orders=[bracket_parent],
+    )
+    r = Reconciler(alp, ac_configs={})
+    report = r.reconcile(book)
+    assert report.adopted_equity == ["AAPL"]
+    pos = book.get("AAPL")
+    assert pos is not None
+    assert pos.adopted is True
+    assert pos.qty == 10.0
+    assert pos.side == "long"
+    assert pos.entry_px == 100.0
+    assert pos.stop_px == 99.0
+    assert pos.target_px == 102.0
+    assert pos.stop_order_id == "stop1"
+    assert pos.initial_stop_px == 99.0
+
+
+def test_reconcile_adopts_equity_with_orphaned_bracket_children():
+    book = PositionBook()
+    children = [
+        {"id": "stop1", "symbol": "AAPL", "type": "stop_limit",
+         "stop_price": "99.0", "parent_id": "p1", "side": "sell"},
+        {"id": "tgt1", "symbol": "AAPL", "type": "limit",
+         "limit_price": "102.0", "parent_id": "p1", "side": "sell"},
+    ]
+    alp = _fake_alpaca(
+        positions=[_broker_position("AAPL")],
+        orders=children,
+    )
+    r = Reconciler(alp, ac_configs={})
+    r.reconcile(book)
+    pos = book.get("AAPL")
+    assert pos.stop_order_id == "stop1"
+    assert pos.stop_px == 99.0
+    assert pos.target_px == 102.0
+
+
+def test_reconcile_adopts_equity_no_bracket():
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("AAPL", qty="10", entry="100.0")],
+        orders=[],
+    )
+    r = Reconciler(alp, ac_configs={})
+    report = r.reconcile(book)
+    assert report.adopted_equity == ["AAPL"]
+    assert report.equity_no_bracket == ["AAPL"]
+    pos = book.get("AAPL")
+    assert pos.stop_px is None
+    assert pos.target_px is None
+    assert pos.stop_order_id is None
+
+
+def test_reconcile_adopts_crypto_no_stop():
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("BTCUSD", qty="0.5",
+                                    entry="50000.0", asset_class="crypto")],
+        orders=[],
+    )
+    r = Reconciler(alp, ac_configs={})
+    report = r.reconcile(book)
+    assert report.adopted_crypto == ["BTCUSD"]
+    pos = book.get("BTCUSD")
+    assert pos.adopted is True
+    assert pos.qty == 0.5
+    assert pos.entry_px == 50_000.0
+    assert pos.stop_px is None
+    assert pos.target_px is None
+
+
+def test_reconcile_logs_drift_no_mutation():
+    book = PositionBook()
+    book.add(_trader_pos("AAPL", qty=100))
+    alp = _fake_alpaca(positions=[_broker_position("AAPL", qty="50")])
+    r = Reconciler(alp, ac_configs={})
+    report = r.reconcile(book)
+    assert report.drift == [("AAPL", 100.0, 50.0)]
+    assert book.get("AAPL").qty == 100
+
+
+def test_reconcile_unknown_asset_class_skips_adoption(caplog):
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("EURUSD", asset_class="forex")],
+    )
+    r = Reconciler(alp, ac_configs={})
+    with caplog.at_level(logging.WARNING):
+        report = r.reconcile(book)
+    assert report.adopted_equity == []
+    assert report.adopted_crypto == []
+    assert book.get("EURUSD") is None
+    assert any("RECONCILE_UNKNOWN_ASSET_CLASS" in rec.message
+               for rec in caplog.records)
+
+
+def test_reconcile_short_position_qty_uses_abs():
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("AAPL", qty="-10", side="short")],
+    )
+    r = Reconciler(alp, ac_configs={})
+    r.reconcile(book)
+    pos = book.get("AAPL")
+    assert pos.side == "short"
+    assert pos.qty == 10.0
+
+
+def test_reconcile_naked_crypto_logs_every_cycle(caplog):
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("BTCUSD", asset_class="crypto",
+                                    qty="0.5", entry="50000.0")],
+    )
+    r = Reconciler(alp, ac_configs={})
+    with caplog.at_level(logging.WARNING):
+        r.reconcile(book)
+        caplog.clear()
+        r.reconcile(book)
+    assert any("ADOPTED_CRYPTO_NAKED" in rec.message
+               for rec in caplog.records)
+
+
+def test_reconcile_does_not_double_log_adoption_for_existing_adopted_position():
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("AAPL", qty="10")],
+    )
+    r = Reconciler(alp, ac_configs={})
+    r.reconcile(book)
+    report2 = r.reconcile(book)
+    assert report2.adopted_equity == []
+    assert book.count() == 1
