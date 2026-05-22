@@ -11,6 +11,7 @@ import os
 import signal as _signal
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 
@@ -48,7 +49,7 @@ from scheduler.bar_clock import next_boundary, sleep_until
 from scheduler.loop import VWAPWaveEngine
 from state.daily_ledger import DailyLedger
 from state.dashboard_state import DashboardSnapshot, write_dashboard_state
-from state.position_book import PositionBook
+from state.position_book_store import read_position_book, write_position_book
 from state.reconciler import Reconciler
 from strategies.setup_fade_extreme import FadeExtremeSetup
 from strategies.setup_price_discovery import PriceDiscoverySetup
@@ -279,7 +280,11 @@ def main():
 
     alpaca = AlpacaClient()
     data = AlpacaData(alpaca, cache_dir=cfg["backtest"]["cache_dir"])
-    book = PositionBook()
+
+    book_path = Path("runtime/position_book.json")
+    book = read_position_book(book_path)
+    logger.info("POSITION_BOOK_LOADED path=%s open_positions=%d",
+                book_path, book.count())
 
     account = alpaca.get_account()
     initial_equity = float(account.get("equity") or account.get("portfolio_value") or 0)
@@ -300,6 +305,7 @@ def main():
         len(startup_report.adopted_crypto), len(startup_report.drift),
         len(startup_report.equity_no_bracket),
     )
+    write_position_book(book_path, book)
 
     cb_cfg = cfg["risk"]["circuit_breaker"]
     cb = CircuitBreaker(
@@ -404,6 +410,11 @@ def main():
 
             logger.info("CYCLE_DONE equity=%.2f day_pnl=%.2f open_positions=%d",
                         equity, ledger.day_pnl, book.count())
+
+            try:
+                write_position_book(book_path, book)
+            except Exception as exc:
+                logger.error("POSITION_BOOK_WRITE_FAILED: %s", exc, exc_info=True)
 
             snap = _collect_snapshot(symbols, contexts, book, ledger, cb)
             write_dashboard_state("runtime/trading_state.json", snap)
