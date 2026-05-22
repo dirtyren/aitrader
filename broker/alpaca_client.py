@@ -207,6 +207,25 @@ class AlpacaClient:
         response = self._request("GET", "/v2/positions")
         return response.json()
 
+    def list_orders(
+        self,
+        *,
+        status: str = "open",
+        symbols: list[str] | None = None,
+        nested: bool = True,
+    ) -> list[dict]:
+        """GET /v2/orders — list orders, optionally filtered by status and symbols.
+
+        nested=True returns child legs of bracket orders inside the parent's
+        `legs` field; orphaned children whose parent has filled appear as
+        top-level orders with `parent_id` set.
+        """
+        params: dict = {"status": status, "nested": "true" if nested else "false"}
+        if symbols:
+            params["symbols"] = ",".join(symbols)
+        response = self._request("GET", "/v2/orders", params=params)
+        return response.json()
+
     def submit_order(
         self,
         symbol: str,
