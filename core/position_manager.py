@@ -25,6 +25,10 @@ class PositionManager:
         if pos is None:
             return []
 
+        if pos.adopted:
+            pos.bars_held += 1
+            return []
+
         actions: list[PositionAction] = []
 
         if pos.side == "long":
