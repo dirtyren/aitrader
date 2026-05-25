@@ -19,12 +19,16 @@ _EXIT_KINDS = ("stop", "target", "time_stop")
 
 def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
                            actions: list[PositionAction], last_bar: Bar,
-                           pos_before: OpenPosition | None) -> list[TradeRecord]:
+                           pos_before: OpenPosition | None,
+                           mysql_store=None) -> list[TradeRecord]:
     """Append a TradeRecord per stop/target/time_stop action and return them.
 
     Uses pos_before because PositionManager.on_bar closes the book entry on
     exit kinds. R_realized is computed against initial_risk_per_share so
     breakeven-moved positions still report the original risk.
+
+    If mysql_store is provided, position_closed() is called to archive the
+    trade in MySQL with full metadata.
     """
     recorded: list[TradeRecord] = []
     if pos_before is None:
@@ -45,6 +49,16 @@ def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
         )
         ledger.record(rec)
         recorded.append(rec)
+        # MySQL: archive completed trade
+        if mysql_store is not None:
+            try:
+                mysql_store.position_closed(
+                    symbol=symbol, exit_px=a.price,
+                    close_reason=a.kind, closed_at=last_bar.ts,
+                )
+            except Exception as exc:
+                logger.error("MYSQL_CLOSE_FAILED symbol=%s: %s",
+                             symbol, exc, exc_info=True)
         update_strategy_performance_file(pos_before.setup, pnl, r_realized)
         logger.info("POSITION_CLOSED symbol=%s reason=%s exit=%.4f r=%.2f pnl=%.2f",
                     symbol, a.kind, a.price, r_realized, pnl)
@@ -73,6 +87,7 @@ class VWAPWaveEngine:
     book: PositionBook
     ledger: DailyLedger
     position_manager: PositionManager
+    mysql_store: object | None = None
 
     def tick(self, now: datetime, fresh_bars: dict[str, list[Bar]]) -> None:
         total_bars = sum(len(v) for v in fresh_bars.values())
@@ -115,7 +130,8 @@ class VWAPWaveEngine:
 
     def _record_exits(self, symbol: str, actions: list[PositionAction],
                       last_bar: Bar, pos_before: OpenPosition | None) -> None:
-        record_exits_to_ledger(self.ledger, symbol, actions, last_bar, pos_before)
+        record_exits_to_ledger(self.ledger, symbol, actions, last_bar, pos_before,
+                              mysql_store=self.mysql_store)
 
 
 def update_strategy_performance_file(setup_name: str, pnl: float, r_realized: float) -> None:

@@ -25,11 +25,13 @@ class OrderExecutor:
     """Translates an approved SetupSignal+RiskDecision into broker orders."""
 
     def __init__(self, alpaca_client, book: PositionBook,
-                 logger: logging.Logger | None = None):
+                 logger: logging.Logger | None = None,
+                 mysql_store=None):
         self.client = alpaca_client
         self.book = book
         self.logger = logger or logging.getLogger("vwap_wave.executor")
         self._dtbp_exhausted = False
+        self._mysql = mysql_store
 
     def reset_cycle(self) -> None:
         """Clear per-cycle short-circuit flags. Call at the top of each main-loop tick."""
@@ -116,6 +118,13 @@ class OrderExecutor:
             initial_stop_px=signal.stop,
         )
         self.book.add(pos)
+        # Persist to MySQL so position metadata survives container restarts
+        if self._mysql is not None:
+            try:
+                self._mysql.position_opened(pos, asset_class)
+            except Exception as exc:
+                self.logger.error("MYSQL_SAVE_FAILED symbol=%s: %s",
+                                  signal.symbol, exc, exc_info=True)
         self.logger.info("ORDER_SUBMITTED setup=%s symbol=%s side=%s qty=%s "
                          "entry=%.4f stop=%.4f target=%.4f order_id=%s",
                          signal.setup, signal.symbol, signal.side, decision.qty,
