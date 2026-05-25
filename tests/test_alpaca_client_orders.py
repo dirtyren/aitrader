@@ -143,6 +143,17 @@ def test_403_with_plain_buying_power_message_also_raises_dtbp_error():
             )
 
 
+def test_403_with_insufficient_balance_message_raises_dtbp_error():
+    client = AlpacaClient()
+    body = {"message": "insufficient balance for USD (requested: 18848.12, available: 18300.18)"}
+    with patch.object(client._session, "request", return_value=_resp(403, body)):
+        with pytest.raises(InsufficientBuyingPowerError):
+            client.submit_bracket_order(
+                symbol="PLTR", qty=10, side="buy",
+                limit_price=88.0, stop_loss=87.0, take_profit=89.0,
+            )
+
+
 def test_403_with_unrelated_message_still_raises_plain_broker_api_error():
     client = AlpacaClient()
     body = {"message": "forbidden: trading disabled for account"}

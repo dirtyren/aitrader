@@ -61,7 +61,7 @@ class InsufficientBuyingPowerError(BrokerAPIError):
     """
 
 
-_DTBP_MESSAGE_RE = re.compile(r"insufficient(?: day trading)? buying power", re.IGNORECASE)
+_DTBP_MESSAGE_RE = re.compile(r"insufficient(?: (?:day trading )?buying power| balance)", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
