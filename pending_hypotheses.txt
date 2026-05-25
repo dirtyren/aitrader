@@ -1,0 +1,2 @@
+Hypothesis 2: Increase arm_window_bars from 4 to 6 to capture slower retracements, avoiding premature resets.
+Hypothesis 3: Decrease trend_majority from 0.7 to 0.65 to capture trends earlier.
