@@ -104,7 +104,7 @@ class IntradayReplay:
             ConsecutiveLossFilter(limit=self.config["risk"]["consecutive_loss_limit"],
                                   scope=self.config["risk"]["loss_filter_scope"]),
             ConcurrentPositionFilter(max_concurrent=self.config["risk"]["max_concurrent_positions"]),
-            SetupCooldownFilter(cooldown_bars=self.config["setups"]["price_discovery"]["cooldown_bars"]),
+            SetupCooldownFilter(cooldown_bars=self.config.get("setups", {}).get("price_discovery", {}).get("cooldown_bars", 12)),
             RiskBudgetFilter(daily_open_risk_cap_pct=self.config["risk"]["max_daily_risk_open"]),
         ])
         sizing_eq = SizingConfig(

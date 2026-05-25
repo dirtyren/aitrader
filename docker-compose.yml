@@ -25,6 +25,45 @@ services:
       - ./runtime:/app/runtime
     restart: unless-stopped
 
+  trader-ib:
+    build: .
+    command: python main.py --config config/settings_ib.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_ib.file
+    user: "${UID}:${GID}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+
+  trader-vwap-bands:
+    build: .
+    command: python main.py --config config/settings_vwap_bands.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_vwap_bands.file
+    user: "${UID}:${GID}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+
+  trader-orb:
+    build: .
+    command: python main.py --config config/settings_orb.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_orb.file
+    user: "${UID}:${GID}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+
   dashboard:
     build: .
     command: streamlit run ui/dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true

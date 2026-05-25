@@ -1,0 +1,2 @@
+# Pending hypotheses for the Initial Balance (IB) strategy
+# Add deferred single-variable optimization hypotheses here

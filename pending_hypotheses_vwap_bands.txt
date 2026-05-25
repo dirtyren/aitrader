@@ -1,0 +1,2 @@
+# Pending hypotheses for the VWAP Deviation Bands strategy
+# Add deferred single-variable optimization hypotheses here
