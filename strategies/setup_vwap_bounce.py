@@ -10,7 +10,7 @@ class VWAPBounceSetup(BaseSetup):
     name = "vwap_bounce"
 
     def __init__(self, symbol: str, atr_mult_stop: float = 1.25,
-                 target_R: float = 2.0, arm_window_bars: int = 4,
+                 target_R: float = 2.5, arm_window_bars: int = 4,
                  trend_majority: float = 0.7, trend_range_mult: float = 1.5,
                  retrace_proximity_atr: float = 0.15):
         super().__init__(symbol)

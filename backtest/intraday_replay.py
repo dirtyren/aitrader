@@ -45,36 +45,8 @@ class BacktestResult:
 
 
 def _build_setups(cfg: dict, symbol: str) -> list[BaseSetup]:
-    s = cfg["setups"]
-    out: list[BaseSetup] = []
-    if s["price_discovery"]["enabled"]:
-        out.append(PriceDiscoverySetup(
-            symbol,
-            atr_mult_stop=s["price_discovery"]["atr_mult_stop"],
-            target_R=s["price_discovery"]["target_R"],
-            arm_window_bars=s["price_discovery"]["arm_window_bars"],
-        ))
-    if s["fade_extreme"]["enabled"]:
-        out.append(FadeExtremeSetup(
-            symbol,
-            atr_mult_stop=s["fade_extreme"]["atr_mult_stop"],
-            scale_offsets_atr=s["fade_extreme"]["scale_offsets_atr"],
-            scale_weights=s["fade_extreme"]["scale_weights"],
-        ))
-    if s["return_to_value"]["enabled"]:
-        out.append(ReturnToValueSetup(
-            symbol,
-            atr_mult_stop=s["return_to_value"]["atr_mult_stop"],
-            arm_window_bars=s["return_to_value"]["arm_window_bars"],
-        ))
-    if s["vwap_bounce"]["enabled"]:
-        out.append(VWAPBounceSetup(
-            symbol,
-            atr_mult_stop=s["vwap_bounce"]["atr_mult_stop"],
-            target_R=s["vwap_bounce"]["target_R"],
-            arm_window_bars=s["vwap_bounce"]["arm_window_bars"],
-        ))
-    return out
+    from main import build_setups
+    return build_setups(cfg, symbol)
 
 
 def _max_consecutive_losses(trades: pd.DataFrame) -> int:
