@@ -1,0 +1,2 @@
+# Pending hypotheses for the RSI Reversion strategy
+# Add any deferred single-variable optimization hypotheses here
