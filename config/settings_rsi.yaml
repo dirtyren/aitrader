@@ -94,7 +94,7 @@ broker:
   handshake_symbol: SPY
 logging:
   level: INFO
-  log_file: logs/vwap_wave.log
+  log_file: logs/rsi_trader.log
 overrides:
   path: runtime/wfo/active/live_overrides.yaml
   enabled: true
