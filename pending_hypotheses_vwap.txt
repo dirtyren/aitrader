@@ -1,2 +1,4 @@
-Hypothesis 2: Increase arm_window_bars from 4 to 6 to capture slower retracements, avoiding premature resets.
+Hypothesis 2: ✅ APPLIED 2026-05-25 — Increased vwap_bounce.arm_window_bars from 4 to 6 to capture slower retracements, avoiding premature resets. (Note: trades analyzed were reconciliation artifacts, not meaningful — change was applied from pending queue.)
 Hypothesis 3: Decrease trend_majority from 0.7 to 0.65 to capture trends earlier.
+Hypothesis 4: Consider increasing opening_blackout_min for crypto from 15 to 30 — all 5 reconciled_gone trades were crypto (AVAX, BTC, ETH, LINK, SOL) adopted simultaneously. Possibly broker/paper state inconsistency on startup causing phantom positions. Investigate reconciliation logic for "adopted" positions with 0 bars.
+Hypothesis 5: Add max_hold_bars per asset class — crypto positions may benefit from shorter time stops than equities given 24/7 market.

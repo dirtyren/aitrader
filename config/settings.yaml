@@ -45,7 +45,7 @@ setups:
     enabled: true
     atr_mult_stop: 1.25
     target_R: 2.0
-    arm_window_bars: 4
+    arm_window_bars: 6
     cooldown_bars: 8
 
 risk:
