@@ -1,0 +1,2 @@
+# Pending hypotheses for the Opening Range Breakout (ORB) strategy
+# Add deferred single-variable optimization hypotheses here

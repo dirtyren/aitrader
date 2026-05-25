@@ -45,6 +45,7 @@ def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
         )
         ledger.record(rec)
         recorded.append(rec)
+        update_strategy_performance_file(pos_before.setup, pnl, r_realized)
         logger.info("POSITION_CLOSED symbol=%s reason=%s exit=%.4f r=%.2f pnl=%.2f",
                     symbol, a.kind, a.price, r_realized, pnl)
     return recorded
@@ -115,3 +116,44 @@ class VWAPWaveEngine:
     def _record_exits(self, symbol: str, actions: list[PositionAction],
                       last_bar: Bar, pos_before: OpenPosition | None) -> None:
         record_exits_to_ledger(self.ledger, symbol, actions, last_bar, pos_before)
+
+
+def update_strategy_performance_file(setup_name: str, pnl: float, r_realized: float) -> None:
+    import json
+    import os
+    path = "runtime/strategy_performance.json"
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return
+
+    if setup_name not in data:
+        data[setup_name] = {
+            "total_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0,
+            "total_pnl": 0.0, "total_r_realized": 0.0, "avg_pnl": 0.0,
+            "avg_r_realized": 0.0, "max_win": 0.0, "max_loss": 0.0
+        }
+
+    stats = data[setup_name]
+    stats["total_trades"] += 1
+    if pnl > 0:
+        stats["wins"] += 1
+    else:
+        stats["losses"] += 1
+
+    stats["win_rate"] = stats["wins"] / stats["total_trades"]
+    stats["total_pnl"] += pnl
+    stats["total_r_realized"] += r_realized
+    stats["avg_pnl"] = stats["total_pnl"] / stats["total_trades"]
+    stats["avg_r_realized"] = stats["total_r_realized"] / stats["total_trades"]
+    stats["max_win"] = max(stats["max_win"], pnl)
+    stats["max_loss"] = min(stats["max_loss"], pnl)
+
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception:
+        pass
