@@ -4,7 +4,7 @@ import logging
 import os
 
 
-def setup_logging(log_level=logging.INFO, log_file: str = None) -> logging.Logger:
+def setup_logging(log_level=logging.INFO, log_file: str | None = None, logger_name: str = "regime_trader") -> logging.Logger:
     """
     Configure structured logging for regime_trader.
 
@@ -20,7 +20,7 @@ def setup_logging(log_level=logging.INFO, log_file: str = None) -> logging.Logge
     fmt = "%(asctime)s | %(levelname)-8s | %(name)-30s | %(message)s"
     formatter = logging.Formatter(fmt)
 
-    root = logging.getLogger("regime_trader")
+    root = logging.getLogger(logger_name)
     root.setLevel(log_level)
 
     # Avoid adding duplicate handlers if called more than once

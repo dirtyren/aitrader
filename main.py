@@ -278,8 +278,8 @@ def main():
     overrides_cfg = cfg.get("overrides") or {}
     cfg = apply_overrides(cfg, overrides_cfg.get("path"),
                           enabled=overrides_cfg.get("enabled", True))
-    logger = setup_logging(log_file=cfg["logging"]["log_file"])
     system_name = cfg.get("system", {}).get("name", "vwap_wave")
+    logger = setup_logging(log_file=cfg["logging"]["log_file"], logger_name=system_name)
     logger.info("%s starting up; env=%s", system_name, cfg["system"]["trading_env"])
 
     _signal.signal(_signal.SIGTERM, _handle_shutdown)
