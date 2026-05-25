@@ -3,7 +3,7 @@ system:
   version: 2.0.0
   trading_env: paper
 scheduler:
-  bar_timeframe: 5Min
+  bar_timeframe: 1H
   wake_grace_seconds: 5
   poll_fallback_seconds: 60
 vwap:
@@ -23,7 +23,7 @@ setups:
     direction: long
     stop_loss_pct: 2.0
     position_size_r: 0.5
-    period: 14
+    period: 5
 risk:
   max_risk_per_trade: 0.005
   max_notional_per_trade_pct: 0.2
@@ -55,18 +55,11 @@ asset_classes:
     - QQQ
     - IWM
     - XLF
-    - XLE
     - GLD
     - AAPL
     - MSFT
     - NVDA
-    - TSLA
-    - AMZN
-    - GOOGL
-    - META
-    - AMD
     - JPM
-    - AVGO
     - NFLX
     - COIN
     - PLTR
@@ -80,9 +73,6 @@ asset_classes:
     symbols:
     - BTC/USD
     - ETH/USD
-    - SOL/USD
-    - AVAX/USD
-    - LINK/USD
 news_blackouts: []
 backtest:
   start: '2024-01-01'
