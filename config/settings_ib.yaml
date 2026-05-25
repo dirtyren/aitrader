@@ -16,8 +16,8 @@ asset_classes:
     timezone: UTC
   equity:
     commission_per_share: 0.0
-    session_close_local: '16:00'
-    session_open_local: 09:30
+    session_close_local: '23:59'
+    session_open_local: '00:00'
     slippage_bps: 2
     symbols:
     - SPY
