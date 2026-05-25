@@ -6,9 +6,23 @@ services:
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
       - LOCK_FILE_PATH=/app/runtime/lock.file
+    user: "${UID}:${GID}"
     volumes:
       - ./logs:/app/logs
-      - ./runtime:/app/runtime  # shared runtime state: lock.file, trading_state.json
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+
+  trader-rsi:
+    build: .
+    command: python main.py --config config/settings_rsi.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_rsi.file
+    user: "${UID}:${GID}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
     restart: unless-stopped
 
   dashboard:
@@ -18,6 +32,7 @@ services:
     environment:
       - STATE_FILE_PATH=/app/runtime/trading_state.json
       - PYTHONPATH=/app
+    user: "${UID}:${GID}"
     ports:
       - "127.0.0.1:8501:8501"
     volumes:

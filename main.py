@@ -107,34 +107,44 @@ def build_setups(cfg: dict, symbol: str):
     overrides = cfg.get("_per_symbol_overrides") or {}
     if symbol in overrides:
         return _build_setups_from_override(symbol, overrides[symbol])
-    s = cfg["setups"]
+    s = cfg.get("setups", {})
     setups = []
-    if s["price_discovery"]["enabled"]:
+    if "price_discovery" in s and s["price_discovery"].get("enabled", False):
         setups.append(PriceDiscoverySetup(
             symbol,
             atr_mult_stop=s["price_discovery"]["atr_mult_stop"],
             target_R=s["price_discovery"]["target_R"],
             arm_window_bars=s["price_discovery"]["arm_window_bars"],
         ))
-    if s["fade_extreme"]["enabled"]:
+    if "fade_extreme" in s and s["fade_extreme"].get("enabled", False):
         setups.append(FadeExtremeSetup(
             symbol,
             atr_mult_stop=s["fade_extreme"]["atr_mult_stop"],
-            scale_offsets_atr=s["fade_extreme"]["scale_offsets_atr"],
-            scale_weights=s["fade_extreme"]["scale_weights"],
+            scale_offsets_atr=s["fade_extreme"].get("scale_offsets_atr"),
+            scale_weights=s["fade_extreme"].get("scale_weights"),
         ))
-    if s["return_to_value"]["enabled"]:
+    if "return_to_value" in s and s["return_to_value"].get("enabled", False):
         setups.append(ReturnToValueSetup(
             symbol,
             atr_mult_stop=s["return_to_value"]["atr_mult_stop"],
             arm_window_bars=s["return_to_value"]["arm_window_bars"],
         ))
-    if s["vwap_bounce"]["enabled"]:
+    if "vwap_bounce" in s and s["vwap_bounce"].get("enabled", False):
         setups.append(VWAPBounceSetup(
             symbol,
             atr_mult_stop=s["vwap_bounce"]["atr_mult_stop"],
             target_R=s["vwap_bounce"]["target_R"],
             arm_window_bars=s["vwap_bounce"]["arm_window_bars"],
+        ))
+    if "rsi_reversion" in s and s["rsi_reversion"].get("enabled", False):
+        from strategies.setup_rsi import RSISetup
+        setups.append(RSISetup(
+            symbol,
+            threshold=s["rsi_reversion"]["threshold"],
+            direction=s["rsi_reversion"]["direction"],
+            stop_loss_pct=s["rsi_reversion"]["stop_loss_pct"],
+            position_size_r=s["rsi_reversion"]["position_size_r"],
+            period=s["rsi_reversion"]["period"],
         ))
     return setups
 
@@ -224,7 +234,7 @@ def build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:
         ConsecutiveLossFilter(limit=cfg["risk"]["consecutive_loss_limit"],
                               scope=cfg["risk"]["loss_filter_scope"]),
         ConcurrentPositionFilter(max_concurrent=cfg["risk"]["max_concurrent_positions"]),
-        SetupCooldownFilter(cooldown_bars=cfg["setups"]["price_discovery"]["cooldown_bars"]),
+        SetupCooldownFilter(cooldown_bars=cfg.get("setups", {}).get("price_discovery", {}).get("cooldown_bars", 12)),
         RiskBudgetFilter(daily_open_risk_cap_pct=cfg["risk"]["max_daily_risk_open"]),
     ])
 
@@ -257,12 +267,20 @@ def _collect_snapshot(symbols, contexts, book, ledger, cb,
 
 
 def main():
-    cfg = load_config()
+    import sys
+    config_path = "config/settings.yaml"
+    if "--config" in sys.argv:
+        idx = sys.argv.index("--config")
+        if idx + 1 < len(sys.argv):
+            config_path = sys.argv[idx + 1]
+
+    cfg = load_config(config_path)
     overrides_cfg = cfg.get("overrides") or {}
     cfg = apply_overrides(cfg, overrides_cfg.get("path"),
                           enabled=overrides_cfg.get("enabled", True))
     logger = setup_logging(log_file=cfg["logging"]["log_file"])
-    logger.info("vwap_wave starting up; env=%s", cfg["system"]["trading_env"])
+    system_name = cfg.get("system", {}).get("name", "vwap_wave")
+    logger.info("%s starting up; env=%s", system_name, cfg["system"]["trading_env"])
 
     _signal.signal(_signal.SIGTERM, _handle_shutdown)
     _signal.signal(_signal.SIGINT, _handle_shutdown)
@@ -356,8 +374,8 @@ def main():
 
     timeframe = finest_timeframe(symbols, cfg)
     grace = cfg["scheduler"]["wake_grace_seconds"]
-    logger.info("vwap_wave loop starting; symbols=%d finest_tf=%s",
-                len(symbols), timeframe)
+    logger.info("%s loop starting; symbols=%d finest_tf=%s",
+                system_name, len(symbols), timeframe)
 
     while not _shutdown:
         now = datetime.now(timezone.utc)
