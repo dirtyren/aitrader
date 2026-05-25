@@ -234,7 +234,7 @@ def build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:
         ConsecutiveLossFilter(limit=cfg["risk"]["consecutive_loss_limit"],
                               scope=cfg["risk"]["loss_filter_scope"]),
         ConcurrentPositionFilter(max_concurrent=cfg["risk"]["max_concurrent_positions"]),
-        SetupCooldownFilter(cooldown_bars=cfg["setups"]["price_discovery"]["cooldown_bars"]),
+        SetupCooldownFilter(cooldown_bars=cfg.get("setups", {}).get("price_discovery", {}).get("cooldown_bars", 12)),
         RiskBudgetFilter(daily_open_risk_cap_pct=cfg["risk"]["max_daily_risk_open"]),
     ])
 
@@ -279,7 +279,8 @@ def main():
     cfg = apply_overrides(cfg, overrides_cfg.get("path"),
                           enabled=overrides_cfg.get("enabled", True))
     logger = setup_logging(log_file=cfg["logging"]["log_file"])
-    logger.info("vwap_wave starting up; env=%s", cfg["system"]["trading_env"])
+    system_name = cfg.get("system", {}).get("name", "vwap_wave")
+    logger.info("%s starting up; env=%s", system_name, cfg["system"]["trading_env"])
 
     _signal.signal(_signal.SIGTERM, _handle_shutdown)
     _signal.signal(_signal.SIGINT, _handle_shutdown)
@@ -373,8 +374,8 @@ def main():
 
     timeframe = finest_timeframe(symbols, cfg)
     grace = cfg["scheduler"]["wake_grace_seconds"]
-    logger.info("vwap_wave loop starting; symbols=%d finest_tf=%s",
-                len(symbols), timeframe)
+    logger.info("%s loop starting; symbols=%d finest_tf=%s",
+                system_name, len(symbols), timeframe)
 
     while not _shutdown:
         now = datetime.now(timezone.utc)
