@@ -17,29 +17,15 @@ asset_classes:
   equity:
     commission_per_share: 0.0
     session_close_local: '16:00'
-    session_open_local: 09:30
+    session_open_local: '09:30'
     slippage_bps: 2
     symbols:
     - SPY
     - QQQ
     - IWM
-    - XLF
-    - XLE
-    - GLD
-    - AAPL
-    - MSFT
     - NVDA
     - TSLA
-    - AMZN
-    - GOOGL
     - META
-    - AMD
-    - JPM
-    - AVGO
-    - NFLX
-    - COIN
-    - PLTR
-    - UBER
     timezone: America/New_York
 backtest:
   cache_dir: runtime/bars_cache
@@ -85,10 +71,10 @@ scheduler:
   wake_grace_seconds: 5
 setups:
   orb_vwap:
-    atr_mult_stop: 1.0
+    atr_mult_stop: 0.75
     enabled: true
-    orb_bars: 3
-    target_R: 2.0
+    orb_bars: 4
+    target_R: 2.5
 system:
   name: orb_trader
   trading_env: paper

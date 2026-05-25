@@ -73,8 +73,8 @@ position_management:
 asset_classes:
   equity:
     timezone: "America/New_York"
-    session_open_local: "09:30"
-    session_close_local: "16:00"
+    session_open_local: "00:00"
+    session_close_local: "23:59"
     slippage_bps: 2
     commission_per_share: 0.0
     symbols:
