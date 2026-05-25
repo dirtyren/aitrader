@@ -51,6 +51,7 @@ from state.daily_ledger import DailyLedger
 from state.dashboard_state import DashboardSnapshot, write_dashboard_state
 from state.position_book_store import read_position_book, write_position_book
 from state.reconciler import Reconciler
+from state.mysql_store import MySQLStore
 from strategies.setup_fade_extreme import FadeExtremeSetup
 from strategies.setup_price_discovery import PriceDiscoverySetup
 from strategies.setup_return_to_value import ReturnToValueSetup
@@ -347,14 +348,32 @@ def main():
     alpaca = AlpacaClient()
     data = AlpacaData(alpaca, cache_dir=cfg["backtest"]["cache_dir"])
 
+    # ── MySQL store (primary source of truth for positions/trades) ──
+    mysql = MySQLStore(strategy_name=system_name, logger=logger)
+    try:
+        mysql.ensure_schema()
+        mysql.upsert_strategy()
+        logger.info("MYSQL_CONNECTED strategy=%s", system_name)
+    except Exception as exc:
+        logger.warning("MYSQL_UNAVAILABLE — falling back to JSON-only persistence: %s",
+                       exc)
+        mysql = None
+
+    # ── Load position book: MySQL first, JSON fallback ──
     book_path_env = os.environ.get("POSITION_BOOK_PATH")
     if book_path_env:
         book_path = Path(book_path_env)
     else:
         book_path = Path(f"runtime/position_book_{system_name}.json")
-    book = read_position_book(book_path)
-    logger.info("POSITION_BOOK_LOADED path=%s open_positions=%d",
-                book_path, book.count())
+
+    if mysql is not None:
+        book = mysql.load_open_positions()
+        logger.info("POSITION_BOOK_LOADED_FROM_MYSQL strategy=%s open_positions=%d",
+                    system_name, book.count())
+    else:
+        book = read_position_book(book_path)
+        logger.info("POSITION_BOOK_LOADED_FROM_JSON path=%s open_positions=%d",
+                    book_path, book.count())
 
     account = alpaca.get_account()
     initial_equity = float(account.get("equity") or account.get("portfolio_value") or 0)
@@ -363,7 +382,7 @@ def main():
         sys.exit(1)
     ledger = DailyLedger(initial_equity=initial_equity)
 
-    reconciler = Reconciler(alpaca, ac_configs)
+    reconciler = Reconciler(alpaca, ac_configs, mysql_store=mysql)
     try:
         startup_report = reconciler.reconcile(book, adopt_orphans=(config_path == 'config/settings.yaml'))
     except Exception as exc:
@@ -403,7 +422,7 @@ def main():
         sizing_equity=sizing_eq, sizing_crypto=sizing_cr,
         ledger=ledger, book=book,
     )
-    executor = OrderExecutor(alpaca, book, logger=logger)
+    executor = OrderExecutor(alpaca, book, logger=logger, mysql_store=mysql)
 
     # When overrides exist, each symbol may want its own PositionManager. The
     # engine still receives a single PM; we wire a dispatcher that routes
@@ -421,7 +440,7 @@ def main():
     engine = VWAPWaveEngine(
         symbols=symbols, contexts=contexts, setups=setups,
         risk_manager=rm, executor=executor, book=book, ledger=ledger,
-        position_manager=pm,
+        position_manager=pm, mysql_store=mysql,
     )
 
     timeframe = finest_timeframe(symbols, cfg)
@@ -485,6 +504,22 @@ def main():
                 write_position_book(book_path, book)
             except Exception as exc:
                 logger.error("POSITION_BOOK_WRITE_FAILED: %s", exc, exc_info=True)
+
+            # Sync mutable position state to MySQL each cycle
+            if mysql is not None:
+                for pos in book.all():
+                    try:
+                        # Determine asset_class from position symbol
+                        ac = None
+                        for _, ac_name in symbols:
+                            if _ == pos.symbol:
+                                ac = ac_name
+                                break
+                        if ac:
+                            mysql.sync_position_state(pos, ac)
+                    except Exception as exc:
+                        logger.error("MYSQL_SYNC_FAILED symbol=%s: %s",
+                                    pos.symbol, exc, exc_info=True)
 
             snap = _collect_snapshot(symbols, contexts, book, ledger, cb)
             state_file_path = os.environ.get("STATE_FILE_PATH", f"runtime/trading_state_{system_name}.json")

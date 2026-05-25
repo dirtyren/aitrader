@@ -10,7 +10,13 @@ services:
       - "127.0.0.1:3306:3306"
     volumes:
       - db_data:/var/lib/mysql
+      - ./state/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   trader:
     build: .
@@ -19,11 +25,19 @@ services:
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
       - LOCK_FILE_PATH=/app/runtime/lock.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
     user: "${UID}:${GID}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   trader-rsi:
     build: .
@@ -32,11 +46,19 @@ services:
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
       - LOCK_FILE_PATH=/app/runtime/lock_rsi.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
     user: "${UID}:${GID}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   trader-ib:
     build: .
@@ -45,11 +67,19 @@ services:
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
       - LOCK_FILE_PATH=/app/runtime/lock_ib.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
     user: "${UID}:${GID}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   trader-vwap-bands:
     build: .
@@ -58,11 +88,19 @@ services:
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
       - LOCK_FILE_PATH=/app/runtime/lock_vwap_bands.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
     user: "${UID}:${GID}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   trader-orb:
     build: .
@@ -71,11 +109,19 @@ services:
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
       - LOCK_FILE_PATH=/app/runtime/lock_orb.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
     user: "${UID}:${GID}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   dashboard:
     build: .
@@ -84,6 +130,11 @@ services:
     environment:
       - STATE_FILE_PATH=/app/runtime/trading_state.json
       - PYTHONPATH=/app
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
     user: "${UID}:${GID}"
     ports:
       - "127.0.0.1:8501:8501"
@@ -91,6 +142,8 @@ services:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
 volumes:
   db_data:
-

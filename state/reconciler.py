@@ -67,7 +67,11 @@ def _index_bracket_children(orders: Iterable[dict]) -> dict[str, dict]:
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from state.position_book import OpenPosition, PositionBook
+
+if TYPE_CHECKING:
+    from state.mysql_store import MySQLStore
 
 
 @dataclass
@@ -77,6 +81,7 @@ class ReconcileReport:
     adopted_crypto: list[str] = field(default_factory=list)
     drift: list[tuple[str, float, float]] = field(default_factory=list)
     equity_no_bracket: list[str] = field(default_factory=list)
+    mysql_closed_gone: list[str] = field(default_factory=list)
 
 
 _QTY_EPS = 1e-6
@@ -86,19 +91,23 @@ class Reconciler:
     """Reconciles the in-memory PositionBook against Alpaca's /v2/positions.
 
     Policy (see spec 2026-05-22-broker-position-reconciliation-design.md):
+    - MySQL-backed: on startup, positions are loaded from MySQL. Positions in
+      MySQL but not on broker were closed server-side (stop/target hit during
+      restart) → marked closed in MySQL with reason 'reconciled_gone'.
     - Closed (in book, not in broker): book.close(symbol).
     - Drift (qty differs): log only, no mutation.
-    - Orphan (in broker, not in book): adopt as monitor-only with
-      adopted=True. Equity adoptions recover stop/target/stop_order_id from
-      the live bracket children (or live with all three None and a
-      RECONCILE_EQUITY_NO_BRACKET warning). Crypto adoptions are naked.
+    - Orphan (in broker, not in book AND not in MySQL): adopt as monitor-only
+      with adopted=True. Equity adoptions recover stop/target/stop_order_id
+      from the live bracket children. Crypto adoptions are naked.
     """
 
     def __init__(self, alpaca, ac_configs: dict | None = None,
-                 *, logger: logging.Logger | None = None) -> None:
+                 *, logger: logging.Logger | None = None,
+                 mysql_store: "MySQLStore | None" = None) -> None:
         self._alpaca = alpaca
         self._ac_configs = ac_configs or {}
         self._log = logger or logging.getLogger("vwap_wave.reconciler")
+        self._mysql = mysql_store
 
     def reconcile(self, book: PositionBook, adopt_orphans: bool = True) -> ReconcileReport:
         report = ReconcileReport()
@@ -107,6 +116,18 @@ class Reconciler:
         broker_by_symbol: dict[str, dict] = {
             p["symbol"]: p for p in broker_positions
         }
+        broker_symbol_set = set(broker_by_symbol.keys())
+
+        # 0. MySQL: close positions that exist in DB but not on broker.
+        #    These are positions that were closed server-side during restart.
+        if self._mysql is not None:
+            gone = self._mysql.close_positions_not_in_broker(broker_symbol_set)
+            report.mysql_closed_gone = gone
+            if gone:
+                self._log.info(
+                    "RECONCILE_MYSQL_CLOSED_GONE count=%d symbols=%s",
+                    len(gone), gone,
+                )
 
         # 1. Closed: in book, not in broker.
         for symbol in list(book.symbols()):
@@ -207,6 +228,15 @@ class Reconciler:
                     symbol, pos.side, pos.qty, pos.entry_px,
                     pos.stop_px, pos.target_px, pos.stop_order_id,
                 )
+                # Persist adopted equity position to MySQL
+                if self._mysql is not None:
+                    try:
+                        self._mysql.position_opened(pos, "equity")
+                    except Exception as exc:
+                        self._log.error(
+                            "MYSQL_ADOPT_SAVE_FAILED symbol=%s: %s",
+                            symbol, exc, exc_info=True,
+                        )
 
             # 3b. Crypto orphans: naked, loud warning.
             for broker_pos in orphan_crypto_records:
@@ -231,14 +261,30 @@ class Reconciler:
                     "RECONCILE_ADOPTED_CRYPTO_NO_STOP symbol=%s side=%s qty=%s entry=%s",
                     symbol, pos.side, pos.qty, pos.entry_px,
                 )
-
+                # Persist adopted crypto position to MySQL
+                if self._mysql is not None:
+                    try:
+                        self._mysql.position_opened(pos, "crypto")
+                    except Exception as exc:
+                        self._log.error(
+                            "MYSQL_ADOPT_SAVE_FAILED symbol=%s: %s",
+                            symbol, exc, exc_info=True,
+                        )
 
         # 4. Recurring naked-crypto warning (every cycle).
+        # Downgrade to INFO for positions that ARE persisted in MySQL — they'll
+        # survive restarts now. WARNING only for truly un-tracked naked positions.
         for pos in book.all():
             if pos.adopted and pos.stop_px is None:
-                self._log.warning(
-                    "ADOPTED_CRYPTO_NAKED symbol=%s qty=%s entry=%s — manual close required",
-                    pos.symbol, pos.qty, pos.entry_px,
-                )
+                if self._mysql is not None:
+                    self._log.info(
+                        "ADOPTED_CRYPTO_NAKED_TRACKED symbol=%s qty=%s entry=%s — tracked in MySQL, managed by engine",
+                        pos.symbol, pos.qty, pos.entry_px,
+                    )
+                else:
+                    self._log.warning(
+                        "ADOPTED_CRYPTO_NAKED symbol=%s qty=%s entry=%s — manual close required",
+                        pos.symbol, pos.qty, pos.entry_px,
+                    )
 
         return report
