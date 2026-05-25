@@ -1,4 +1,9 @@
-Hypothesis 2: ✅ APPLIED 2026-05-25 — Increased vwap_bounce.arm_window_bars from 4 to 6 to capture slower retracements, avoiding premature resets. (Note: trades analyzed were reconciliation artifacts, not meaningful — change was applied from pending queue.)
-Hypothesis 3: Decrease trend_majority from 0.7 to 0.65 to capture trends earlier.
-Hypothesis 4: Consider increasing opening_blackout_min for crypto from 15 to 30 — all 5 reconciled_gone trades were crypto (AVAX, BTC, ETH, LINK, SOL) adopted simultaneously. Possibly broker/paper state inconsistency on startup causing phantom positions. Investigate reconciliation logic for "adopted" positions with 0 bars.
+Hypothesis 2: ✅ APPLIED 2026-05-25 — Increased vwap_bounce.arm_window_bars from 4 to 6 to capture slower retracements.
+Hypothesis 3: ❌ REMOVED 2026-05-25 — Stale; trend_majority param doesn't exist in current config.
+Hypothesis 4: Consider increasing opening_blackout_min for crypto from 15 to 30 — all reconciled_gone trades were crypto. May reduce startup reconciliation conflicts.
 Hypothesis 5: Add max_hold_bars per asset class — crypto positions may benefit from shorter time stops than equities given 24/7 market.
+Hypothesis 6: ✅ APPLIED 2026-05-25 — Increased acceptance.min_distance_atr from 0.25 to 0.35. All 5 unreflected trades were reconciled_gone ($0 PnL, bars_held=0) on crypto in a bear regime. Tighter 0.25 ATR distance fired marginal breakouts at VWAP σ=1 band edge that never filled. 0.35 ATR requires stronger momentum before entry, improving fill probability on Alpaca crypto limit orders.
+
+New pending ideas:
+- Hyp7: If reconciled_gone persists, consider adding a crypto-specific order_type config (force market orders for crypto entries) since Alpaca market orders always fill.
+- Hyp8: After liquidity improves, try reducing sigma_bands from 1.0 to 0.8 to catch earlier breakouts — but only once fill reliability is established.
