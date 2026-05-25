@@ -1,2 +1,11 @@
 # Pending hypotheses for the RSI Reversion strategy
 # Add any deferred single-variable optimization hypotheses here
+
+# Alternative: Reduce RSI period from 14 to 9
+# Rationale: A shorter period makes RSI more responsive, potentially catching
+# oversold signals earlier before the bounce completes. However, it may also
+# increase whipsaw signals. Try this if threshold=35 still shows reconciled_gone.
+
+# Alternative: Increase stop_loss_pct from 2.0 to 3.0
+# Rationale: If trades start getting filled but stop out too quickly due to crypto
+# volatility, a wider stop gives more room. Only relevant after entry fills improve.
