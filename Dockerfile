@@ -15,4 +15,11 @@ RUN mkdir -p logs runtime \
     && useradd -m appuser \
     && chown -R appuser:appuser /app
 
+# Create the directory
+RUN mkdir -p /app/logs
+
+# Change ownership of the app directory (or just the logs directory) to your user
+# Replace 'appuser:appuser' with whatever username/group you created
+RUN chown -R appuser:appuser /app/logs 
+
 USER appuser
