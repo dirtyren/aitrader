@@ -347,7 +347,11 @@ def main():
     alpaca = AlpacaClient()
     data = AlpacaData(alpaca, cache_dir=cfg["backtest"]["cache_dir"])
 
-    book_path = Path("runtime/position_book.json")
+    book_path_env = os.environ.get("POSITION_BOOK_PATH")
+    if book_path_env:
+        book_path = Path(book_path_env)
+    else:
+        book_path = Path(f"runtime/position_book_{system_name}.json")
     book = read_position_book(book_path)
     logger.info("POSITION_BOOK_LOADED path=%s open_positions=%d",
                 book_path, book.count())
@@ -361,7 +365,7 @@ def main():
 
     reconciler = Reconciler(alpaca, ac_configs)
     try:
-        startup_report = reconciler.reconcile(book)
+        startup_report = reconciler.reconcile(book, adopt_orphans=(config_path == 'config/settings.yaml'))
     except Exception as exc:
         logger.error("RECONCILE_STARTUP_FAILED: %s", exc, exc_info=True)
         sys.exit(1)
@@ -449,7 +453,7 @@ def main():
                     fresh_bars[sym] = new_bars
 
             try:
-                cycle_report = reconciler.reconcile(book)
+                cycle_report = reconciler.reconcile(book, adopt_orphans=(config_path == 'config/settings.yaml'))
                 if (cycle_report.closed or cycle_report.adopted_equity
                         or cycle_report.adopted_crypto or cycle_report.drift):
                     logger.info(
@@ -483,7 +487,8 @@ def main():
                 logger.error("POSITION_BOOK_WRITE_FAILED: %s", exc, exc_info=True)
 
             snap = _collect_snapshot(symbols, contexts, book, ledger, cb)
-            write_dashboard_state("runtime/trading_state.json", snap)
+            state_file_path = os.environ.get("STATE_FILE_PATH", f"runtime/trading_state_{system_name}.json")
+            write_dashboard_state(state_file_path, snap)
         except Exception as exc:
             logger.error("CYCLE_ERROR: %s", exc, exc_info=True)
 

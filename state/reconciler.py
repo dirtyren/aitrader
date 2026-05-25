@@ -100,7 +100,7 @@ class Reconciler:
         self._ac_configs = ac_configs or {}
         self._log = logger or logging.getLogger("vwap_wave.reconciler")
 
-    def reconcile(self, book: PositionBook) -> ReconcileReport:
+    def reconcile(self, book: PositionBook, adopt_orphans: bool = True) -> ReconcileReport:
         report = ReconcileReport()
 
         broker_positions = self._alpaca.get_positions()
@@ -137,99 +137,101 @@ class Reconciler:
         orphan_equity_symbols: list[str] = []
         orphan_crypto_records: list[dict] = []
 
-        for symbol, broker_pos in broker_by_symbol.items():
-            if book.get(symbol) is not None:
-                continue
-            ac = _normalize_asset_class(broker_pos.get("asset_class"))
-            if ac == "equity":
-                orphan_equity_symbols.append(symbol)
-            elif ac == "crypto":
-                orphan_crypto_records.append(broker_pos)
-            else:
+        if adopt_orphans:
+            for symbol, broker_pos in broker_by_symbol.items():
+                if book.get(symbol) is not None:
+                    continue
+                ac = _normalize_asset_class(broker_pos.get("asset_class"))
+                if ac == "equity":
+                    orphan_equity_symbols.append(symbol)
+                elif ac == "crypto":
+                    orphan_crypto_records.append(broker_pos)
+                else:
+                    self._log.warning(
+                        "RECONCILE_UNKNOWN_ASSET_CLASS symbol=%s class=%s",
+                        symbol, broker_pos.get("asset_class"),
+                    )
+
+            # 3a. Equity orphans: one batched list_orders call to recover brackets.
+            bracket_index: dict[str, dict] = {}
+            if orphan_equity_symbols:
+                try:
+                    open_orders = self._alpaca.list_orders(
+                        status="open",
+                        symbols=orphan_equity_symbols,
+                        nested=True,
+                    )
+                    bracket_index = _index_bracket_children(open_orders)
+                except Exception as exc:
+                    self._log.error(
+                        "RECONCILE_LIST_ORDERS_FAILED — adopting orphans without bracket data: %s",
+                        exc, exc_info=True,
+                    )
+                    bracket_index = {}
+
+            for symbol in orphan_equity_symbols:
+                broker_pos = broker_by_symbol[symbol]
+                legs = bracket_index.get(symbol, {})
+                stop_leg = legs.get("stop")
+                target_leg = legs.get("target")
+                stop_px = float(stop_leg["stop_price"]) if stop_leg else None
+                target_px = (float(target_leg["limit_price"])
+                             if target_leg else None)
+                stop_order_id = stop_leg["id"] if stop_leg else None
+                if stop_leg is None and target_leg is None:
+                    report.equity_no_bracket.append(symbol)
+                    self._log.warning(
+                        "RECONCILE_EQUITY_NO_BRACKET symbol=%s qty=%s entry=%s",
+                        symbol, broker_pos["qty"],
+                        broker_pos["avg_entry_price"],
+                    )
+                pos = OpenPosition(
+                    symbol=symbol,
+                    setup="adopted",
+                    side=_normalize_side(broker_pos["side"]),
+                    qty=abs(float(broker_pos["qty"])),
+                    entry_px=float(broker_pos["avg_entry_price"]),
+                    stop_px=stop_px,
+                    target_px=target_px,
+                    opened_at=datetime.now(timezone.utc),
+                    order_id="",
+                    stop_order_id=stop_order_id,
+                    initial_stop_px=stop_px,
+                    adopted=True,
+                )
+                book.add(pos)
+                report.adopted_equity.append(symbol)
+                self._log.info(
+                    "RECONCILE_ADOPTED_EQUITY symbol=%s side=%s qty=%s entry=%s "
+                    "stop=%s target=%s stop_leg=%s",
+                    symbol, pos.side, pos.qty, pos.entry_px,
+                    pos.stop_px, pos.target_px, pos.stop_order_id,
+                )
+
+            # 3b. Crypto orphans: naked, loud warning.
+            for broker_pos in orphan_crypto_records:
+                symbol = broker_pos["symbol"]
+                pos = OpenPosition(
+                    symbol=symbol,
+                    setup="adopted",
+                    side=_normalize_side(broker_pos["side"]),
+                    qty=abs(float(broker_pos["qty"])),
+                    entry_px=float(broker_pos["avg_entry_price"]),
+                    stop_px=None,
+                    target_px=None,
+                    opened_at=datetime.now(timezone.utc),
+                    order_id="",
+                    stop_order_id=None,
+                    initial_stop_px=None,
+                    adopted=True,
+                )
+                book.add(pos)
+                report.adopted_crypto.append(symbol)
                 self._log.warning(
-                    "RECONCILE_UNKNOWN_ASSET_CLASS symbol=%s class=%s",
-                    symbol, broker_pos.get("asset_class"),
+                    "RECONCILE_ADOPTED_CRYPTO_NO_STOP symbol=%s side=%s qty=%s entry=%s",
+                    symbol, pos.side, pos.qty, pos.entry_px,
                 )
 
-        # 3a. Equity orphans: one batched list_orders call to recover brackets.
-        bracket_index: dict[str, dict] = {}
-        if orphan_equity_symbols:
-            try:
-                open_orders = self._alpaca.list_orders(
-                    status="open",
-                    symbols=orphan_equity_symbols,
-                    nested=True,
-                )
-                bracket_index = _index_bracket_children(open_orders)
-            except Exception as exc:
-                self._log.error(
-                    "RECONCILE_LIST_ORDERS_FAILED — adopting orphans without bracket data: %s",
-                    exc, exc_info=True,
-                )
-                bracket_index = {}
-
-        for symbol in orphan_equity_symbols:
-            broker_pos = broker_by_symbol[symbol]
-            legs = bracket_index.get(symbol, {})
-            stop_leg = legs.get("stop")
-            target_leg = legs.get("target")
-            stop_px = float(stop_leg["stop_price"]) if stop_leg else None
-            target_px = (float(target_leg["limit_price"])
-                         if target_leg else None)
-            stop_order_id = stop_leg["id"] if stop_leg else None
-            if stop_leg is None and target_leg is None:
-                report.equity_no_bracket.append(symbol)
-                self._log.warning(
-                    "RECONCILE_EQUITY_NO_BRACKET symbol=%s qty=%s entry=%s",
-                    symbol, broker_pos["qty"],
-                    broker_pos["avg_entry_price"],
-                )
-            pos = OpenPosition(
-                symbol=symbol,
-                setup="adopted",
-                side=_normalize_side(broker_pos["side"]),
-                qty=abs(float(broker_pos["qty"])),
-                entry_px=float(broker_pos["avg_entry_price"]),
-                stop_px=stop_px,
-                target_px=target_px,
-                opened_at=datetime.now(timezone.utc),
-                order_id="",
-                stop_order_id=stop_order_id,
-                initial_stop_px=stop_px,
-                adopted=True,
-            )
-            book.add(pos)
-            report.adopted_equity.append(symbol)
-            self._log.info(
-                "RECONCILE_ADOPTED_EQUITY symbol=%s side=%s qty=%s entry=%s "
-                "stop=%s target=%s stop_leg=%s",
-                symbol, pos.side, pos.qty, pos.entry_px,
-                pos.stop_px, pos.target_px, pos.stop_order_id,
-            )
-
-        # 3b. Crypto orphans: naked, loud warning.
-        for broker_pos in orphan_crypto_records:
-            symbol = broker_pos["symbol"]
-            pos = OpenPosition(
-                symbol=symbol,
-                setup="adopted",
-                side=_normalize_side(broker_pos["side"]),
-                qty=abs(float(broker_pos["qty"])),
-                entry_px=float(broker_pos["avg_entry_price"]),
-                stop_px=None,
-                target_px=None,
-                opened_at=datetime.now(timezone.utc),
-                order_id="",
-                stop_order_id=None,
-                initial_stop_px=None,
-                adopted=True,
-            )
-            book.add(pos)
-            report.adopted_crypto.append(symbol)
-            self._log.warning(
-                "RECONCILE_ADOPTED_CRYPTO_NO_STOP symbol=%s side=%s qty=%s entry=%s",
-                symbol, pos.side, pos.qty, pos.entry_px,
-            )
 
         # 4. Recurring naked-crypto warning (every cycle).
         for pos in book.all():

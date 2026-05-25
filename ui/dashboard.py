@@ -2,10 +2,11 @@
 
 Two tabs:
   - Overview: equity, day P&L, circuit level, per-symbol regime/VWAP
-    table, and recent filter rejects (sourced from runtime/trading_state.json).
-  - Logs:  tail of logs/vwap_wave.log with level filter and live toggle.
+    table, and recent filter rejects (sourced from runtime/trading_state_*.json).
+  - Logs:  tail of logs/*.log with level filter and live toggle.
 """
 import json
+import glob
 from pathlib import Path
 
 import pandas as pd
@@ -15,8 +16,48 @@ from streamlit_autorefresh import st_autorefresh
 
 from ui.logs_panel import render as render_logs
 
-STATE_FILE = Path("runtime/trading_state.json")
-DEFAULT_LOG_FILE = Path("logs/vwap_wave.log")
+st.set_page_config(page_title="VWAP Wave Multi-Strategy Dashboard", layout="wide")
+
+# Auto-refresh every 5 seconds
+st_autorefresh(interval=5_000, key="vwap_wave_refresh")
+
+st.title("VWAP Wave Quantitative Engine")
+
+# 1. Dynamically find all trading states
+state_files = glob.glob("runtime/trading_state_*.json")
+strategies = []
+for f in state_files:
+    # e.g. "runtime/trading_state_rsi_trader.json" -> "rsi_trader"
+    name = Path(f).stem.replace("trading_state_", "")
+    strategies.append(name)
+
+# Fallback/default if empty
+if not strategies:
+    strategies = ["vwap_wave"]
+    if Path("runtime/trading_state.json").exists():
+        state_files = ["runtime/trading_state.json"]
+        strategies = ["vwap_wave"]
+
+strategies = sorted(list(set(strategies)))
+
+# Dropdown to select strategy
+selected_strategy = st.sidebar.selectbox("Select Trading Strategy", strategies, index=0)
+
+# Resolve state and log file paths based on selected strategy
+if selected_strategy == "vwap_wave" and not Path(f"runtime/trading_state_{selected_strategy}.json").exists() and Path("runtime/trading_state.json").exists():
+    STATE_FILE = Path("runtime/trading_state.json")
+else:
+    STATE_FILE = Path(f"runtime/trading_state_{selected_strategy}.json")
+
+# Log files mapping
+log_file_map = {
+    "vwap_wave": Path("logs/vwap_wave.log"),
+    "rsi_trader": Path("logs/rsi_trader.log"),
+    "ib_trader": Path("logs/ib_trader.log"),
+    "vwap_bands_trader": Path("logs/vwap_bands_trader.log"),
+    "orb_trader": Path("logs/orb_trader.log"),
+}
+LOG_FILE = log_file_map.get(selected_strategy, Path(f"logs/{selected_strategy}.log"))
 
 
 def _read_state() -> dict | None:
@@ -28,21 +69,6 @@ def _read_state() -> dict | None:
         return None
 
 
-def _resolve_log_file() -> Path:
-    cfg_path = Path("config/settings.yaml")
-    if not cfg_path.exists():
-        return DEFAULT_LOG_FILE
-    try:
-        cfg = yaml.safe_load(cfg_path.read_text()) or {}
-    except Exception:
-        return DEFAULT_LOG_FILE
-    return Path(cfg.get("logging", {}).get("log_file") or DEFAULT_LOG_FILE)
-
-
-st.set_page_config(page_title="VWAP Wave", layout="wide")
-st_autorefresh(interval=5_000, key="vwap_wave_refresh")
-st.title("VWAP Wave Protocol")
-
 from ui.wfo import tab as wfo_tab
 
 overview_tab, logs_tab, wfo_tab_panel = st.tabs(["Overview", "Logs", "WFO"])
@@ -50,7 +76,7 @@ overview_tab, logs_tab, wfo_tab_panel = st.tabs(["Overview", "Logs", "WFO"])
 with overview_tab:
     state = _read_state()
     if not state or "equity" not in state:
-        st.warning("No state file yet. Start the engine via `python main.py`.")
+        st.warning(f"No state file yet for strategy '{selected_strategy}'. Waiting for first cycle...")
     else:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Equity", f"${state['equity']:,.2f}")
@@ -83,7 +109,10 @@ with overview_tab:
             st.caption("No rejects in the recent window.")
 
 with logs_tab:
-    render_logs(_resolve_log_file())
+    if LOG_FILE.exists():
+        render_logs(LOG_FILE)
+    else:
+        st.info(f"Log file not found at {LOG_FILE} yet.")
 
 with wfo_tab_panel:
     wfo_tab.render()
