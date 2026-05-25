@@ -107,6 +107,7 @@ class TradeRow(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     bars_held: Mapped[int] = mapped_column(Integer, default=0)
+    reflected: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (
         Index("idx_trades_time", "strategy_id", "closed_at"),
@@ -157,8 +158,17 @@ class MySQLStore:
         )
 
     def ensure_schema(self) -> None:
-        """Create tables if they don't exist. Idempotent."""
+        """Create tables if they don't exist. Idempotent. Also applies migrations."""
         Base.metadata.create_all(self._engine)
+        # Migration: add reflected column if it doesn't exist (for existing DBs)
+        try:
+            with self._engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE trades ADD COLUMN reflected TINYINT(1) DEFAULT 0"
+                ))
+                conn.commit()
+        except Exception:
+            pass  # Column already exists (or fresh DB from schema.sql)
 
     def upsert_strategy(self) -> int:
         """INSERT (or get) the strategy row, return its id."""
@@ -467,3 +477,70 @@ class MySQLStore:
             "total_pnl": float(result.total_pnl or 0),
             "avg_R": float(result.avg_R or 0),
         }
+
+    def get_unreflected_trades(self, limit: int = 100) -> list[dict]:
+        """Return trades not yet processed by the optimizer reflection loop.
+
+        Returns list of dicts with id, symbol, setup_name, entry_px, exit_px,
+        pnl_usd, R_realized, close_reason, opened_at, closed_at.
+        Ordered oldest-first so reflection is chronological.
+        """
+        with Session(self._engine) as session:
+            rows = (
+                session.query(TradeRow)
+                .filter(
+                    TradeRow.strategy_id == self.strategy_id,
+                    TradeRow.reflected == False,
+                )
+                .order_by(TradeRow.closed_at.asc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id,
+                    "symbol": r.symbol,
+                    "setup_name": r.setup_name,
+                    "side": r.side,
+                    "qty": float(r.qty),
+                    "entry_px": float(r.entry_px),
+                    "exit_px": float(r.exit_px),
+                    "stop_px": float(r.stop_px) if r.stop_px is not None else None,
+                    "target_px": float(r.target_px) if r.target_px is not None else None,
+                    "pnl_usd": float(r.pnl_usd),
+                    "R_realized": float(r.R_realized),
+                    "close_reason": r.close_reason,
+                    "opened_at": r.opened_at.isoformat(),
+                    "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+                }
+                for r in rows
+            ]
+
+    def mark_trades_reflected(self, trade_ids: list[int]) -> int:
+        """Mark trades as processed by the optimizer. Returns count updated."""
+        if not trade_ids:
+            return 0
+        with Session(self._engine) as session:
+            count = (
+                session.query(TradeRow)
+                .filter(TradeRow.id.in_(trade_ids))
+                .update({"reflected": True}, synchronize_session=False)
+            )
+            session.commit()
+            self._log.info(
+                "MYSQL_MARKED_REFLECTED strategy=%s count=%d ids=%s",
+                self.strategy_name, count, trade_ids,
+            )
+            return count
+
+    def count_unreflected(self) -> int:
+        """Count of trades not yet reflected."""
+        with Session(self._engine) as session:
+            return (
+                session.query(TradeRow)
+                .filter(
+                    TradeRow.strategy_id == self.strategy_id,
+                    TradeRow.reflected == False,
+                )
+                .count()
+            )

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS trades (
     opened_at       TIMESTAMP(3) NOT NULL,
     closed_at       TIMESTAMP(3) NOT NULL,
     bars_held       INT DEFAULT 0,
+    reflected       TINYINT(1) DEFAULT 0,     -- 1=already processed by optimizer reflection loop
     FOREIGN KEY (strategy_id) REFERENCES strategies(id),
     INDEX idx_trades_time (strategy_id, closed_at),
     INDEX idx_trades_symbol (strategy_id, symbol)
