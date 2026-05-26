@@ -1,2 +1,19 @@
 # Pending hypotheses for the Opening Range Breakout (ORB) strategy
-# Add deferred single-variable optimization hypotheses here
+# Deferred single-variable optimization hypotheses
+
+## Applied (2026-05-26):
+# Applied: acceptance.min_distance_atr: 0.25 → 0.15
+#   Reasoning: 5/6 trades reconciled_gone — breakout fires too deep in move,
+#   momentum exhausts before market order fills. Reducing min_distance makes
+#   signal fire earlier.
+
+## Deferred hypotheses:
+# 1. [Tighter stops] atr_mult_stop: 0.75 → 0.50
+#    Reasoning: The one filled trade (SOL/USD) hit stop at -1.0R. A tighter
+#    stop would reduce loss magnitude. BUT: current 0.75 is already tight;
+#    wait to see if min_distance fix produces fills first, then evaluate
+#    stop adequacy.
+
+# 2. [Bigger runners] target_R: 2.5 → 3.0
+#    Reasoning: If WR improves with better fills, need larger winners to
+#    compensate for remaining losers. Defer until fills improve.
