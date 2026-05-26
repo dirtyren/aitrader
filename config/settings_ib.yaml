@@ -85,7 +85,7 @@ risk:
   max_notional_per_trade_pct: 0.2
   max_risk_per_trade: 0.005
 scheduler:
-  bar_timeframe: 1H
+  bar_timeframe: 60Min
   poll_fallback_seconds: 60
   wake_grace_seconds: 5
 setups:
