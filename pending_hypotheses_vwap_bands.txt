@@ -1,10 +1,14 @@
 # VWAP Bands Pending Hypotheses — May 26 2026
 
-## APPLIED (this cycle):
-- min_distance_atr: 0.25 → 0.15 — All 5 trades were reconciled_gone. Firing signals earlier in the move (closer to the band, smaller ATR offset) prevents price from reversing before limit order lands.
+## APPLIED (this cycle — 2026-05-26):
+- sigma: 1.5 → 2.0 — Previous fix (min_distance_atr 0.25→0.15) resolved the reconciled_gone fill issue, but now 4/5 trades are stopping at -1.0R immediately (0-4 bars held). Entries at 1.5σ on 5Min are not extreme enough in crypto — price continues past entry and hits 0.75xATR stop. Increasing sigma to 2.0 filters out noise entries, requiring deeper deviations with higher reversion probability.
+
+## PREVIOUSLY APPLIED (superseded by new symptom):
+- min_distance_atr: 0.25 → 0.15 — Fixed reconciled_gone (fills now land). No longer relevant.
 
 ## PENDING (for future cycles):
-1. sigma: 1.5 → 1.2 — Tighter band catches deviations earlier, before the move fully matures and reverses. This is the alternative approach if reducing min_distance_atr doesn't fix fills.
-2. min_distance_atr: 0.15 → 0.0 — Remove the extra distance requirement beyond the band entirely if fills still fail.
-3. Lower sigma to 1.0 + keep consecutive_closes=2 — The sweep showed sigma=2.5 is optimal for 30Min, sigma=2.0 for 1H, sigma=1.5 for 5Min. For crypto specifically, 1.0 might work better due to higher volatility on 5Min.
-4. consecutive_closes: 1 → 2 — Revert this previous change if we get fills but low win-rate.
+1. sigma: 2.0 → 2.5 — If 2.0 still produces stops at -1.0R, go deeper. The parameter sweep showed sigma=2.5 optimal for 30Min timeframe.
+2. target_R: 1.5 → 2.0 — Once WR improves above 30%, increase target to compensate for remaining losses.
+3. bar_timeframe: 5Min → 15Min — Longer bars give more room for reversion. The sweep showed sigma=2.5 works best on 30Min, suggesting longer timeframes produce more reliable VWAP deviations.
+4. consecutive_closes: 1 → 2 — Require 2 consecutive closes beyond the band before entering, adding a confirmation filter. Trade-off: fewer signals but higher quality.
+5. atr_mult_stop: 0.75 → 0.5 — Tighter stop to cap losses further, but only if sigma increase reduces WR but per-trade loss remains -1.0R.

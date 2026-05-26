@@ -351,6 +351,39 @@ class MySQLStore:
             )
         return book
 
+    def merge_open_positions(self, book: PositionBook) -> list[str]:
+        """Pull any open positions from MySQL not already in the in-memory book.
+
+        Returns list of symbols that were newly added. This ensures strategies
+        pick up positions created by other processes (reconciler, other traders,
+        manual inserts) without requiring a full restart.
+        """
+        added: list[str] = []
+        with Session(self._engine) as session:
+            rows = session.query(PositionRow).filter(
+                PositionRow.strategy_id == self.strategy_id,
+                PositionRow.status == "open",
+            ).all()
+            for row in rows:
+                if book.get(row.symbol) is not None:
+                    continue
+                # Also check crypto alt format
+                alt = row.symbol.replace("/", "").replace("USD", "/USD")
+                if alt != row.symbol and book.get(alt) is not None:
+                    continue
+                pos = self._dict_to_pos(row)
+                try:
+                    book.add(pos)
+                    added.append(row.symbol)
+                except ValueError:
+                    pass  # already in book (race)
+        if added:
+            self._log.info(
+                "MYSQL_MERGED_POSITIONS strategy=%s added=%s",
+                self.strategy_name, added,
+            )
+        return added
+
     def sync_position_state(self, pos: OpenPosition, asset_class: str) -> None:
         """Update mutable state on an existing open position (bars_held, breakeven, stop moves).
 

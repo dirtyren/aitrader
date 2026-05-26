@@ -382,7 +382,17 @@ def main():
         sys.exit(1)
     ledger = DailyLedger(initial_equity=initial_equity)
 
-    reconciler = Reconciler(alpaca, ac_configs, mysql_store=mysql)
+    # Extract strategy params for adopted crypto stop/target calculation
+    setups_config = cfg.get("setups", {})
+    # Default to vwap_bounce params if available, otherwise first enabled setup
+    adopted_cfg = setups_config.get("vwap_bounce",
+                    setups_config.get("price_discovery", {}))
+    recon_atr_mult_stop = adopted_cfg.get("atr_mult_stop", 1.25)
+    recon_target_R = adopted_cfg.get("target_R", 2.0)
+
+    reconciler = Reconciler(alpaca, ac_configs, mysql_store=mysql,
+                            atr_mult_stop=recon_atr_mult_stop,
+                            target_R=recon_target_R)
     try:
         startup_report = reconciler.reconcile(book, adopt_orphans=(config_path == 'config/settings.yaml'))
     except Exception as exc:
@@ -458,6 +468,20 @@ def main():
         try:
             cycle_now = datetime.now(timezone.utc)
             executor.reset_cycle()
+
+            # Merge any positions created in MySQL by other processes
+            # (reconciler, other traders, manual inserts) into the book.
+            if mysql is not None:
+                try:
+                    merged = mysql.merge_open_positions(book)
+                    if merged:
+                        logger.info(
+                            "MYSQL_MERGED count=%d symbols=%s",
+                            len(merged), merged,
+                        )
+                except Exception as exc:
+                    logger.error("MYSQL_MERGE_FAILED: %s", exc, exc_info=True)
+
             fresh_bars: dict[str, list] = {}
             for sym, ac_name in symbols:
                 ctx = contexts[sym]
