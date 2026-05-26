@@ -1,6 +1,6 @@
 acceptance:
   consecutive_closes: 1
-  min_distance_atr: 0.25
+  min_distance_atr: 0.15
 asset_classes:
   crypto:
     commission_bps: 25

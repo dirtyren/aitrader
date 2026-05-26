@@ -1,12 +1,10 @@
 # VWAP Bands Pending Hypotheses — May 26 2026
 
 ## APPLIED (this cycle):
-- consecutive_closes: 2 → 1 — All 5 trades were reconciled_gone (no fills on crypto). The 2-bar confirmation window lets price reverse before the limit order lands. Firing on first close beyond band catches reversion earlier.
+- min_distance_atr: 0.25 → 0.15 — All 5 trades were reconciled_gone. Firing signals earlier in the move (closer to the band, smaller ATR offset) prevents price from reversing before limit order lands.
 
-## PENDING (for future cycles if consecutive_closes=1 doesn't fix fills):
-
-1. sigma: 1.5 → 1.2 — Tighter band catches deviations earlier, before the move fully matures and reverses. This is the alternative approach if reducing consecutive_closes alone isn't enough.
-
-2. min_distance_atr: 0.25 → 0.0 — Remove the extra distance requirement beyond the band. Fire immediately when price touches the sigma band, not 0.25 ATR past it. More aggressive trigger = earlier signal = higher fill probability.
-
+## PENDING (for future cycles):
+1. sigma: 1.5 → 1.2 — Tighter band catches deviations earlier, before the move fully matures and reverses. This is the alternative approach if reducing min_distance_atr doesn't fix fills.
+2. min_distance_atr: 0.15 → 0.0 — Remove the extra distance requirement beyond the band entirely if fills still fail.
 3. Lower sigma to 1.0 + keep consecutive_closes=2 — The sweep showed sigma=2.5 is optimal for 30Min, sigma=2.0 for 1H, sigma=1.5 for 5Min. For crypto specifically, 1.0 might work better due to higher volatility on 5Min.
+4. consecutive_closes: 1 → 2 — Revert this previous change if we get fills but low win-rate.
