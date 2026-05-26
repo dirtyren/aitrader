@@ -139,6 +139,17 @@ class Reconciler:
         }
         broker_symbol_set = set(broker_by_symbol.keys())
 
+        # Expand broker_symbol_set to include crypto alt formats (flat ↔ slash),
+        # so MySQL positions stored with slash format (BTC/USD) match broker
+        # positions returned as flat format (BTCUSD). Without this, every
+        # crypto position gets closed as reconciled_gone on every cycle.
+        alt_symbols: set[str] = set()
+        for sym in broker_symbol_set:
+            alt = _maybe_crypto_alt(sym)
+            if alt != sym:
+                alt_symbols.add(alt)
+        broker_symbol_set |= alt_symbols
+
         # 0. MySQL: close positions that exist in DB but not on broker.
         #    These are positions that were closed server-side during restart.
         if self._mysql is not None:
@@ -162,8 +173,8 @@ class Reconciler:
                     getattr(pos, "setup", "?"),
                 )
 
-        # 2. Drift: in both, qty differs (log only).
-        #    Try the broker symbol first, then its crypto alternate.
+        # 2. Drift: in both, qty differs. Update book + MySQL to match broker
+        #    (Alpaca is the source of truth for aggregated position size).
         for symbol, broker_pos in broker_by_symbol.items():
             local_pos = book.get(symbol)
             if local_pos is None:
@@ -174,10 +185,21 @@ class Reconciler:
                     continue
             broker_qty = abs(float(broker_pos["qty"]))
             if abs(local_pos.qty - broker_qty) > _QTY_EPS:
-                report.drift.append((symbol, local_pos.qty, broker_qty))
+                old_qty = local_pos.qty
+                local_pos.qty = broker_qty  # update in-memory book
+                # Persist to MySQL
+                if self._mysql is not None:
+                    try:
+                        self._mysql.update_position_qty(local_pos.symbol, broker_qty)
+                    except Exception as exc:
+                        self._log.error(
+                            "MYSQL_QTY_UPDATE_FAILED symbol=%s: %s",
+                            local_pos.symbol, exc, exc_info=True,
+                        )
+                report.drift.append((symbol, old_qty, broker_qty))
                 self._log.warning(
-                    "RECONCILE_DRIFT symbol=%s book_qty=%s broker_qty=%s",
-                    symbol, local_pos.qty, broker_qty,
+                    "DRIFT_CORRECTED symbol=%s old_qty=%s new_qty=%s entry_px=%s",
+                    symbol, old_qty, broker_qty, local_pos.entry_px,
                 )
 
         # 3. Orphans: in broker, not in book → adopt by asset class.

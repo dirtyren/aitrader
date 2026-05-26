@@ -237,14 +237,14 @@ def test_reconcile_adopts_crypto_no_stop():
     assert pos.target_px is None
 
 
-def test_reconcile_logs_drift_no_mutation():
+def test_reconcile_corrects_drift():
     book = PositionBook()
     book.add(_trader_pos("AAPL", qty=100))
     alp = _fake_alpaca(positions=[_broker_position("AAPL", qty="50")])
     r = Reconciler(alp, ac_configs={})
     report = r.reconcile(book)
     assert report.drift == [("AAPL", 100.0, 50.0)]
-    assert book.get("AAPL").qty == 100
+    assert book.get("AAPL").qty == 50
 
 
 def test_reconcile_unknown_asset_class_skips_adoption(caplog):
