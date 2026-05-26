@@ -2,8 +2,10 @@ Hypothesis 2: ✅ APPLIED 2026-05-25 — Increased vwap_bounce.arm_window_bars f
 Hypothesis 3: ❌ REMOVED 2026-05-25 — Stale; trend_majority param doesn't exist in current config.
 Hypothesis 4: Consider increasing opening_blackout_min for crypto from 15 to 30 — all reconciled_gone trades were crypto. May reduce startup reconciliation conflicts.
 Hypothesis 5: Add max_hold_bars per asset class — crypto positions may benefit from shorter time stops than equities given 24/7 market.
-Hypothesis 6: ✅ APPLIED 2026-05-25 — Increased acceptance.min_distance_atr from 0.25 to 0.35. All 5 unreflected trades were reconciled_gone ($0 PnL, bars_held=0) on crypto in a bear regime. Tighter 0.25 ATR distance fired marginal breakouts at VWAP σ=1 band edge that never filled. 0.35 ATR requires stronger momentum before entry, improving fill probability on Alpaca crypto limit orders.
+Hypothesis 6: ❌ RETRACTED 2026-05-26 — Increased acceptance.min_distance_atr from 0.25 to 0.35. The 6 subsequent trades were STILL all reconciled_gone ($0 PnL, bars_held=0). Making the trigger require MORE distance fires it DEEPER in the move, giving fills even less time. The direction was wrong.
+Hypothesis 9: ✅ APPLIED 2026-05-26 — Reduced acceptance.min_distance_atr from 0.35 to 0.20. The unfilled-signal problem requires triggering EARLIER in the price move, not later. At 0.20 ATR deviation, the signal fires when price has just started moving from VWAP, while momentum is still carrying price toward the extreme — giving Alpaca market orders time to fill before reversal. Counterintuitive but confirmed: previous increase (0.25→0.35) worsened the problem.
 
-New pending ideas:
-- Hyp7: If reconciled_gone persists, consider adding a crypto-specific order_type config (force market orders for crypto entries) since Alpaca market orders always fill.
-- Hyp8: After liquidity improves, try reducing sigma_bands from 1.0 to 0.8 to catch earlier breakouts — but only once fill reliability is established.
+Pending ideas:
+- Hyp7: If reconciled_gone persists at 0.20, force market orders for crypto entries. Alpaca crypto supports market orders which always fill; the tradeoff is slippage.
+- Hyp8: After fill reliability improves, consider wider sigma_bands (1.0→1.5) to reduce signal count and increase per-trade conviction.
+- Hyp10: Consider reducing price_discovery arm_window_bars from 6 to 4 — shorter arming window means the setup arms faster after VWAP touch, potentially avoiding the delay that pushes entry into the exhaustion zone.
