@@ -110,7 +110,7 @@ def _seed_open(book, *, symbol="BTC/USD", entry=100.0, stop=99.0, target=102.0,
 
 def test_engine_routes_actions_to_handle_actions_with_parent_id():
     pm = MagicMock()
-    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", kind="stop",
+    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", setup="fake", kind="stop",
                                              price=99.0, qty=10, side="long")]
     engine, book, _, _, ex, _ = _make_engine(position_manager=pm)
     _seed_open(book, parent_id="parent-1")
@@ -126,7 +126,7 @@ def test_engine_routes_actions_to_handle_actions_with_parent_id():
 
 def test_engine_records_trade_on_exit_action():
     pm = MagicMock()
-    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", kind="target",
+    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", setup="fake", kind="target",
                                              price=102.0, qty=10, side="long")]
     engine, book, ledger, _, _, _ = _make_engine(position_manager=pm)
     _seed_open(book, entry=100.0, stop=99.0, target=102.0, qty=10)
@@ -142,7 +142,7 @@ def test_engine_records_trade_on_exit_action():
 def test_engine_uses_initial_stop_for_R_after_breakeven_move():
     pm = MagicMock()
     # Position has had stop moved to entry by breakeven, but initial_stop_px preserves R
-    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", kind="time_stop",
+    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", setup="fake", kind="time_stop",
                                              price=101.0, qty=10, side="long")]
     engine, book, ledger, _, _, _ = _make_engine(position_manager=pm)
     book.add(OpenPosition(
@@ -159,7 +159,7 @@ def test_engine_uses_initial_stop_for_R_after_breakeven_move():
 
 def test_engine_does_not_record_trade_for_breakeven():
     pm = MagicMock()
-    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", kind="breakeven",
+    pm.on_bar.return_value = [PositionAction(symbol="BTC/USD", setup="fake", kind="breakeven",
                                              price=100.0, qty=10, side="long")]
     engine, book, ledger, _, ex, _ = _make_engine(position_manager=pm)
     _seed_open(book)

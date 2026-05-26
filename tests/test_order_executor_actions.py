@@ -16,7 +16,7 @@ def _make_executor():
 
 
 def _action(kind, side="long", symbol="AAPL", qty=10, price=99.0):
-    return PositionAction(symbol=symbol, kind=kind, price=price, qty=qty, side=side)
+    return PositionAction(symbol=symbol, setup="adopted", kind=kind, price=price, qty=qty, side=side)
 
 
 # ---- crypto: PositionManager owns stop/target/time_stop -------------------
@@ -33,12 +33,12 @@ def test_crypto_stop_submits_market_close_long():
     assert kwargs["order_type"] == "market"
 
 
-def test_crypto_target_submits_market_close_short():
+def test_crypto_target_skips_market_close():
+    """Crypto target exits via limit TP order filling — no market close needed."""
     ex, client = _make_executor()
     ex.handle_actions([_action("target", side="short", symbol="ETH/USD", qty=0.5)],
                       asset_class="crypto", parent_order_id="parent-2")
-    client.submit_order.assert_called_once()
-    assert client.submit_order.call_args.kwargs["side"] == "buy"
+    client.submit_order.assert_not_called()
     client.cancel_order.assert_not_called()
 
 
@@ -91,7 +91,7 @@ def test_crypto_breakeven_does_not_submit_orders():
 def _seed_open_position(book, *, symbol="AAPL", side="long", entry=100.0,
                         stop_order_id="sl-1", parent_order_id="parent-1"):
     book.add(OpenPosition(
-        symbol=symbol, setup="price_discovery", side=side, qty=10,
+        symbol=symbol, setup="adopted", side=side, qty=10,
         entry_px=entry, stop_px=entry - 1.0, target_px=entry + 2.0,
         opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
         order_id=parent_order_id, stop_order_id=stop_order_id,

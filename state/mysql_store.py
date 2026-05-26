@@ -253,8 +253,13 @@ class MySQLStore:
         exit_px: float,
         close_reason: str,
         closed_at: datetime | None = None,
+        setup_name: str | None = None,
     ) -> dict | None:
-        """Close the open position for `symbol` and archive it to trades.
+        """Close the open position for `symbol` (and optionally setup) and archive it to trades.
+
+        When setup_name is provided, closes the specific setup's position on
+        that symbol. Without setup_name, closes any open position (legacy compat
+        for single-setup-at-a-time usage).
 
         Returns the closed position data dict, or None if no open position found.
         """
@@ -262,11 +267,14 @@ class MySQLStore:
             closed_at = datetime.now(timezone.utc)
 
         with Session(self._engine) as session:
-            row = session.query(PositionRow).filter(
+            q = session.query(PositionRow).filter(
                 PositionRow.strategy_id == self.strategy_id,
                 PositionRow.symbol == symbol,
                 PositionRow.status == "open",
-            ).one_or_none()
+            )
+            if setup_name:
+                q = q.filter(PositionRow.setup_name == setup_name)
+            row = q.one_or_none()
 
             if row is None:
                 self._log.warning(
@@ -354,6 +362,9 @@ class MySQLStore:
     def merge_open_positions(self, book: PositionBook) -> list[str]:
         """Pull any open positions from MySQL not already in the in-memory book.
 
+        Checks by (symbol, setup_name) so that multiple setups can have
+        independent positions on the same symbol.
+
         Returns list of symbols that were newly added. This ensures strategies
         pick up positions created by other processes (reconciler, other traders,
         manual inserts) without requiring a full restart.
@@ -365,12 +376,17 @@ class MySQLStore:
                 PositionRow.status == "open",
             ).all()
             for row in rows:
-                if book.get(row.symbol) is not None:
+                # Check by (symbol, setup_name) — allow different setups
+                # on the same symbol to coexist in the book.
+                existing = book.get(row.symbol, row.setup_name)
+                if existing is not None:
                     continue
                 # Also check crypto alt format
                 alt = row.symbol.replace("/", "").replace("USD", "/USD")
-                if alt != row.symbol and book.get(alt) is not None:
-                    continue
+                if alt != row.symbol:
+                    existing = book.get(alt, row.setup_name)
+                    if existing is not None:
+                        continue
                 pos = self._dict_to_pos(row)
                 try:
                     book.add(pos)
@@ -390,12 +406,18 @@ class MySQLStore:
         Called each cycle to keep the DB in sync with in-memory book.
         """
         with Session(self._engine) as session:
-            row = session.query(PositionRow).filter(
+            q = session.query(PositionRow).filter(
                 PositionRow.strategy_id == self.strategy_id,
                 PositionRow.symbol == pos.symbol,
+                PositionRow.setup_name == pos.setup,
                 PositionRow.status == "open",
-            ).one_or_none()
+            )
+            row = q.one_or_none()
             if row is None:
+                self._log.warning(
+                    "MYSQL_SYNC_NOT_FOUND symbol=%s setup=%s — skipping",
+                    pos.symbol, pos.setup,
+                )
                 return
             if pos.stop_px != pos.initial_stop_px and not pos.breakeven_moved:
                 row.breakeven_moved = True

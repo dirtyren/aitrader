@@ -234,7 +234,7 @@ class OrderExecutor:
 
             elif asset_class == "crypto":
                 if a.kind in ("stop", "target", "time_stop"):
-                    pos = self.book.get(a.symbol)
+                    pos = self.book.get(a.symbol, a.setup)
                     if pos and getattr(pos, "target_order_id", None):
                         try:
                             self.client.cancel_order(pos.target_order_id)
@@ -253,7 +253,7 @@ class OrderExecutor:
                                 a.symbol, a.kind, asset_class)
 
     def _move_equity_stop_to_breakeven(self, a: PositionAction) -> None:
-        pos = self.book.get(a.symbol)
+        pos = self.book.get(a.symbol, a.setup)
         stop_leg = pos.stop_order_id if pos else None
         if not stop_leg:
             self.logger.warning("BREAKEVEN_NO_STOP_LEG symbol=%s — skipping replace", a.symbol)
