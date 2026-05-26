@@ -14,7 +14,7 @@ vwap:
 
 acceptance:
   consecutive_closes: 2
-  min_distance_atr: 0.35
+  min_distance_atr: 0.20
 
 regime_detector:
   trend_day_range_mult: 1.5
