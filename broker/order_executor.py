@@ -7,6 +7,7 @@ from core.position_manager import PositionAction
 from state.position_book import OpenPosition, PositionBook
 from strategies.base_setup import SetupSignal
 from risk.manager import RiskDecision
+from notifications import send_position_open_alert
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,19 @@ class OrderExecutor:
             except Exception as exc:
                 self.logger.error("MYSQL_SAVE_FAILED symbol=%s: %s",
                                   signal.symbol, exc, exc_info=True)
+        # Notify Telegram
+        strategy_name = self._mysql.strategy_name if self._mysql else "unknown"
+        send_position_open_alert(
+            strategy_name=strategy_name,
+            symbol=pos.symbol,
+            side=pos.side,
+            qty=pos.qty,
+            entry_px=pos.entry_px,
+            stop_px=pos.stop_px,
+            target_px=pos.target_px,
+            setup_name=pos.setup,
+            asset_class=asset_class,
+        )
         self.logger.info("ORDER_SUBMITTED setup=%s symbol=%s side=%s qty=%s "
                          "entry=%.4f stop=%.4f target=%.4f order_id=%s",
                          signal.setup, signal.symbol, signal.side, decision.qty,

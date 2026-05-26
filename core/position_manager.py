@@ -27,16 +27,38 @@ class PositionManager:
 
         if pos.adopted:
             pos.bars_held += 1
+            # Adopted positions still need stop/target protection —
+            # the bug was that we skipped the check entirely (issue 2026-05-26).
+            # Skip breakeven and time_stop (no entry risk context), but
+            # DO check stop-loss and take-profit levels.
+            if pos.side == "long":
+                if pos.stop_px is not None and bar.low <= pos.stop_px:
+                    actions = [self._exit(pos, "stop", pos.stop_px)]
+                    self._book.close(symbol)
+                    return actions
+                if pos.target_px is not None and bar.high >= pos.target_px:
+                    actions = [self._exit(pos, "target", pos.target_px)]
+                    self._book.close(symbol)
+                    return actions
+            else:  # short
+                if pos.stop_px is not None and bar.high >= pos.stop_px:
+                    actions = [self._exit(pos, "stop", pos.stop_px)]
+                    self._book.close(symbol)
+                    return actions
+                if pos.target_px is not None and bar.low <= pos.target_px:
+                    actions = [self._exit(pos, "target", pos.target_px)]
+                    self._book.close(symbol)
+                    return actions
             return []
 
         actions: list[PositionAction] = []
 
         if pos.side == "long":
-            if bar.low <= pos.stop_px:
+            if pos.stop_px is not None and bar.low <= pos.stop_px:
                 actions.append(self._exit(pos, "stop", pos.stop_px))
                 self._book.close(symbol)
                 return actions
-            if bar.high >= pos.target_px:
+            if pos.target_px is not None and bar.high >= pos.target_px:
                 actions.append(self._exit(pos, "target", pos.target_px))
                 self._book.close(symbol)
                 return actions
@@ -47,11 +69,11 @@ class PositionManager:
                     pos.breakeven_moved = True
                     actions.append(self._exit(pos, "breakeven", pos.entry_px))
         else:  # short
-            if bar.high >= pos.stop_px:
+            if pos.stop_px is not None and bar.high >= pos.stop_px:
                 actions.append(self._exit(pos, "stop", pos.stop_px))
                 self._book.close(symbol)
                 return actions
-            if bar.low <= pos.target_px:
+            if pos.target_px is not None and bar.low <= pos.target_px:
                 actions.append(self._exit(pos, "target", pos.target_px))
                 self._book.close(symbol)
                 return actions
