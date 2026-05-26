@@ -370,6 +370,33 @@ class MySQLStore:
             row.bars_held = pos.bars_held
             session.commit()
 
+    def update_position_qty(self, symbol: str, new_qty: float) -> None:
+        """Update the quantity of an existing open position.
+
+        Called by the reconciler when drift is detected — the broker is the
+        source of truth for position size (aggregated across strategies on the
+        same account).
+        """
+        with Session(self._engine) as session:
+            row = session.query(PositionRow).filter(
+                PositionRow.strategy_id == self.strategy_id,
+                PositionRow.symbol == symbol,
+                PositionRow.status == "open",
+            ).one_or_none()
+            if row is None:
+                self._log.warning(
+                    "MYSQL_QTY_UPDATE_NOT_FOUND symbol=%s — no open position to update",
+                    symbol,
+                )
+                return
+            old_qty = float(row.qty)
+            row.qty = Decimal(str(new_qty))
+            session.commit()
+            self._log.info(
+                "MYSQL_QTY_UPDATED symbol=%s old_qty=%s new_qty=%s",
+                symbol, old_qty, new_qty,
+            )
+
     # ── Closed positions cleanup on startup ─────────────────────────────
 
     def close_positions_not_in_broker(self, broker_symbols: set[str]) -> list[str]:
