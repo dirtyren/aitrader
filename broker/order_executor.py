@@ -110,12 +110,31 @@ class OrderExecutor:
             return None
 
         stop_order_id = self._extract_stop_leg_id(order) if asset_class == "equity" else None
+        target_order_id = None
+        
+        # For crypto, place limit TP order immediately
+        if asset_class == "crypto" and signal.target is not None:
+            try:
+                tp_side = "sell" if alp_side == "buy" else "buy"
+                tp_order = self.client.submit_order(
+                    symbol=signal.symbol,
+                    qty=decision.qty,
+                    side=tp_side,
+                    order_type="limit",
+                    limit_price=round(signal.target, 4),
+                    time_in_force="gtc",
+                )
+                target_order_id = tp_order.get("id")
+            except Exception as exc:
+                self.logger.error("Failed to place crypto TP limit order for %s: %s", signal.symbol, exc)
+
         pos = OpenPosition(
             symbol=signal.symbol, setup=signal.setup, side=signal.side,
             qty=decision.qty, entry_px=signal.entry, stop_px=signal.stop,
             target_px=signal.target, opened_at=signal.ts,
             order_id=order.get("id", ""),
             stop_order_id=stop_order_id,
+            target_order_id=target_order_id,
             initial_stop_px=signal.stop,
         )
         self.book.add(pos)
@@ -154,6 +173,22 @@ class OrderExecutor:
                 order_type="market", time_in_force="gtc",
             )
         except Exception as exc:
+            if "insufficient qty" in str(exc).lower() or "not enough" in str(exc).lower() or "qty" in str(exc).lower():
+                self.logger.warning("CLOSE_QTY_MISMATCH symbol=%s qty=%s, attempting full position close", symbol, qty)
+                try:
+                    positions = self.client.get_positions()
+                    broker_pos = next((p for p in positions if p["symbol"].replace("/", "") == symbol.replace("/", "")), None)
+                    if broker_pos:
+                        actual_qty = abs(float(broker_pos["qty"]))
+                        if actual_qty > 0:
+                            return self.client.submit_order(
+                                symbol=symbol, qty=actual_qty,
+                                side="sell" if side == "long" else "buy",
+                                order_type="market", time_in_force="gtc",
+                            )
+                except Exception as inner_exc:
+                    self.logger.error("CLOSE_FULL_POSITION_FAILED symbol=%s error=%s", symbol, inner_exc)
+            
             self.logger.error("CLOSE_FAILED symbol=%s error=%s", symbol, exc, exc_info=True)
             return None
 
@@ -199,7 +234,17 @@ class OrderExecutor:
 
             elif asset_class == "crypto":
                 if a.kind in ("stop", "target", "time_stop"):
-                    self.close_position(a.symbol, a.side, a.qty)
+                    pos = self.book.get(a.symbol)
+                    if pos and getattr(pos, "target_order_id", None):
+                        try:
+                            self.client.cancel_order(pos.target_order_id)
+                        except Exception as exc:
+                            self.logger.error("CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
+                                              a.symbol, pos.target_order_id, exc)
+                    
+                    if a.kind != "target":
+                        # If it wasn't the target filling, we must close the position
+                        self.close_position(a.symbol, a.side, a.qty)
                     self.logger.info("VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s",
                                      a.symbol, a.kind, a.price, a.qty)
                     continue

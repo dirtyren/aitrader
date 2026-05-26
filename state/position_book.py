@@ -17,6 +17,7 @@ class OpenPosition:
     breakeven_moved: bool = False
     bars_held: int = 0
     stop_order_id: str | None = None    # bracket stop-leg id (equity); None for crypto / virtual / adopted-no-bracket
+    target_order_id: str | None = None  # limit order id for crypto TP
     initial_stop_px: float | None = None  # original stop at entry; survives breakeven moves for R calc
     adopted: bool = False               # True for positions reconciled from broker (monitor-only)
 
