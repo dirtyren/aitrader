@@ -65,8 +65,9 @@ def _index_bracket_children(orders: Iterable[dict]) -> dict[str, dict]:
 
 
 import logging
+import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from state.position_book import OpenPosition, PositionBook
 from core.asset_class import AssetClassConfig
@@ -124,11 +125,15 @@ class Reconciler:
 
     def __init__(self, alpaca, ac_configs: dict | None = None,
                  *, logger: logging.Logger | None = None,
-                 mysql_store: "MySQLStore | None" = None) -> None:
+                 mysql_store: "MySQLStore | None" = None,
+                 atr_mult_stop: float = 2.0,
+                 target_R: float = 1.5) -> None:
         self._alpaca = alpaca
         self._ac_configs = ac_configs or {}
         self._log = logger or logging.getLogger("vwap_wave.reconciler")
         self._mysql = mysql_store
+        self._atr_mult_stop = atr_mult_stop
+        self._target_R = target_R
 
     def reconcile(self, book: PositionBook, adopt_orphans: bool = True) -> ReconcileReport:
         report = ReconcileReport()
@@ -173,8 +178,10 @@ class Reconciler:
                     getattr(pos, "setup", "?"),
                 )
 
-        # 2. Drift: in both, qty differs. Update book + MySQL to match broker
-        #    (Alpaca is the source of truth for aggregated position size).
+        # 2. Drift: in both, qty differs (log only). Do NOT correct — the broker
+        #    aggregates positions from ALL strategies on the same account, so the
+        #    broker qty may include shares owned by other strategies. Correcting
+        #    the qty would merge positions and break per-strategy tracking.
         for symbol, broker_pos in broker_by_symbol.items():
             local_pos = book.get(symbol)
             if local_pos is None:
@@ -185,21 +192,11 @@ class Reconciler:
                     continue
             broker_qty = abs(float(broker_pos["qty"]))
             if abs(local_pos.qty - broker_qty) > _QTY_EPS:
-                old_qty = local_pos.qty
-                local_pos.qty = broker_qty  # update in-memory book
-                # Persist to MySQL
-                if self._mysql is not None:
-                    try:
-                        self._mysql.update_position_qty(local_pos.symbol, broker_qty)
-                    except Exception as exc:
-                        self._log.error(
-                            "MYSQL_QTY_UPDATE_FAILED symbol=%s: %s",
-                            local_pos.symbol, exc, exc_info=True,
-                        )
-                report.drift.append((symbol, old_qty, broker_qty))
+                report.drift.append((symbol, local_pos.qty, broker_qty))
                 self._log.warning(
-                    "DRIFT_CORRECTED symbol=%s old_qty=%s new_qty=%s entry_px=%s",
-                    symbol, old_qty, broker_qty, local_pos.entry_px,
+                    "RECONCILE_DRIFT symbol=%s book_qty=%s broker_qty=%s — "
+                    "broker aggregates multiple strategies, not correcting",
+                    symbol, local_pos.qty, broker_qty,
                 )
 
         # 3. Orphans: in broker, not in book → adopt by asset class.
@@ -304,29 +301,71 @@ class Reconciler:
                     adopted=True,
                 )
 
-            # 3b. Crypto orphans: naked, loud warning.
+            # 3b. Crypto orphans: calculate ATR-based stop/target levels.
             for broker_pos in orphan_crypto_records:
                 symbol = broker_pos["symbol"]
+                side = _normalize_side(broker_pos["side"])
+                qty = abs(float(broker_pos["qty"]))
+                entry_px = float(broker_pos["avg_entry_price"])
+                current_px = float(broker_pos.get("current_price", entry_px))
+
+                # Calculate ATR(14) from recent 5Min bars
+                stop_px: float | None = None
+                target_px: float | None = None
+                atr14: float | None = None
+                try:
+                    alt_symbol = _maybe_crypto_alt(symbol)
+                    bars = self._alpaca.get_crypto_bars(
+                        alt_symbol, "5Min",
+                        start=datetime.now(timezone.utc) - timedelta(hours=4),
+                        end=datetime.now(timezone.utc), limit=50,
+                    )
+                    true_ranges = []
+                    for i in range(1, min(20, len(bars))):
+                        h, l, pc = bars[i]["h"], bars[i]["l"], bars[i-1]["c"]
+                        true_ranges.append(max(h - l, abs(h - pc), abs(l - pc)))
+                    if len(true_ranges) >= 14:
+                        atr14 = statistics.mean(true_ranges[-14:])
+                        stop_dist = self._atr_mult_stop * atr14
+                        if side == "long":
+                            stop_px = round(current_px - stop_dist, 2)
+                            target_px = round(current_px + (self._target_R * stop_dist), 2)
+                        else:
+                            stop_px = round(current_px + stop_dist, 2)
+                            target_px = round(current_px - (self._target_R * stop_dist), 2)
+                except Exception as exc:
+                    self._log.error(
+                        "ADOPT_ATR_CALC_FAILED symbol=%s: %s", symbol, exc,
+                    )
+
                 pos = OpenPosition(
                     symbol=symbol,
                     setup="adopted",
-                    side=_normalize_side(broker_pos["side"]),
-                    qty=abs(float(broker_pos["qty"])),
-                    entry_px=float(broker_pos["avg_entry_price"]),
-                    stop_px=None,
-                    target_px=None,
+                    side=side,
+                    qty=qty,
+                    entry_px=entry_px,
+                    stop_px=stop_px,
+                    target_px=target_px,
                     opened_at=datetime.now(timezone.utc),
                     order_id="",
                     stop_order_id=None,
-                    initial_stop_px=None,
+                    initial_stop_px=stop_px,
                     adopted=True,
                 )
                 book.add(pos)
                 report.adopted_crypto.append(symbol)
-                self._log.warning(
-                    "RECONCILE_ADOPTED_CRYPTO_NO_STOP symbol=%s side=%s qty=%s entry=%s",
-                    symbol, pos.side, pos.qty, pos.entry_px,
-                )
+                if stop_px is not None:
+                    self._log.info(
+                        "ADOPTED_CRYPTO_WITH_STOP symbol=%s side=%s qty=%s entry=%.4f "
+                        "stop=%.4f target=%.4f atr14=%.4f stop_dist=%.4f",
+                        symbol, side, qty, entry_px,
+                        stop_px, target_px, atr14 or 0, atr14 or 0,
+                    )
+                else:
+                    self._log.warning(
+                        "RECONCILE_ADOPTED_CRYPTO_NO_STOP symbol=%s side=%s qty=%s entry=%s",
+                        symbol, side, qty, entry_px,
+                    )
                 # Persist adopted crypto position to MySQL
                 if self._mysql is not None:
                     try:
