@@ -69,7 +69,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from state.position_book import OpenPosition, PositionBook
-
+from core.asset_class import AssetClassConfig
+from notifications import send_position_open_alert
 if TYPE_CHECKING:
     from state.mysql_store import MySQLStore
 
@@ -85,6 +86,26 @@ class ReconcileReport:
 
 
 _QTY_EPS = 1e-6
+
+
+def _maybe_crypto_alt(symbol: str) -> str:
+    """Return the alternate format for crypto symbols: LINK/USD ↔ LINKUSD.
+    
+    Helps the reconciler match book positions (which may use LINK/USD) against
+    Alpaca broker positions (which return LINKUSD). Identity if no conversion.
+    """
+    if "/" in symbol:
+        # LINK/USD → LINKUSD
+        return symbol.replace("/", "")
+    # Simple heuristic: if the symbol ends with a known quote currency
+    # that would have a "/" book form, produce it.
+    crypto_pairs = {"USD", "USDT", "USDC", "EUR", "GBP", "BTC", "ETH"}
+    for q in crypto_pairs:
+        if symbol.endswith(q) and len(symbol) > len(q):
+            base = symbol[: -len(q)]
+            if base.isalpha() and 2 <= len(base) <= 5:
+                return f"{base}/{q}"
+    return symbol
 
 
 class Reconciler:
@@ -129,9 +150,9 @@ class Reconciler:
                     len(gone), gone,
                 )
 
-        # 1. Closed: in book, not in broker.
+        # 1. Closed: in book, not in broker (consider crypto alt formats).
         for symbol in list(book.symbols()):
-            if symbol not in broker_by_symbol:
+            if symbol not in broker_by_symbol and _maybe_crypto_alt(symbol) not in broker_by_symbol:
                 pos = book.close(symbol)
                 report.closed.append(symbol)
                 self._log.info(
@@ -142,10 +163,15 @@ class Reconciler:
                 )
 
         # 2. Drift: in both, qty differs (log only).
+        #    Try the broker symbol first, then its crypto alternate.
         for symbol, broker_pos in broker_by_symbol.items():
             local_pos = book.get(symbol)
             if local_pos is None:
-                continue
+                alt = _maybe_crypto_alt(symbol)
+                if alt != symbol:
+                    local_pos = book.get(alt)
+                if local_pos is None:
+                    continue
             broker_qty = abs(float(broker_pos["qty"]))
             if abs(local_pos.qty - broker_qty) > _QTY_EPS:
                 report.drift.append((symbol, local_pos.qty, broker_qty))
@@ -161,6 +187,12 @@ class Reconciler:
         if adopt_orphans:
             for symbol, broker_pos in broker_by_symbol.items():
                 if book.get(symbol) is not None:
+                    continue
+                # Also check if the position exists under a crypto-alternate
+                # symbol (e.g. broker LINKUSD vs book LINK/USD) to avoid
+                # double-adopting.
+                alt = _maybe_crypto_alt(symbol)
+                if alt != symbol and book.get(alt) is not None:
                     continue
                 ac = _normalize_asset_class(broker_pos.get("asset_class"))
                 if ac == "equity":
@@ -237,6 +269,18 @@ class Reconciler:
                             "MYSQL_ADOPT_SAVE_FAILED symbol=%s: %s",
                             symbol, exc, exc_info=True,
                         )
+                send_position_open_alert(
+                    strategy_name=self._mysql.strategy_name if self._mysql else "adopted",
+                    symbol=pos.symbol,
+                    side=pos.side,
+                    qty=pos.qty,
+                    entry_px=pos.entry_px,
+                    stop_px=pos.stop_px,
+                    target_px=pos.target_px,
+                    setup_name=pos.setup,
+                    asset_class="equity",
+                    adopted=True,
+                )
 
             # 3b. Crypto orphans: naked, loud warning.
             for broker_pos in orphan_crypto_records:
@@ -270,6 +314,18 @@ class Reconciler:
                             "MYSQL_ADOPT_SAVE_FAILED symbol=%s: %s",
                             symbol, exc, exc_info=True,
                         )
+                send_position_open_alert(
+                    strategy_name=self._mysql.strategy_name if self._mysql else "adopted",
+                    symbol=pos.symbol,
+                    side=pos.side,
+                    qty=pos.qty,
+                    entry_px=pos.entry_px,
+                    stop_px=pos.stop_px,
+                    target_px=pos.target_px,
+                    setup_name=pos.setup,
+                    asset_class="crypto",
+                    adopted=True,
+                )
 
         # 4. Recurring naked-crypto warning (every cycle).
         # Downgrade to INFO for positions that ARE persisted in MySQL — they'll
