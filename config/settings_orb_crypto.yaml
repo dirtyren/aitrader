@@ -1,0 +1,78 @@
+acceptance:
+  consecutive_closes: 2
+  min_distance_atr: 0.15
+asset_classes:
+  crypto:
+    commission_bps: 25
+    session_close_local: '23:59'
+    session_open_local: 00:00
+    slippage_bps: 5
+    symbols:
+    - BTC/USD
+    - ETH/USD
+    - SOL/USD
+    - AVAX/USD
+    - LINK/USD
+    timezone: UTC
+  equity:
+    commission_per_share: 0.0
+    session_close_local: '16:00'
+    session_open_local: '09:30'
+    slippage_bps: 2
+    symbols: []
+    timezone: America/New_York
+backtest:
+  cache_dir: runtime/bars_cache
+  end: '2026-04-30'
+  initial_equity: 100000
+  start: '2024-01-01'
+broker:
+  handshake_symbol: BTC/USD
+  paper_trading: true
+filters:
+  opening_blackout_min: 15
+  volume_deficit_pct: 0.3
+logging:
+  level: INFO
+  log_file: logs/orb_crypto_trader.log
+news_blackouts: []
+overrides:
+  enabled: true
+  path: runtime/wfo/active/live_overrides.yaml
+position_management:
+  breakeven_at_R: 1.0
+  max_hold_bars: 12
+  trail_at_R: 1.5
+  trail_atr: 1.0
+regime_detector:
+  balance_day_in_value_min: 0.6
+  trend_day_in_value_max: 0.3
+  trend_day_range_mult: 1.5
+risk:
+  circuit_breaker:
+    daily_loss_limit_1: 0.015
+    daily_loss_limit_2: 0.025
+    drawdown_limit: 0.05
+  consecutive_loss_limit: 2
+  loss_filter_scope: per_symbol
+  max_concurrent_positions: 4
+  max_daily_risk_open: 0.02
+  max_notional_per_trade_pct: 0.10
+  max_risk_per_trade: 0.005
+scheduler:
+  bar_timeframe: 5Min
+  poll_fallback_seconds: 60
+  wake_grace_seconds: 5
+setups:
+  orb_vwap:
+    atr_mult_stop: 0.75
+    enabled: true
+    orb_bars: 4
+    target_R: 2.5
+system:
+  name: orb_crypto_trader
+  trading_env: paper
+  version: 2.0.0
+vwap:
+  min_session_bars: 6
+  sigma_bands: 1.0
