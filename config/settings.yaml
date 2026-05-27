@@ -104,12 +104,7 @@ asset_classes:
     session_close_local: "23:59"
     slippage_bps: 5
     commission_bps: 25
-    symbols:
-      - "BTC/USD"
-      - "ETH/USD"
-      - "SOL/USD"
-      - "AVAX/USD"
-      - "LINK/USD"
+    symbols: []
 
 news_blackouts: []
 
