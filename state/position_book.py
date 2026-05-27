@@ -75,29 +75,37 @@ class PositionBook:
         (dict insertion order) for backward-compatible callers like the snapshot
         collector. Prefer get_all() for complete results.
         """
+        sym_norm = symbol.replace("/", "")
         if setup is not None:
-            return self._positions.get((symbol, setup))
+            for (sym, set_name), pos in self._positions.items():
+                if sym.replace("/", "") == sym_norm and set_name == setup:
+                    return pos
+            return None
         for (sym, _), pos in self._positions.items():
-            if sym == symbol:
+            if sym.replace("/", "") == sym_norm:
                 return pos
         return None
 
     def get_all(self, symbol: str) -> list[OpenPosition]:
         """Return ALL positions for this symbol (one per setup)."""
-        return [pos for (sym, _), pos in self._positions.items() if sym == symbol]
+        sym_norm = symbol.replace("/", "")
+        return [pos for (sym, _), pos in self._positions.items() if sym.replace("/", "") == sym_norm]
 
     def has_symbol(self, symbol: str) -> bool:
         """True if any position exists for this symbol."""
-        return any(sym == symbol for (sym, _) in self._positions)
+        sym_norm = symbol.replace("/", "")
+        return any(sym.replace("/", "") == sym_norm for (sym, _) in self._positions)
 
     # ── Mutation ────────────────────────────────────────────────────────
 
     def add(self, p: OpenPosition) -> None:
         key = p.key
-        if key in self._positions:
-            raise ValueError(
-                f"Position already open on {key[0]} for setup {key[1]!r}"
-            )
+        sym_norm = p.symbol.replace("/", "")
+        for k in self._positions:
+            if k[0].replace("/", "") == sym_norm and k[1] == p.setup:
+                raise ValueError(
+                    f"Position already open on {k[0]} for setup {k[1]!r}"
+                )
         self._positions[key] = p
 
     def close(self, symbol: str, setup: str | None = None) -> OpenPosition | None:
@@ -106,15 +114,22 @@ class PositionBook:
         If setup is given, closes just that one. If not, closes ALL positions
         for the symbol and returns the most recently opened one (legacy compat).
         """
+        sym_norm = symbol.replace("/", "")
         if setup is not None:
-            key = (symbol, setup)
-            pos = self._positions.pop(key, None)
-            if pos is not None:
-                self._just_exited.add(key)
-            return pos
+            target_key = None
+            for k in self._positions:
+                if k[0].replace("/", "") == sym_norm and k[1] == setup:
+                    target_key = k
+                    break
+            if target_key is not None:
+                pos = self._positions.pop(target_key, None)
+                if pos is not None:
+                    self._just_exited.add(target_key)
+                return pos
+            return None
 
         # Close all positions for this symbol
-        keys = [k for k in self._positions if k[0] == symbol]
+        keys = [k for k in self._positions if k[0].replace("/", "") == sym_norm]
         if not keys:
             return None
         last: OpenPosition | None = None
@@ -124,9 +139,10 @@ class PositionBook:
         return last
 
     def was_just_exited(self, symbol: str, setup: str | None = None) -> bool:
+        sym_norm = symbol.replace("/", "")
         if setup is not None:
-            return (symbol, setup) in self._just_exited
-        return any(k[0] == symbol for k in self._just_exited)
+            return any(k[0].replace("/", "") == sym_norm and k[1] == setup for k in self._just_exited)
+        return any(k[0].replace("/", "") == sym_norm for k in self._just_exited)
 
     def clear_just_exited(self) -> None:
         self._just_exited.clear()
