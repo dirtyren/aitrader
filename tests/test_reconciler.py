@@ -378,3 +378,31 @@ def test_reconcile_does_not_double_log_adoption_for_existing_adopted_position():
     report2 = r.reconcile(book)
     assert report2.adopted_equity == []
     assert book.count() == 1
+
+
+def test_reconcile_skips_adoption_when_not_in_configured_symbols():
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("AAPL", qty="10"), _broker_position("BTCUSD", asset_class="crypto", qty="0.5")],
+    )
+    # Only AAPL is configured, BTCUSD is not
+    r = Reconciler(alp, ac_configs={}, configured_symbols=["AAPL"])
+    report = r.reconcile(book)
+    assert report.adopted_equity == ["AAPL"]
+    assert report.adopted_crypto == []
+    assert book.count() == 1
+    assert book.get("AAPL") is not None
+    assert book.get("BTCUSD") is None
+
+
+def test_reconcile_skips_adoption_when_owned_by_another_strategy():
+    book = PositionBook()
+    alp = _fake_alpaca(
+        positions=[_broker_position("AAPL", qty="10")],
+    )
+    # Fake MySQL indicates another strategy holds AAPL (strategies = 1)
+    fake_mysql = _FakeMySQLStore(strategies=1)
+    r = Reconciler(alp, ac_configs={}, mysql_store=fake_mysql)
+    report = r.reconcile(book)
+    assert report.adopted_equity == []
+    assert book.count() == 0

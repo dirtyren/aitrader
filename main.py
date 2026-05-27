@@ -414,7 +414,8 @@ def main():
 
     reconciler = Reconciler(alpaca, ac_configs, mysql_store=mysql,
                             atr_mult_stop=recon_atr_mult_stop,
-                            target_R=recon_target_R)
+                            target_R=recon_target_R,
+                            configured_symbols=[sym for sym, _ in symbols])
     try:
         startup_report = reconciler.reconcile(book, adopt_orphans=(config_path == 'config/settings.yaml'))
     except Exception as exc:

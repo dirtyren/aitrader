@@ -93,7 +93,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
