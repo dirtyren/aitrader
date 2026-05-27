@@ -125,3 +125,14 @@ def test_migrate_skips_unknown_asset_class(tmp_path: Path):
     assert "EURUSD" not in {p.symbol for p, _ in store.opened}
     # File still archived even though one row was skipped
     assert (tmp_path / "position_book_test.json.migrated").exists()
+
+
+def test_mysql_store_symbol_candidates():
+    store = _StubStore()
+    # Slash to flat candidate matching
+    assert store._get_symbol_candidates("BTC/USD") == ["BTC/USD", "BTCUSD"]
+    # Flat to slash candidate matching
+    assert "BTC/USD" in store._get_symbol_candidates("BTCUSD")
+    assert "BTCUSD" in store._get_symbol_candidates("BTCUSD")
+    assert store._get_symbol_candidates("AAPL") == ["AAPL"]
+
