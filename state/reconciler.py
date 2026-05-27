@@ -129,13 +129,15 @@ class Reconciler:
                  *, logger: logging.Logger | None = None,
                  mysql_store: "MySQLStore | None" = None,
                  atr_mult_stop: float = 2.0,
-                 target_R: float = 1.5) -> None:
+                 target_R: float = 1.5,
+                 configured_symbols: list[str] | None = None) -> None:
         self._alpaca = alpaca
         self._ac_configs = ac_configs or {}
         self._log = logger or logging.getLogger("vwap_wave.reconciler")
         self._mysql = mysql_store
         self._atr_mult_stop = atr_mult_stop
         self._target_R = target_R
+        self._configured_symbols = set(configured_symbols) if configured_symbols is not None else None
 
     def reconcile(self, book: PositionBook, adopt_orphans: bool = True) -> ReconcileReport:
         report = ReconcileReport()
@@ -260,6 +262,27 @@ class Reconciler:
                 alt = _maybe_crypto_alt(symbol)
                 if alt != symbol and book.get(alt) is not None:
                     continue
+                if self._configured_symbols is not None:
+                    is_configured = (symbol in self._configured_symbols or alt in self._configured_symbols)
+                    if not is_configured:
+                        self._log.info(
+                            "RECONCILE_SKIP_ADOPT_NOT_CONFIGURED symbol=%s — symbol is not in this strategy's configured symbols",
+                            symbol,
+                        )
+                        continue
+                if self._mysql is not None:
+                    try:
+                        if self._mysql.count_strategies_holding(symbol) > 0:
+                            self._log.info(
+                                "RECONCILE_SKIP_ADOPT_OWNED symbol=%s — position is already owned/open in MySQL under another strategy",
+                                symbol,
+                            )
+                            continue
+                    except Exception as exc:
+                        self._log.error(
+                            "RECONCILE_CHECK_OTHER_OWNERS_FAILED symbol=%s: %s",
+                            symbol, exc, exc_info=True,
+                        )
                 ac = _normalize_asset_class(broker_pos.get("asset_class"))
                 if ac == "equity":
                     orphan_equity_symbols.append(symbol)
