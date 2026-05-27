@@ -248,8 +248,10 @@ class OrderExecutor:
                             self.logger.error("CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
                                               a.symbol, pos.target_order_id, exc)
                     
-                    if a.kind != "target":
-                        # If it wasn't the target filling, we must close the position
+                    is_adopted = pos and getattr(pos, "adopted", False)
+                    if a.kind != "target" or is_adopted:
+                        # If it wasn't the target filling, or if the position was adopted,
+                        # we must submit a market order to close the position on the broker.
                         self.close_position(a.symbol, a.side, a.qty)
                     self.logger.info("VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s",
                                      a.symbol, a.kind, a.price, a.qty)
