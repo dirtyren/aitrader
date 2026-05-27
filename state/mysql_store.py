@@ -249,6 +249,19 @@ class MySQLStore:
                 pos.symbol, pos.setup, pos.side, pos.qty, pos.entry_px,
             )
 
+    def _get_symbol_candidates(self, symbol: str) -> list[str]:
+        candidates = [symbol]
+        if "/" in symbol:
+            candidates.append(symbol.replace("/", ""))
+        else:
+            for quote in ("USD", "USDT", "USDC", "EUR", "GBP", "BTC", "ETH"):
+                if symbol.endswith(quote) and len(symbol) > len(quote):
+                    base = symbol[: -len(quote)]
+                    if base.isalpha() and 2 <= len(base) <= 5:
+                        candidates.append(f"{base}/{quote}")
+                        break
+        return candidates
+
     def position_closed(
         self,
         symbol: str,
@@ -271,7 +284,7 @@ class MySQLStore:
         with Session(self._engine) as session:
             q = session.query(PositionRow).filter(
                 PositionRow.strategy_id == self.strategy_id,
-                PositionRow.symbol == symbol,
+                PositionRow.symbol.in_(self._get_symbol_candidates(symbol)),
                 PositionRow.status == "open",
             )
             if setup_name:
@@ -410,7 +423,7 @@ class MySQLStore:
         with Session(self._engine) as session:
             q = session.query(PositionRow).filter(
                 PositionRow.strategy_id == self.strategy_id,
-                PositionRow.symbol == pos.symbol,
+                PositionRow.symbol.in_(self._get_symbol_candidates(pos.symbol)),
                 PositionRow.setup_name == pos.setup,
                 PositionRow.status == "open",
             )
@@ -493,7 +506,7 @@ class MySQLStore:
         with Session(self._engine) as session:
             row = session.query(PositionRow).filter(
                 PositionRow.strategy_id == self.strategy_id,
-                PositionRow.symbol == symbol,
+                PositionRow.symbol.in_(self._get_symbol_candidates(symbol)),
                 PositionRow.status == "open",
             ).one_or_none()
             if row is None:
