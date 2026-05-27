@@ -87,7 +87,7 @@ setups:
   vwap_dev_bands:
     atr_mult_stop: 0.75
     enabled: true
-    sigma: 2.0
+    sigma: 2.5
     target_R: 1.5
 system:
   name: vwap_bands_trader
