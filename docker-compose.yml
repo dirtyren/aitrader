@@ -30,7 +30,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
@@ -51,7 +51,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
@@ -72,7 +72,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
@@ -114,7 +114,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
@@ -135,7 +135,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
@@ -156,7 +156,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
@@ -177,7 +177,7 @@ services:
       - MYSQL_USER=trader
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "127.0.0.1:8501:8501"
     volumes:
