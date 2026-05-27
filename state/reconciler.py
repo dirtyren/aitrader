@@ -82,6 +82,8 @@ class ReconcileReport:
     adopted_equity: list[str] = field(default_factory=list)
     adopted_crypto: list[str] = field(default_factory=list)
     drift: list[tuple[str, float, float]] = field(default_factory=list)
+    drift_corrected: list[tuple[str, float, float]] = field(default_factory=list)
+    drift_ambiguous: list[tuple[str, float, float]] = field(default_factory=list)
     equity_no_bracket: list[str] = field(default_factory=list)
     mysql_closed_gone: list[str] = field(default_factory=list)
 
@@ -180,11 +182,16 @@ class Reconciler:
                 book.close(symbol)  # closes ALL positions for this symbol
                 report.closed.append(symbol)
 
-        # 2. Drift: in both, qty differs (log only). Do NOT correct — the broker
-        #    aggregates positions from ALL strategies on the same account, so the
-        #    broker qty may include shares owned by other strategies. Correcting
-        #    the qty would merge positions and break per-strategy tracking.
-        #    Log drift for EACH setup's position independently.
+        # 2. Drift: broker qty aggregates ALL strategies on the account, so a
+        #    naive trust-the-broker would corrupt multi-strategy bookkeeping.
+        #    Refined rule (MySQL-backed):
+        #    - local_sum (sum across ALL strategies in MySQL) == broker_qty
+        #        -> no real drift, silent.
+        #    - this strategy is the SOLE owner of the symbol
+        #        -> trust broker: update_position_qty + sync the in-memory book
+        #          (broker is authoritative for a single-strategy account view).
+        #    - multiple strategies hold the symbol AND local_sum != broker_qty
+        #        -> ambiguous: log loudly, do not mutate.
         for symbol, broker_pos in broker_by_symbol.items():
             positions = book.get_all(symbol)
             if not positions:
@@ -194,13 +201,49 @@ class Reconciler:
                 if not positions:
                     continue
             broker_qty = abs(float(broker_pos["qty"]))
+
+            if self._mysql is not None:
+                local_sum = self._mysql.sum_qty_across_strategies(symbol)
+                if abs(local_sum - broker_qty) <= _QTY_EPS:
+                    continue  # broker total accounted for across strategies
+                strategies_holding = self._mysql.count_strategies_holding(symbol)
+            else:
+                local_sum = sum(p.qty for p in positions)
+                strategies_holding = 1
+
             for local_pos in positions:
-                if abs(local_pos.qty - broker_qty) > _QTY_EPS:
-                    report.drift.append((symbol, local_pos.qty, broker_qty))
+                old_qty = local_pos.qty
+                if abs(old_qty - broker_qty) <= _QTY_EPS:
+                    continue
+                report.drift.append((symbol, old_qty, broker_qty))
+
+                if strategies_holding <= 1 and self._mysql is not None:
+                    try:
+                        self._mysql.update_position_qty(local_pos.symbol, broker_qty)
+                        local_pos.qty = broker_qty
+                        report.drift_corrected.append(
+                            (symbol, old_qty, broker_qty)
+                        )
+                        self._log.warning(
+                            "RECONCILE_DRIFT_CORRECTED symbol=%s setup=%s "
+                            "old_qty=%s broker_qty=%s — sole owner, trusting broker",
+                            symbol, local_pos.setup, old_qty, broker_qty,
+                        )
+                    except Exception as exc:
+                        self._log.error(
+                            "RECONCILE_DRIFT_CORRECT_FAILED symbol=%s setup=%s: %s",
+                            symbol, local_pos.setup, exc, exc_info=True,
+                        )
+                else:
+                    report.drift_ambiguous.append(
+                        (symbol, old_qty, broker_qty)
+                    )
                     self._log.warning(
-                        "RECONCILE_DRIFT symbol=%s setup=%s book_qty=%s broker_qty=%s — "
-                        "broker aggregates multiple strategies, not correcting",
-                        symbol, local_pos.setup, local_pos.qty, broker_qty,
+                        "RECONCILE_DRIFT_AMBIGUOUS symbol=%s setup=%s "
+                        "book_qty=%s broker_qty=%s strategies_holding=%d "
+                        "local_sum=%s — multi-strategy, manual reconciliation required",
+                        symbol, local_pos.setup, old_qty, broker_qty,
+                        strategies_holding, local_sum,
                     )
 
         # 3. Orphans: in broker, not in book → adopt by asset class.

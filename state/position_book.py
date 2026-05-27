@@ -164,3 +164,12 @@ class PositionBook:
 
     def aggregate_open_risk_usd(self) -> float:
         return sum(p.open_risk_usd for p in self._positions.values())
+
+    def replace_from(self, other: "PositionBook") -> None:
+        """Adopt `other`'s positions in place; preserve our `_just_exited` set.
+
+        Used to rebuild this book from MySQL each cycle without breaking the
+        component references (RiskManager, OrderExecutor, engine, PositionManager)
+        that hold this PositionBook by identity.
+        """
+        self._positions = dict(other._positions)

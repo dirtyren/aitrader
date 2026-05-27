@@ -19,11 +19,13 @@ Source-of-truth for reconciliation:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from pathlib import Path
+from typing import Callable, Optional
 
 from sqlalchemy import (
     Column, Integer, String, Numeric, DateTime, Boolean, Enum, Index,
@@ -425,6 +427,62 @@ class MySQLStore:
             row.bars_held = pos.bars_held
             session.commit()
 
+    def sum_qty_across_strategies(self, symbol: str) -> float:
+        """Sum `qty` across ALL strategies for any open position on `symbol`.
+
+        Used by the reconciler to decide whether broker-vs-local drift is
+        explained by another strategy on the same account, or is a real
+        accounting gap. Crypto symbols are matched in both flat and slash
+        forms (BTCUSD ↔ BTC/USD).
+        """
+        alt = symbol.replace("/", "") if "/" in symbol else None
+        with Session(self._engine) as session:
+            q = session.query(PositionRow).filter(PositionRow.status == "open")
+            if alt is not None:
+                rows = q.filter(PositionRow.symbol.in_([symbol, alt])).all()
+            else:
+                # broker form is flat; book may also have stored slash form
+                slash_alt = None
+                for quote in ("USD", "USDT", "USDC", "EUR", "GBP", "BTC", "ETH"):
+                    if symbol.endswith(quote) and len(symbol) > len(quote):
+                        base = symbol[: -len(quote)]
+                        if base.isalpha() and 2 <= len(base) <= 5:
+                            slash_alt = f"{base}/{quote}"
+                            break
+                if slash_alt is not None:
+                    rows = q.filter(PositionRow.symbol.in_([symbol, slash_alt])).all()
+                else:
+                    rows = q.filter(PositionRow.symbol == symbol).all()
+            return float(sum((r.qty for r in rows), Decimal("0")))
+
+    def count_strategies_holding(self, symbol: str) -> int:
+        """Number of distinct strategies with an open position on `symbol`.
+
+        The reconciler treats drift as auto-correctable only when this is 1
+        (this strategy is the sole owner). Otherwise the broker total is the
+        sum of multiple strategies and we cannot attribute drift unambiguously.
+        """
+        alt = symbol.replace("/", "") if "/" in symbol else None
+        with Session(self._engine) as session:
+            q = session.query(PositionRow.strategy_id).filter(
+                PositionRow.status == "open"
+            )
+            if alt is not None:
+                q = q.filter(PositionRow.symbol.in_([symbol, alt]))
+            else:
+                slash_alt = None
+                for quote in ("USD", "USDT", "USDC", "EUR", "GBP", "BTC", "ETH"):
+                    if symbol.endswith(quote) and len(symbol) > len(quote):
+                        base = symbol[: -len(quote)]
+                        if base.isalpha() and 2 <= len(base) <= 5:
+                            slash_alt = f"{base}/{quote}"
+                            break
+                if slash_alt is not None:
+                    q = q.filter(PositionRow.symbol.in_([symbol, slash_alt]))
+                else:
+                    q = q.filter(PositionRow.symbol == symbol)
+            return len({sid for (sid,) in q.distinct()})
+
     def update_position_qty(self, symbol: str, new_qty: float) -> None:
         """Update the quantity of an existing open position.
 
@@ -451,6 +509,81 @@ class MySQLStore:
                 "MYSQL_QTY_UPDATED symbol=%s old_qty=%s new_qty=%s",
                 symbol, old_qty, new_qty,
             )
+
+    # ── One-time JSON → MySQL migration ─────────────────────────────────
+
+    def migrate_legacy_json(
+        self,
+        json_path: Path | str,
+        asset_class_for: Callable[[str], str | None],
+    ) -> int:
+        """Import a legacy runtime/position_book_*.json into MySQL once.
+
+        No-op when:
+        - this strategy already has open positions in MySQL, OR
+        - `json_path` does not exist.
+
+        On success, renames the file to `<name>.json.migrated` so it is not
+        re-imported. Returns the number of rows imported.
+        """
+        path = Path(json_path)
+        if not path.exists():
+            return 0
+        if self.load_open_positions().count() > 0:
+            return 0
+
+        try:
+            data = json.loads(path.read_text())
+        except Exception as exc:
+            self._log.error("MYSQL_LEGACY_MIGRATION_READ_FAILED path=%s: %s",
+                            path, exc)
+            return 0
+
+        positions = data.get("positions") or []
+        imported = 0
+        for entry in positions:
+            symbol = entry["symbol"]
+            ac = asset_class_for(symbol)
+            if ac is None:
+                self._log.warning(
+                    "MYSQL_LEGACY_MIGRATION_SKIP symbol=%s — no asset_class mapping",
+                    symbol,
+                )
+                continue
+            pos = OpenPosition(
+                symbol=symbol,
+                setup=entry["setup"],
+                side=entry["side"],
+                qty=float(entry["qty"]),
+                entry_px=float(entry["entry_px"]),
+                stop_px=None if entry.get("stop_px") is None else float(entry["stop_px"]),
+                target_px=None if entry.get("target_px") is None else float(entry["target_px"]),
+                opened_at=datetime.fromisoformat(entry["opened_at"]),
+                order_id=entry.get("order_id", ""),
+                breakeven_moved=bool(entry.get("breakeven_moved", False)),
+                bars_held=int(entry.get("bars_held", 0)),
+                stop_order_id=entry.get("stop_order_id"),
+                initial_stop_px=(None if entry.get("initial_stop_px") is None
+                                 else float(entry["initial_stop_px"])),
+                adopted=bool(entry.get("adopted", False)),
+            )
+            try:
+                self.position_opened(pos, ac)
+                imported += 1
+            except Exception as exc:
+                self._log.error(
+                    "MYSQL_LEGACY_MIGRATION_INSERT_FAILED symbol=%s: %s",
+                    symbol, exc,
+                )
+
+        if imported > 0 or positions:
+            archive = path.with_suffix(path.suffix + ".migrated")
+            os.replace(path, archive)
+            self._log.info(
+                "MYSQL_LEGACY_MIGRATED rows=%d source=%s archived=%s",
+                imported, path, archive,
+            )
+        return imported
 
     # ── Closed positions cleanup on startup ─────────────────────────────
 

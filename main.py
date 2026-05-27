@@ -10,6 +10,7 @@ import logging
 import os
 import signal as _signal
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,7 +50,6 @@ from scheduler.bar_clock import next_boundary, sleep_until
 from scheduler.loop import VWAPWaveEngine
 from state.daily_ledger import DailyLedger
 from state.dashboard_state import DashboardSnapshot, write_dashboard_state
-from state.position_book_store import read_position_book, write_position_book
 from state.reconciler import Reconciler
 from state.mysql_store import MySQLStore
 from strategies.setup_fade_extreme import FadeExtremeSetup
@@ -348,32 +348,54 @@ def main():
     alpaca = AlpacaClient()
     data = AlpacaData(alpaca, cache_dir=cfg["backtest"]["cache_dir"])
 
-    # ── MySQL store (primary source of truth for positions/trades) ──
+    # ── MySQL store (mandatory source of truth for positions/trades) ──
     mysql = MySQLStore(strategy_name=system_name, logger=logger)
+    _MYSQL_RETRIES = 5
+    _MYSQL_RETRY_DELAY_S = 30
+    for attempt in range(1, _MYSQL_RETRIES + 1):
+        try:
+            mysql.ensure_schema()
+            mysql.upsert_strategy()
+            logger.info("MYSQL_CONNECTED strategy=%s attempt=%d", system_name, attempt)
+            break
+        except Exception as exc:
+            if attempt == _MYSQL_RETRIES:
+                logger.error(
+                    "MYSQL_UNREACHABLE after %d attempts; aborting startup: %s",
+                    attempt, exc, exc_info=True,
+                )
+                sys.exit(1)
+            logger.warning(
+                "MYSQL_CONNECT_RETRY attempt=%d/%d: %s",
+                attempt, _MYSQL_RETRIES, exc,
+            )
+            time.sleep(_MYSQL_RETRY_DELAY_S)
+
+    # ── One-time legacy JSON migration (idempotent) ──
+    legacy_json = Path(
+        os.environ.get("POSITION_BOOK_PATH",
+                       f"runtime/position_book_{system_name}.json")
+    )
+    asset_class_for_symbol = {
+        sym: ac_name
+        for ac_name, raw in cfg["asset_classes"].items()
+        for sym in raw["symbols"]
+    }
     try:
-        mysql.ensure_schema()
-        mysql.upsert_strategy()
-        logger.info("MYSQL_CONNECTED strategy=%s", system_name)
+        migrated = mysql.migrate_legacy_json(
+            legacy_json,
+            asset_class_for=lambda s: asset_class_for_symbol.get(s),
+        )
+        if migrated > 0:
+            logger.info("MYSQL_LEGACY_MIGRATED rows=%d", migrated)
     except Exception as exc:
-        logger.warning("MYSQL_UNAVAILABLE — falling back to JSON-only persistence: %s",
-                       exc)
-        mysql = None
+        logger.error("MYSQL_LEGACY_MIGRATION_FAILED: %s", exc, exc_info=True)
 
-    # ── Load position book: MySQL first, JSON fallback ──
-    book_path_env = os.environ.get("POSITION_BOOK_PATH")
-    if book_path_env:
-        book_path = Path(book_path_env)
-    else:
-        book_path = Path(f"runtime/position_book_{system_name}.json")
-
-    if mysql is not None:
-        book = mysql.load_open_positions()
-        logger.info("POSITION_BOOK_LOADED_FROM_MYSQL strategy=%s open_positions=%d",
-                    system_name, book.count())
-    else:
-        book = read_position_book(book_path)
-        logger.info("POSITION_BOOK_LOADED_FROM_JSON path=%s open_positions=%d",
-                    book_path, book.count())
+    book = mysql.load_open_positions()
+    logger.info(
+        "POSITION_BOOK_LOADED_FROM_MYSQL strategy=%s open_positions=%d",
+        system_name, book.count(),
+    )
 
     account = alpaca.get_account()
     initial_equity = float(account.get("equity") or account.get("portfolio_value") or 0)
@@ -399,12 +421,13 @@ def main():
         logger.error("RECONCILE_STARTUP_FAILED: %s", exc, exc_info=True)
         sys.exit(1)
     logger.info(
-        "RECONCILE_STARTUP closed=%d adopted_eq=%d adopted_cr=%d drift=%d no_bracket=%d",
+        "RECONCILE_STARTUP closed=%d adopted_eq=%d adopted_cr=%d drift=%d "
+        "drift_corrected=%d drift_ambiguous=%d no_bracket=%d",
         len(startup_report.closed), len(startup_report.adopted_equity),
         len(startup_report.adopted_crypto), len(startup_report.drift),
+        len(startup_report.drift_corrected), len(startup_report.drift_ambiguous),
         len(startup_report.equity_no_bracket),
     )
-    write_position_book(book_path, book)
 
     cb_cfg = cfg["risk"]["circuit_breaker"]
     cb = CircuitBreaker(
@@ -469,18 +492,13 @@ def main():
             cycle_now = datetime.now(timezone.utc)
             executor.reset_cycle()
 
-            # Merge any positions created in MySQL by other processes
-            # (reconciler, other traders, manual inserts) into the book.
-            if mysql is not None:
-                try:
-                    merged = mysql.merge_open_positions(book)
-                    if merged:
-                        logger.info(
-                            "MYSQL_MERGED count=%d symbols=%s",
-                            len(merged), merged,
-                        )
-                except Exception as exc:
-                    logger.error("MYSQL_MERGE_FAILED: %s", exc, exc_info=True)
+            # MySQL is the source of truth — rebuild the book from MySQL each
+            # cycle so deletions/closures by other processes are reflected.
+            try:
+                fresh_book = mysql.load_open_positions()
+                book.replace_from(fresh_book)
+            except Exception as exc:
+                logger.error("MYSQL_REBUILD_FAILED: %s", exc, exc_info=True)
 
             fresh_bars: dict[str, list] = {}
             for sym, ac_name in symbols:
@@ -500,11 +518,14 @@ def main():
                 if (cycle_report.closed or cycle_report.adopted_equity
                         or cycle_report.adopted_crypto or cycle_report.drift):
                     logger.info(
-                        "RECONCILE closed=%d adopted_eq=%d adopted_cr=%d drift=%d",
+                        "RECONCILE closed=%d adopted_eq=%d adopted_cr=%d "
+                        "drift=%d drift_corrected=%d drift_ambiguous=%d",
                         len(cycle_report.closed),
                         len(cycle_report.adopted_equity),
                         len(cycle_report.adopted_crypto),
                         len(cycle_report.drift),
+                        len(cycle_report.drift_corrected),
+                        len(cycle_report.drift_ambiguous),
                     )
             except Exception as exc:
                 logger.error("RECONCILE_ERROR: %s", exc, exc_info=True)
@@ -524,26 +545,20 @@ def main():
             logger.info("CYCLE_DONE equity=%.2f day_pnl=%.2f open_positions=%d",
                         equity, ledger.day_pnl, book.count())
 
-            try:
-                write_position_book(book_path, book)
-            except Exception as exc:
-                logger.error("POSITION_BOOK_WRITE_FAILED: %s", exc, exc_info=True)
-
-            # Sync mutable position state to MySQL each cycle
-            if mysql is not None:
-                for pos in book.all():
-                    try:
-                        # Determine asset_class from position symbol
-                        ac = None
-                        for _, ac_name in symbols:
-                            if _ == pos.symbol:
-                                ac = ac_name
-                                break
-                        if ac:
-                            mysql.sync_position_state(pos, ac)
-                    except Exception as exc:
-                        logger.error("MYSQL_SYNC_FAILED symbol=%s: %s",
-                                    pos.symbol, exc, exc_info=True)
+            # Sync mutable position state (bars_held, breakeven moves) to MySQL
+            # so the next cycle's rebuild sees current values.
+            for pos in book.all():
+                try:
+                    ac = None
+                    for sym_name, ac_name in symbols:
+                        if sym_name == pos.symbol:
+                            ac = ac_name
+                            break
+                    if ac:
+                        mysql.sync_position_state(pos, ac)
+                except Exception as exc:
+                    logger.error("MYSQL_SYNC_FAILED symbol=%s: %s",
+                                pos.symbol, exc, exc_info=True)
 
             snap = _collect_snapshot(symbols, contexts, book, ledger, cb)
             state_file_path = os.environ.get("STATE_FILE_PATH", f"runtime/trading_state_{system_name}.json")

@@ -237,13 +237,92 @@ def test_reconcile_adopts_crypto_no_stop():
     assert pos.target_px is None
 
 
-def test_reconcile_logs_drift_no_mutation():
+class _FakeMySQLStore:
+    """Test double for the reconciler drift block.
+
+    Mimics only the methods the reconciler calls: sum_qty_across_strategies,
+    count_strategies_holding, update_position_qty, plus the no-op hooks for
+    close_positions_not_in_broker and position_opened.
+    """
+
+    def __init__(self, *, local_sum: float = 0.0, strategies: int = 1):
+        self.local_sum = local_sum
+        self.strategies = strategies
+        self.qty_updates: list[tuple[str, float]] = []
+        self.strategy_name = "test"
+
+    def sum_qty_across_strategies(self, symbol):
+        return self.local_sum
+
+    def count_strategies_holding(self, symbol):
+        return self.strategies
+
+    def update_position_qty(self, symbol, new_qty):
+        self.qty_updates.append((symbol, new_qty))
+
+    def close_positions_not_in_broker(self, broker_symbols):
+        return []
+
+    def position_opened(self, pos, asset_class):
+        pass
+
+
+def test_reconcile_drift_no_op_when_strategies_sum_matches_broker():
+    book = PositionBook()
+    book.add(_trader_pos("AAPL", qty=10))
+    alp = _fake_alpaca(positions=[_broker_position("AAPL", qty="30")])
+    # Two other strategies hold 20 between them; book has 10; broker shows 30.
+    fake_mysql = _FakeMySQLStore(local_sum=30.0, strategies=3)
+    r = Reconciler(alp, ac_configs={}, mysql_store=fake_mysql)
+    report = r.reconcile(book)
+    assert report.drift == []
+    assert report.drift_corrected == []
+    assert report.drift_ambiguous == []
+    assert book.get("AAPL").qty == 10
+    assert fake_mysql.qty_updates == []
+
+
+def test_reconcile_drift_corrected_when_sole_owner():
+    book = PositionBook()
+    book.add(_trader_pos("AAPL", qty=10))
+    alp = _fake_alpaca(positions=[_broker_position("AAPL", qty="7")])
+    fake_mysql = _FakeMySQLStore(local_sum=10.0, strategies=1)
+    r = Reconciler(alp, ac_configs={}, mysql_store=fake_mysql)
+    report = r.reconcile(book)
+    assert report.drift == [("AAPL", 10, 7.0)]  # pre-correction snapshot
+    assert report.drift_corrected == [("AAPL", 10, 7.0)]
+    assert report.drift_ambiguous == []
+    assert fake_mysql.qty_updates == [("AAPL", 7.0)]
+    assert book.get("AAPL").qty == 7.0
+
+
+def test_reconcile_drift_ambiguous_when_multi_strategy():
+    book = PositionBook()
+    book.add(_trader_pos("AAPL", qty=10))
+    alp = _fake_alpaca(positions=[_broker_position("AAPL", qty="7")])
+    # Two strategies hold this symbol; their MySQL sum (12) doesn't match
+    # broker (7) — auto-correction would corrupt the other strategy's row.
+    fake_mysql = _FakeMySQLStore(local_sum=12.0, strategies=2)
+    r = Reconciler(alp, ac_configs={}, mysql_store=fake_mysql)
+    report = r.reconcile(book)
+    assert report.drift_corrected == []
+    assert report.drift_ambiguous and report.drift_ambiguous[0][0] == "AAPL"
+    assert fake_mysql.qty_updates == []
+    assert book.get("AAPL").qty == 10  # untouched
+
+
+def test_reconcile_drift_no_mysql_falls_back_to_local_sum():
+    """Without MySQL the reconciler treats the local book as the only owner."""
     book = PositionBook()
     book.add(_trader_pos("AAPL", qty=100))
     alp = _fake_alpaca(positions=[_broker_position("AAPL", qty="50")])
-    r = Reconciler(alp, ac_configs={})
+    r = Reconciler(alp, ac_configs={})  # mysql_store=None
     report = r.reconcile(book)
+    # local_sum (100) != broker (50), strategies_holding defaults to 1
+    # but mysql is None so no correction happens — logged as plain drift.
     assert report.drift == [("AAPL", 100.0, 50.0)]
+    assert report.drift_corrected == []
+    assert report.drift_ambiguous and report.drift_ambiguous[0] == ("AAPL", 100.0, 50.0)
     assert book.get("AAPL").qty == 100
 
 
