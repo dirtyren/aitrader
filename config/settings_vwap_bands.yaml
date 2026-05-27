@@ -88,7 +88,7 @@ setups:
     atr_mult_stop: 0.75
     enabled: true
     sigma: 2.5
-    target_R: 1.5
+    target_R: 2.0
 system:
   name: vwap_bands_trader
   trading_env: paper
