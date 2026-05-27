@@ -63,7 +63,7 @@ risk:
   loss_filter_scope: per_symbol
   max_concurrent_positions: 4
   max_daily_risk_open: 0.02
-  max_notional_per_trade_pct: 0.2
+  max_notional_per_trade_pct: 0.10
   max_risk_per_trade: 0.005
 scheduler:
   bar_timeframe: 5Min

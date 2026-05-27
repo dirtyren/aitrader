@@ -50,7 +50,7 @@ setups:
 
 risk:
   max_risk_per_trade: 0.005
-  max_notional_per_trade_pct: 0.20
+  max_notional_per_trade_pct: 0.10
   max_concurrent_positions: 4
   max_daily_risk_open: 0.02
   consecutive_loss_limit: 2

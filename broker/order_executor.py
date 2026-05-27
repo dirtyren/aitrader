@@ -72,6 +72,11 @@ class OrderExecutor:
                              signal.symbol, signal.setup)
             return None
 
+        if asset_class == "crypto" and signal.side == "short":
+            self.logger.info("ORDER_SKIPPED_CRYPTO_SHORT symbol=%s setup=%s",
+                             signal.symbol, signal.setup)
+            return None
+
         alp_side = self._alpaca_side(signal.side)
 
         try:
@@ -97,7 +102,8 @@ class OrderExecutor:
             else:
                 raise ValueError(f"Unknown asset_class: {asset_class}")
         except InsufficientBuyingPowerError as exc:
-            self._dtbp_exhausted = True
+            if asset_class == "equity":
+                self._dtbp_exhausted = True
             self.logger.warning(
                 "ORDER_REJECTED_DTBP symbol=%s setup=%s qty=%s notional=%.2f detail=%s",
                 signal.symbol, signal.setup, decision.qty,

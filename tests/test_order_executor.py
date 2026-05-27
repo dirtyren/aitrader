@@ -212,3 +212,40 @@ def test_submit_proceeds_after_just_exited_cleared():
     pos = ex.submit(sig, decision, asset_class="equity")
     assert pos is not None
     client.submit_bracket_order.assert_called_once()
+
+
+def test_submit_crypto_short_is_blocked_immediately():
+    client = MagicMock()
+    book = PositionBook()
+    ex = OrderExecutor(client, book, logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=0.1, notional=5000)
+
+    # Short crypto must return None and NOT call the broker
+    sig = _signal(symbol="BTC/USD", side="short")
+    pos = ex.submit(sig, decision, asset_class="crypto")
+    assert pos is None
+    client.submit_order.assert_not_called()
+
+
+def test_crypto_insufficient_buying_power_does_not_trigger_dtbp_exhaustion():
+    client = MagicMock()
+    client.submit_order.side_effect = InsufficientBuyingPowerError(
+        403, "insufficient balance for USD"
+    )
+    book = PositionBook()
+    ex = OrderExecutor(client, book, logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=0.1, notional=5000)
+
+    # First submit triggers a crypto long which gets rejected due to insufficient balance
+    sig_crypto = _signal(symbol="BTC/USD", side="long")
+    assert ex.submit(sig_crypto, decision, asset_class="crypto") is None
+    assert client.submit_order.call_count == 1
+    assert ex._dtbp_exhausted is False  # Must not set DTBP exhausted for crypto rejections
+
+    # Subsequent equity submit in the same cycle must STILL call the broker
+    client.submit_bracket_order.return_value = {"id": "ord-eq"}
+    sig_equity = _signal(symbol="AAPL", side="long")
+    pos = ex.submit(sig_equity, RiskDecision(approved=True, qty=10, notional=1000), asset_class="equity")
+    assert pos is not None
+    client.submit_bracket_order.assert_called_once()
+
