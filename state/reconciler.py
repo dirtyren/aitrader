@@ -169,35 +169,39 @@ class Reconciler:
         # 1. Closed: in book, not in broker (consider crypto alt formats).
         for symbol in list(book.symbols()):
             if symbol not in broker_by_symbol and _maybe_crypto_alt(symbol) not in broker_by_symbol:
-                pos = book.close(symbol)
+                positions = book.get_all(symbol)
+                for pos in positions:
+                    self._log.info(
+                        "RECONCILE_CLOSED symbol=%s adopted=%s setup=%s",
+                        symbol,
+                        getattr(pos, "adopted", "?"),
+                        getattr(pos, "setup", "?"),
+                    )
+                book.close(symbol)  # closes ALL positions for this symbol
                 report.closed.append(symbol)
-                self._log.info(
-                    "RECONCILE_CLOSED symbol=%s adopted=%s setup=%s",
-                    symbol,
-                    getattr(pos, "adopted", "?"),
-                    getattr(pos, "setup", "?"),
-                )
 
         # 2. Drift: in both, qty differs (log only). Do NOT correct — the broker
         #    aggregates positions from ALL strategies on the same account, so the
         #    broker qty may include shares owned by other strategies. Correcting
         #    the qty would merge positions and break per-strategy tracking.
+        #    Log drift for EACH setup's position independently.
         for symbol, broker_pos in broker_by_symbol.items():
-            local_pos = book.get(symbol)
-            if local_pos is None:
+            positions = book.get_all(symbol)
+            if not positions:
                 alt = _maybe_crypto_alt(symbol)
                 if alt != symbol:
-                    local_pos = book.get(alt)
-                if local_pos is None:
+                    positions = book.get_all(alt)
+                if not positions:
                     continue
             broker_qty = abs(float(broker_pos["qty"]))
-            if abs(local_pos.qty - broker_qty) > _QTY_EPS:
-                report.drift.append((symbol, local_pos.qty, broker_qty))
-                self._log.warning(
-                    "RECONCILE_DRIFT symbol=%s book_qty=%s broker_qty=%s — "
-                    "broker aggregates multiple strategies, not correcting",
-                    symbol, local_pos.qty, broker_qty,
-                )
+            for local_pos in positions:
+                if abs(local_pos.qty - broker_qty) > _QTY_EPS:
+                    report.drift.append((symbol, local_pos.qty, broker_qty))
+                    self._log.warning(
+                        "RECONCILE_DRIFT symbol=%s setup=%s book_qty=%s broker_qty=%s — "
+                        "broker aggregates multiple strategies, not correcting",
+                        symbol, local_pos.setup, local_pos.qty, broker_qty,
+                    )
 
         # 3. Orphans: in broker, not in book → adopt by asset class.
         orphan_equity_symbols: list[str] = []

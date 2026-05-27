@@ -1,3 +1,16 @@
+"""Per-strategy position tracking — one book per strategy process.
+
+Architecture:
+    Multiple setups (e.g., vwap_wave, vwap_bands) may trade the same symbol
+    within a single strategy container. The book key is (symbol, setup), not
+    just symbol, so each setup's position is tracked independently with its
+    own qty, stop, and target levels.
+
+    The broker (Alpaca) aggregates all positions on the account, so the
+    reconciler logs drift between book qty and broker qty without correcting.
+    Each setup's position is managed independently by PositionManager.
+"""
+
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,8 +19,8 @@ from datetime import datetime
 @dataclass
 class OpenPosition:
     symbol: str
-    setup: str
-    side: str               # "long" | "short"
+    setup: str               # strategy/setup name (e.g., "vwap_wave", "vwap_bands")
+    side: str                # "long" | "short"
     qty: float
     entry_px: float
     stop_px: float | None
@@ -16,10 +29,10 @@ class OpenPosition:
     order_id: str
     breakeven_moved: bool = False
     bars_held: int = 0
-    stop_order_id: str | None = None    # bracket stop-leg id (equity); None for crypto / virtual / adopted-no-bracket
-    target_order_id: str | None = None  # limit order id for crypto TP
-    initial_stop_px: float | None = None  # original stop at entry; survives breakeven moves for R calc
-    adopted: bool = False               # True for positions reconciled from broker (monitor-only)
+    stop_order_id: str | None = None      # bracket stop-leg id (equity); None for crypto
+    target_order_id: str | None = None    # limit order id for crypto TP
+    initial_stop_px: float | None = None  # original stop at entry; survives breakeven moves
+    adopted: bool = False                 # True for positions reconciled from broker
 
     @property
     def initial_risk_per_share(self) -> float:
@@ -38,39 +51,94 @@ class OpenPosition:
     def open_risk_usd(self) -> float:
         return self.risk_per_share * self.qty
 
+    @property
+    def key(self) -> tuple[str, str]:
+        """Unique key: (symbol, setup)."""
+        return (self.symbol, self.setup)
+
 
 class PositionBook:
+    """Multi-position book — one entry per (symbol, setup) pair."""
+
     def __init__(self) -> None:
-        self._positions: dict[str, OpenPosition] = {}
-        # Symbols whose position closed during the current cycle. The engine
-        # clears this at tick start; the executor consults it to skip same-cycle
-        # bracket re-entries (Alpaca rejects bracket entries while the prior
-        # closing order is still settling, and re-entering on the bar that just
-        # stopped us out is rarely the intended behavior).
-        self._just_exited: set[str] = set()
+        # Key: (symbol, setup) -> OpenPosition
+        self._positions: dict[tuple[str, str], OpenPosition] = {}
+        # Set of (symbol, setup) that closed during the current cycle.
+        self._just_exited: set[tuple[str, str]] = set()
+
+    # ── Lookup ──────────────────────────────────────────────────────────
+
+    def get(self, symbol: str, setup: str | None = None) -> OpenPosition | None:
+        """Return position for exact (symbol, setup), or first for symbol only.
+
+        When setup is None and multiple positions exist, returns the first one
+        (dict insertion order) for backward-compatible callers like the snapshot
+        collector. Prefer get_all() for complete results.
+        """
+        if setup is not None:
+            return self._positions.get((symbol, setup))
+        for (sym, _), pos in self._positions.items():
+            if sym == symbol:
+                return pos
+        return None
+
+    def get_all(self, symbol: str) -> list[OpenPosition]:
+        """Return ALL positions for this symbol (one per setup)."""
+        return [pos for (sym, _), pos in self._positions.items() if sym == symbol]
+
+    def has_symbol(self, symbol: str) -> bool:
+        """True if any position exists for this symbol."""
+        return any(sym == symbol for (sym, _) in self._positions)
+
+    # ── Mutation ────────────────────────────────────────────────────────
 
     def add(self, p: OpenPosition) -> None:
-        if p.symbol in self._positions:
-            raise ValueError(f"Position already open on {p.symbol}")
-        self._positions[p.symbol] = p
+        key = p.key
+        if key in self._positions:
+            raise ValueError(
+                f"Position already open on {key[0]} for setup {key[1]!r}"
+            )
+        self._positions[key] = p
 
-    def get(self, symbol: str) -> OpenPosition | None:
-        return self._positions.get(symbol)
+    def close(self, symbol: str, setup: str | None = None) -> OpenPosition | None:
+        """Close position(s) for a symbol.
 
-    def close(self, symbol: str) -> OpenPosition | None:
-        pos = self._positions.pop(symbol, None)
-        if pos is not None:
-            self._just_exited.add(symbol)
-        return pos
+        If setup is given, closes just that one. If not, closes ALL positions
+        for the symbol and returns the most recently opened one (legacy compat).
+        """
+        if setup is not None:
+            key = (symbol, setup)
+            pos = self._positions.pop(key, None)
+            if pos is not None:
+                self._just_exited.add(key)
+            return pos
 
-    def was_just_exited(self, symbol: str) -> bool:
-        return symbol in self._just_exited
+        # Close all positions for this symbol
+        keys = [k for k in self._positions if k[0] == symbol]
+        if not keys:
+            return None
+        last: OpenPosition | None = None
+        for k in keys:
+            last = self._positions.pop(k)
+            self._just_exited.add(k)
+        return last
+
+    def was_just_exited(self, symbol: str, setup: str | None = None) -> bool:
+        if setup is not None:
+            return (symbol, setup) in self._just_exited
+        return any(k[0] == symbol for k in self._just_exited)
 
     def clear_just_exited(self) -> None:
         self._just_exited.clear()
 
+    # ── Introspection ───────────────────────────────────────────────────
+
     def symbols(self) -> list[str]:
-        return list(self._positions.keys())
+        """Unique symbols with at least one open position."""
+        seen: set[str] = set()
+        for sym, _ in self._positions:
+            seen.add(sym)
+        return list(seen)
 
     def count(self) -> int:
         return len(self._positions)

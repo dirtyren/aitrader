@@ -60,24 +60,26 @@ def _adopted_pos(side="long", entry=100.0, stop=99.0, target=102.0):
                         order_id="", adopted=True)
 
 
-def test_adopted_position_skips_stop_action():
+def test_adopted_position_triggers_stop_action():
+    """Adopted positions DO check stop-loss levels (fix 2026-05-26)."""
     book = PositionBook()
     book.add(_adopted_pos())  # long, stop 99, entry 100
     pm = PositionManager(book, max_hold_bars=12, breakeven_at_R=1.0)
     actions = pm.on_bar("AAPL",
         _bar(datetime(2026, 5, 14, 14, 5, tzinfo=timezone.utc), 98.5, l=98.0))
-    assert actions == []
-    assert book.get("AAPL") is not None
+    assert any(a.kind == "stop" for a in actions)
+    assert book.get("AAPL") is None  # position closed
 
 
-def test_adopted_position_skips_target_action():
+def test_adopted_position_triggers_target_action():
+    """Adopted positions DO check take-profit levels (fix 2026-05-26)."""
     book = PositionBook()
     book.add(_adopted_pos())
     pm = PositionManager(book, max_hold_bars=12, breakeven_at_R=1.0)
     actions = pm.on_bar("AAPL",
         _bar(datetime(2026, 5, 14, 14, 5, tzinfo=timezone.utc), 102.5, h=103.0))
-    assert actions == []
-    assert book.get("AAPL") is not None
+    assert any(a.kind == "target" for a in actions)
+    assert book.get("AAPL") is None  # position closed
 
 
 def test_adopted_position_skips_breakeven():

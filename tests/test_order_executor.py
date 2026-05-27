@@ -40,8 +40,9 @@ def test_submit_crypto_uses_market_order_and_virtual_stop():
     sig = _signal(symbol="BTC/USD", side="long")
     pos = ex.submit(sig, decision, asset_class="crypto")
     assert pos is not None
-    client.submit_order.assert_called_once()
-    payload = client.submit_order.call_args.kwargs
+    assert client.submit_order.call_count == 2  # market entry + limit TP
+    first_call = client.submit_order.call_args_list[0]
+    payload = first_call.kwargs
     assert payload["symbol"] == "BTC/USD"
     assert payload["order_type"] == "market"
     # Virtual stop is tracked in the book
@@ -167,7 +168,7 @@ def test_dtbp_short_circuit_does_not_block_crypto_submits():
     pos = ex.submit(_signal(symbol="BTC/USD", side="long"), decision,
                     asset_class="crypto")
     assert pos is not None
-    client.submit_order.assert_called_once()
+    assert client.submit_order.call_count == 2  # market entry + limit TP
 
 
 def test_reset_cycle_clears_dtbp_short_circuit():

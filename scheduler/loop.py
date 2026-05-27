@@ -19,23 +19,32 @@ _EXIT_KINDS = ("stop", "target", "time_stop")
 
 def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
                            actions: list[PositionAction], last_bar: Bar,
-                           pos_before: OpenPosition | None,
-                           mysql_store=None) -> list[TradeRecord]:
+                           mysql_store=None,
+                           positions_snapshot: dict[str, OpenPosition] | None = None,
+                           ) -> list[TradeRecord]:
     """Append a TradeRecord per stop/target/time_stop action and return them.
 
-    Uses pos_before because PositionManager.on_bar closes the book entry on
-    exit kinds. R_realized is computed against initial_risk_per_share so
-    breakeven-moved positions still report the original risk.
+    Uses positions_snapshot because PositionManager.on_bar may close the book
+    entry on exit kinds. With multi-setup positions, each action references
+    the position that triggered it via the *setup* field in PositionAction,
+    so we match by setup name when multiple positions exist on the same symbol.
 
-    If mysql_store is provided, position_closed() is called to archive the
-    trade in MySQL with full metadata.
+    If mysql_store is provided, position_closed() is called for each action.
     """
     recorded: list[TradeRecord] = []
-    if pos_before is None:
-        return recorded
     for a in actions:
         if a.kind not in _EXIT_KINDS:
             continue
+        # Find the snapshot position for this action's setup
+        pos_before = None
+        if positions_snapshot and a.setup in positions_snapshot:
+            pos_before = positions_snapshot[a.setup]
+
+        if pos_before is None:
+            logger.warning("EXIT_NO_POS_SNAPSHOT symbol=%s setup=%s kind=%s",
+                           symbol, a.setup, a.kind)
+            continue
+
         sign = 1 if pos_before.side == "long" else -1
         pnl = sign * (a.price - pos_before.entry_px) * pos_before.qty
         risk = pos_before.initial_risk_per_share
@@ -53,15 +62,16 @@ def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
         if mysql_store is not None:
             try:
                 mysql_store.position_closed(
-                    symbol=symbol, exit_px=a.price,
+                    symbol=symbol, setup_name=pos_before.setup,
+                    exit_px=a.price,
                     close_reason=a.kind, closed_at=last_bar.ts,
                 )
             except Exception as exc:
-                logger.error("MYSQL_CLOSE_FAILED symbol=%s: %s",
-                             symbol, exc, exc_info=True)
+                logger.error("MYSQL_CLOSE_FAILED symbol=%s setup=%s: %s",
+                             symbol, pos_before.setup, exc, exc_info=True)
         update_strategy_performance_file(pos_before.setup, pnl, r_realized)
-        logger.info("POSITION_CLOSED symbol=%s reason=%s exit=%.4f r=%.2f pnl=%.2f",
-                    symbol, a.kind, a.price, r_realized, pnl)
+        logger.info("POSITION_CLOSED symbol=%s setup=%s reason=%s exit=%.4f r=%.2f pnl=%.2f",
+                    symbol, pos_before.setup, a.kind, a.price, r_realized, pnl)
     return recorded
 
 
@@ -70,13 +80,14 @@ class VWAPWaveEngine:
     """One-tick bar-close orchestrator.
 
     Phase A — manage open positions: ingest each fresh bar into the symbol's
-    SessionContext, run PositionManager.on_bar, and route resulting actions
-    through OrderExecutor.handle_actions. Exit actions also append a
-    TradeRecord to the DailyLedger using the position snapshot taken before
-    PositionManager mutated the book.
+    SessionContext, run PositionManager.on_bar (which checks ALL positions for
+    that symbol), and route resulting actions through OrderExecutor.
 
     Phase B — detect new entries: for each symbol's setups, run check(ctx),
     evaluate via RiskManager, and submit through OrderExecutor.
+
+    Supports multiple setups trading the same symbol — each setup's position
+    is tracked independently via (symbol, setup) keys in PositionBook.
     """
 
     symbols: list[tuple[str, str]]
@@ -96,16 +107,28 @@ class VWAPWaveEngine:
         # Reset per-cycle book of just-closed symbols before Phase A so exits
         # this tick can gate re-entries in Phase B.
         self.book.clear_just_exited()
+
         # Phase A: ingest bars + manage open positions
         for symbol, asset_class in self.symbols:
             new_bars = fresh_bars.get(symbol) or []
             for bar in new_bars:
                 self.contexts[symbol].ingest(bar)
-                pos_before = self.book.get(symbol)
+
+                # Snapshot ALL positions before PM mutates the book
+                positions_before = {
+                    p.setup: p for p in self.book.get_all(symbol)
+                }
                 actions = self.position_manager.on_bar(symbol, bar)
-                self._record_exits(symbol, actions, bar, pos_before)
-                parent_order_id = pos_before.order_id if pos_before else None
                 if actions:
+                    self._record_exits(
+                        symbol, actions, bar,
+                        positions_snapshot=positions_before,
+                    )
+                    parent_order_id = (
+                        positions_before[actions[0].setup].order_id
+                        if actions[0].setup in positions_before
+                        else None
+                    )
                     self.executor.handle_actions(
                         actions, asset_class=asset_class,
                         parent_order_id=parent_order_id,
@@ -129,9 +152,12 @@ class VWAPWaveEngine:
                 self.executor.submit(signal, decision, asset_class)
 
     def _record_exits(self, symbol: str, actions: list[PositionAction],
-                      last_bar: Bar, pos_before: OpenPosition | None) -> None:
-        record_exits_to_ledger(self.ledger, symbol, actions, last_bar, pos_before,
-                              mysql_store=self.mysql_store)
+                      last_bar: Bar,
+                      positions_snapshot: dict[str, OpenPosition] | None = None,
+                      ) -> None:
+        record_exits_to_ledger(self.ledger, symbol, actions, last_bar,
+                              mysql_store=self.mysql_store,
+                              positions_snapshot=positions_snapshot)
 
 
 def update_strategy_performance_file(setup_name: str, pnl: float, r_realized: float) -> None:
