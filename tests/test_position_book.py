@@ -99,3 +99,26 @@ def test_aggregate_open_risk_skips_none_stop_positions():
                           opened_at=datetime.now(timezone.utc), order_id="",
                           adopted=True))
     assert book.aggregate_open_risk_usd() == 10.0  # only the AAPL position contributes
+
+
+def test_symbol_normalization():
+    book = PositionBook()
+    p = OpenPosition(symbol="BTCUSD", setup="adopted", side="long", qty=1,
+                      entry_px=50_000.0, stop_px=49000.0, target_px=51000.0,
+                      opened_at=datetime.now(timezone.utc), order_id="",
+                      adopted=True)
+    book.add(p)
+    
+    # lookup with slash should work
+    assert book.get("BTC/USD") is p
+    assert book.get_all("BTC/USD") == [p]
+    assert book.has_symbol("BTC/USD") is True
+    assert book.was_just_exited("BTC/USD") is False
+    
+    # close with slash should work
+    closed = book.close("BTC/USD")
+    assert closed is p
+    assert book.get("BTCUSD") is None
+    assert book.get("BTC/USD") is None
+    assert book.was_just_exited("BTC/USD") is True
+
