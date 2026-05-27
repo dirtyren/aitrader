@@ -39,13 +39,34 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-rsi:
+  trader-rsi-equity:
     build: .
-    command: python main.py --config config/settings_rsi.yaml
+    command: python main.py --config config/settings_rsi_equity.yaml
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_rsi.file
+      - LOCK_FILE_PATH=/app/runtime/lock_rsi_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-rsi-crypto:
+    build: .
+    command: python main.py --config config/settings_rsi_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_rsi_cr.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -123,13 +144,34 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-orb:
+  trader-orb-equity:
     build: .
-    command: python main.py --config config/settings_orb.yaml
+    command: python main.py --config config/settings_orb_equity.yaml
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_orb.file
+      - LOCK_FILE_PATH=/app/runtime/lock_orb_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-orb-crypto:
+    build: .
+    command: python main.py --config config/settings_orb_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_orb_cr.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
