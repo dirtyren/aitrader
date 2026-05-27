@@ -249,3 +249,32 @@ def test_crypto_insufficient_buying_power_does_not_trigger_dtbp_exhaustion():
     assert pos is not None
     client.submit_bracket_order.assert_called_once()
 
+
+def test_virtual_exit_adopted_crypto_target_submits_close():
+    client = MagicMock()
+    book = PositionBook()
+    # Add an adopted position to the book
+    from state.position_book import OpenPosition
+    pos = OpenPosition(
+        symbol="BTC/USD", setup="adopted", side="long", qty=0.1,
+        entry_px=50000.0, stop_px=49000.0, target_px=51000.0,
+        opened_at=datetime.now(timezone.utc), order_id="",
+        adopted=True
+    )
+    book.add(pos)
+    
+    ex = OrderExecutor(client, book, logger=MagicMock())
+    # Generate a target exit action
+    from core.position_manager import PositionAction
+    action = PositionAction(symbol="BTC/USD", setup="adopted", side="long", qty=0.1, price=51000.0, kind="target")
+    
+    ex.handle_actions([action], "crypto")
+    
+    # It must call close_position (which calls submit_order to sell)
+    assert client.submit_order.called
+    payload = client.submit_order.call_args.kwargs
+    assert payload["symbol"] == "BTC/USD"
+    assert payload["side"] == "sell"
+    assert payload["qty"] == 0.1
+
+
