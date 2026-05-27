@@ -7,17 +7,7 @@ asset_classes:
     session_close_local: '23:59'
     session_open_local: '00:00'
     slippage_bps: 5
-    symbols:
-    - BTC/USD
-    - ETH/USD
-    - SOL/USD
-    - AVAX/USD
-    - LINK/USD
-    - ADA/USD
-    - DOGE/USD
-    - DOT/USD
-    - PEPE/USD
-    - XRP/USD
+    symbols: []
     timezone: UTC
   equity:
     commission_per_share: 0.0
