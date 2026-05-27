@@ -3,7 +3,7 @@ system:
   version: 2.0.0
   trading_env: paper
 scheduler:
-  bar_timeframe: 60Min
+  bar_timeframe: 1Hour
   wake_grace_seconds: 5
   poll_fallback_seconds: 60
 vwap:
