@@ -220,8 +220,6 @@ services:
       - MYSQL_PASSWORD=traderpass
       - MYSQL_DATABASE=aitrader
     user: "${UID:-1000}:${GID:-1000}"
-    ports:
-      - "127.0.0.1:8501:8501"
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
@@ -229,5 +227,21 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+
+  nginx:
+    build: ./nginx
+    environment:
+      - DASH_USER=${DASH_USER:-admin}
+      - DASH_PASSWORD=${DASH_PASSWORD:?DASH_PASSWORD must be set in .env}
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+    volumes:
+      - dashboard_certs:/etc/nginx/certs
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+
 volumes:
   db_data:
+  dashboard_certs:
