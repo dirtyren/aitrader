@@ -67,8 +67,99 @@ class _LoadResult:
     parse_errors: list[tuple[Path, str]] = field(default_factory=list)
 
 
+def _flatten(d: dict, prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out.update(_flatten(v, prefix=f"{key}."))
+        else:
+            out[key] = v
+    return out
+
+
+def _coerce_symbols(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(s) for s in value]
+    if isinstance(value, str):
+        logger.warning("symbols field is a string, coercing to single-element list: %r", value)
+        return [value]
+    logger.warning("symbols field has unsupported type %s, treating as empty", type(value).__name__)
+    return []
+
+
+def _build_asset_classes(raw: dict) -> list[AssetClass]:
+    block = raw.get("asset_classes") or {}
+    out: list[AssetClass] = []
+    for name, body in block.items():
+        body = body or {}
+        out.append(AssetClass(
+            name=str(name),
+            symbols=_coerce_symbols(body.get("symbols")),
+            session_open_local=body.get("session_open_local"),
+            session_close_local=body.get("session_close_local"),
+            timezone=body.get("timezone"),
+            slippage_bps=body.get("slippage_bps"),
+            commission_bps=body.get("commission_bps"),
+            commission_per_share=body.get("commission_per_share"),
+        ))
+    return out
+
+
+def _build_setups(raw: dict) -> list[Setup]:
+    block = raw.get("setups") or {}
+    out: list[Setup] = []
+    for name, body in block.items():
+        body = dict(body or {})
+        enabled = bool(body.pop("enabled", False))
+        out.append(Setup(name=str(name), enabled=enabled, params=body))
+    return out
+
+
+def _build_config(yaml_path: Path, raw: dict) -> StrategyConfig:
+    system = raw.get("system") or {}
+    name = system.get("name") or yaml_path.stem.removeprefix("settings_") or yaml_path.stem
+    return StrategyConfig(
+        name=str(name),
+        version=str(system["version"]) if system.get("version") is not None else None,
+        env=system.get("trading_env"),
+        yaml_path=yaml_path,
+        asset_classes=_build_asset_classes(raw),
+        risk=_flatten(raw.get("risk") or {}),
+        setups=_build_setups(raw),
+        filters=dict(raw.get("filters") or {}),
+        broker=dict(raw.get("broker") or {}),
+        backtest=dict(raw.get("backtest") or {}),
+        raw=dict(raw),
+    )
+
+
+def _load(config_dir: Path) -> _LoadResult:
+    result = _LoadResult()
+    paths = sorted(Path(p) for p in glob.glob(str(config_dir / "settings*.yaml")))
+    by_name: dict[str, list[Path]] = {}
+    for path in paths:
+        try:
+            raw = yaml.safe_load(path.read_text()) or {}
+        except yaml.YAMLError as e:
+            logger.error("Failed to parse %s: %s", path, e)
+            result.parse_errors.append((path, str(e)))
+            continue
+        cfg = _build_config(path, raw)
+        by_name.setdefault(cfg.name, []).append(path)
+        if cfg.name not in result.configs:
+            result.configs[cfg.name] = cfg
+    for name, paths_for_name in by_name.items():
+        if len(paths_for_name) > 1:
+            logger.warning("Duplicate strategy name %r in %s — using first", name, paths_for_name)
+            result.conflicts.append((name, paths_for_name))
+    return result
+
+
 def load_yaml_configs(config_dir: Path = Path("config")) -> dict[str, StrategyConfig]:
-    raise NotImplementedError
+    return _load(config_dir).configs
 
 
 def discover_strategies(config_dir: Path = Path("config")) -> list[StrategyEntry]:
