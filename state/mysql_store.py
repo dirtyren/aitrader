@@ -215,17 +215,52 @@ class MySQLStore:
         )
 
     def ensure_schema(self) -> None:
-        """Create tables if they don't exist. Idempotent. Also applies migrations."""
+        """Create tables if they don't exist. Idempotent. Also applies migrations.
+
+        For existing DBs we cannot rely on create_all to add new columns, so each
+        new column gets its own try/except ALTER. Order matters only for the
+        legacy_untagged backfill (must run after the column exists).
+        """
         Base.metadata.create_all(self._engine)
-        # Migration: add reflected column if it doesn't exist (for existing DBs)
+
+        migrations: list[str] = [
+            # trades.reflected — historic, kept for backwards compat
+            "ALTER TABLE trades ADD COLUMN reflected TINYINT(1) DEFAULT 0",
+            # positions: client_order_id columns + legacy_untagged
+            "ALTER TABLE positions ADD COLUMN client_order_id VARCHAR(128) DEFAULT NULL",
+            "ALTER TABLE positions ADD COLUMN exit_client_order_id VARCHAR(128) DEFAULT NULL",
+            "ALTER TABLE positions ADD COLUMN legacy_untagged TINYINT(1) DEFAULT 0",
+            "CREATE INDEX idx_client_order_id ON positions (client_order_id)",
+            # trades: client_order_id columns
+            "ALTER TABLE trades ADD COLUMN client_order_id VARCHAR(128) DEFAULT NULL",
+            "ALTER TABLE trades ADD COLUMN exit_client_order_id VARCHAR(128) DEFAULT NULL",
+            "CREATE INDEX idx_trades_client_order_id ON trades (client_order_id)",
+        ]
+        for stmt in migrations:
+            try:
+                with self._engine.connect() as conn:
+                    conn.execute(text(stmt))
+                    conn.commit()
+            except Exception:
+                # Column / index already exists, or DB is fresh and create_all
+                # already provisioned it. Either is fine.
+                pass
+
+        # One-shot backfill: any row currently open with no client_order_id
+        # is a pre-migration legacy position. Mark it so the reconciler service
+        # in Plan 3 treats it as alert-only and never auto-mutates it.
         try:
             with self._engine.connect() as conn:
                 conn.execute(text(
-                    "ALTER TABLE trades ADD COLUMN reflected TINYINT(1) DEFAULT 0"
+                    "UPDATE positions "
+                    "SET legacy_untagged = 1 "
+                    "WHERE status = 'open' "
+                    "AND client_order_id IS NULL "
+                    "AND legacy_untagged = 0"
                 ))
                 conn.commit()
-        except Exception:
-            pass  # Column already exists (or fresh DB from schema.sql)
+        except Exception as exc:
+            self._log.warning("MYSQL_LEGACY_BACKFILL_FAILED: %s", exc)
 
     def upsert_strategy(self) -> int:
         """INSERT (or get) the strategy row, return its id."""
