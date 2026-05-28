@@ -50,7 +50,6 @@ from scheduler.bar_clock import next_boundary, sleep_until
 from scheduler.loop import VWAPWaveEngine
 from state.daily_ledger import DailyLedger
 from state.dashboard_state import DashboardSnapshot, write_dashboard_state
-from state.reconciler import Reconciler
 from state.mysql_store import MySQLStore
 from strategies.setup_fade_extreme import FadeExtremeSetup
 from strategies.setup_price_discovery import PriceDiscoverySetup
@@ -405,32 +404,6 @@ def main():
         sys.exit(1)
     ledger = DailyLedger(initial_equity=initial_equity)
 
-    # Extract strategy params for adopted crypto stop/target calculation
-    setups_config = cfg.get("setups", {})
-    # Default to vwap_bounce params if available, otherwise first enabled setup
-    adopted_cfg = setups_config.get("vwap_bounce",
-                    setups_config.get("price_discovery", {}))
-    recon_atr_mult_stop = adopted_cfg.get("atr_mult_stop", 1.25)
-    recon_target_R = adopted_cfg.get("target_R", 2.0)
-
-    reconciler = Reconciler(alpaca, ac_configs, mysql_store=mysql,
-                            atr_mult_stop=recon_atr_mult_stop,
-                            target_R=recon_target_R,
-                            configured_symbols=[sym for sym, _ in symbols])
-    try:
-        startup_report = reconciler.reconcile(book, adopt_orphans=(config_path == 'config/settings.yaml'))
-    except Exception as exc:
-        logger.error("RECONCILE_STARTUP_FAILED: %s", exc, exc_info=True)
-        sys.exit(1)
-    logger.info(
-        "RECONCILE_STARTUP closed=%d adopted_eq=%d adopted_cr=%d drift=%d "
-        "drift_corrected=%d drift_ambiguous=%d no_bracket=%d",
-        len(startup_report.closed), len(startup_report.adopted_equity),
-        len(startup_report.adopted_crypto), len(startup_report.drift),
-        len(startup_report.drift_corrected), len(startup_report.drift_ambiguous),
-        len(startup_report.equity_no_bracket),
-    )
-
     cb_cfg = cfg["risk"]["circuit_breaker"]
     cb = CircuitBreaker(
         peak_equity=initial_equity,
@@ -515,23 +488,6 @@ def main():
                 new_bars = [b for b in bars if last_known_ts is None or b.ts > last_known_ts]
                 if new_bars:
                     fresh_bars[sym] = new_bars
-
-            try:
-                cycle_report = reconciler.reconcile(book, adopt_orphans=(config_path == 'config/settings.yaml'))
-                if (cycle_report.closed or cycle_report.adopted_equity
-                        or cycle_report.adopted_crypto or cycle_report.drift):
-                    logger.info(
-                        "RECONCILE closed=%d adopted_eq=%d adopted_cr=%d "
-                        "drift=%d drift_corrected=%d drift_ambiguous=%d",
-                        len(cycle_report.closed),
-                        len(cycle_report.adopted_equity),
-                        len(cycle_report.adopted_crypto),
-                        len(cycle_report.drift),
-                        len(cycle_report.drift_corrected),
-                        len(cycle_report.drift_ambiguous),
-                    )
-            except Exception as exc:
-                logger.error("RECONCILE_ERROR: %s", exc, exc_info=True)
 
             engine.tick(now=cycle_now, fresh_bars=fresh_bars)
 
