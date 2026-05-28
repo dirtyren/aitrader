@@ -233,6 +233,7 @@ class AlpacaClient:
         side: str,
         order_type: str = "market",
         time_in_force: str = "day",
+        limit_price: float | None = None,
     ) -> dict:
         """POST /v2/orders — submit a new order and return the order dict."""
         payload = {
@@ -242,6 +243,8 @@ class AlpacaClient:
             "type": order_type,
             "time_in_force": time_in_force,
         }
+        if limit_price is not None:
+            payload["limit_price"] = _round_to_tick(limit_price)
         response = self._request("POST", "/v2/orders", json=payload)
         return response.json()
 
