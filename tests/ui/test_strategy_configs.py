@@ -126,3 +126,86 @@ def test_load_yaml_configs_parses_single_yaml(tmp_path):
     assert cfg.backtest["start"] == "2024-01-01"
 
     assert cfg.raw["system"]["name"] == "orb_trader"
+
+
+def test_load_yaml_configs_falls_back_to_filename_stem(tmp_path):
+    from ui.data.strategy_configs import load_yaml_configs
+
+    cfg_dir = tmp_path / "config"
+    _write_yaml(
+        cfg_dir / "settings_no_name.yaml",
+        """
+        risk:
+          max_risk_per_trade: 0.01
+        """,
+    )
+
+    result = load_yaml_configs(cfg_dir)
+
+    assert list(result.keys()) == ["no_name"]
+    assert result["no_name"].name == "no_name"
+    assert result["no_name"].risk == {"max_risk_per_trade": 0.01}
+
+
+def test_load_yaml_configs_duplicate_name_keeps_first_alphabetically(tmp_path):
+    from ui.data.strategy_configs import load_yaml_configs
+
+    cfg_dir = tmp_path / "config"
+    _write_yaml(
+        cfg_dir / "settings_a_dup.yaml",
+        """
+        system: {name: dup_strategy}
+        risk: {max_risk_per_trade: 0.01}
+        """,
+    )
+    _write_yaml(
+        cfg_dir / "settings_b_dup.yaml",
+        """
+        system: {name: dup_strategy}
+        risk: {max_risk_per_trade: 0.99}
+        """,
+    )
+
+    result = load_yaml_configs(cfg_dir)
+    assert list(result.keys()) == ["dup_strategy"]
+    assert result["dup_strategy"].risk == {"max_risk_per_trade": 0.01}
+
+
+def test_load_yaml_configs_skips_malformed(tmp_path, caplog):
+    import logging
+    from ui.data.strategy_configs import load_yaml_configs
+
+    cfg_dir = tmp_path / "config"
+    _write_yaml(cfg_dir / "settings_bad.yaml", "not: [valid: yaml: at: all")
+    _write_yaml(
+        cfg_dir / "settings_good.yaml",
+        """
+        system: {name: good_one}
+        """,
+    )
+
+    with caplog.at_level(logging.ERROR, logger="dashboard"):
+        result = load_yaml_configs(cfg_dir)
+
+    assert list(result.keys()) == ["good_one"]
+    assert any("Failed to parse" in rec.message for rec in caplog.records)
+
+
+def test_load_yaml_configs_missing_symbols_yields_empty_table(tmp_path):
+    from ui.data.strategy_configs import load_yaml_configs
+
+    cfg_dir = tmp_path / "config"
+    _write_yaml(
+        cfg_dir / "settings_partial.yaml",
+        """
+        system: {name: partial}
+        asset_classes:
+          equity:
+            session_open_local: "09:30"
+        """,
+    )
+
+    cfg = load_yaml_configs(cfg_dir)["partial"]
+    eq = next(a for a in cfg.asset_classes if a.name == "equity")
+    assert eq.symbols == []
+    assert eq.session_open_local == "09:30"
