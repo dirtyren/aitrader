@@ -70,7 +70,7 @@ class PositionRow(Base):
     setup_name: Mapped[str] = mapped_column(String(64), nullable=False)
     order_id: Mapped[str] = mapped_column(String(64), default="")
     stop_order_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     exit_client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     legacy_untagged: Mapped[bool] = mapped_column(Boolean, default=False)
     breakeven_moved: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -114,7 +114,7 @@ class TradeRow(Base):
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     bars_held: Mapped[int] = mapped_column(Integer, default=0)
     reflected: Mapped[bool] = mapped_column(Boolean, default=False)
-    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     exit_client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
@@ -162,7 +162,8 @@ class EventRow(Base):
     symbol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP(3)")
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
 
     __table_args__ = (
