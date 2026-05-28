@@ -8,6 +8,7 @@ from state.position_book import OpenPosition, PositionBook
 from strategies.base_setup import SetupSignal
 from risk.manager import RiskDecision
 from notifications import send_position_open_alert
+from broker.client_order_id import Role, make_client_order_id
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +27,14 @@ class OrderExecutor:
     """Translates an approved SetupSignal+RiskDecision into broker orders."""
 
     def __init__(self, alpaca_client, book: PositionBook,
+                 strategy_name: str,
                  logger: logging.Logger | None = None,
                  mysql_store=None):
+        if not strategy_name:
+            raise ValueError("OrderExecutor requires a non-empty strategy_name")
         self.client = alpaca_client
         self.book = book
+        self.strategy_name = strategy_name
         self.logger = logger or logging.getLogger("vwap_wave.executor")
         self._dtbp_exhausted = False
         self._mysql = mysql_store
@@ -78,6 +83,9 @@ class OrderExecutor:
             return None
 
         alp_side = self._alpaca_side(signal.side)
+        entry_coid = make_client_order_id(
+            self.strategy_name, signal.setup, signal.symbol, Role.ENTRY,
+        )
 
         try:
             if asset_class == "equity":
@@ -89,6 +97,7 @@ class OrderExecutor:
                     stop_loss=signal.stop,
                     take_profit=signal.target,
                     time_in_force="day",
+                    client_order_id=entry_coid,
                 )
             elif asset_class == "crypto":
                 # Crypto: market entry + engine-managed virtual stop/target
@@ -98,6 +107,7 @@ class OrderExecutor:
                     side=alp_side,
                     order_type="market",
                     time_in_force="gtc",
+                    client_order_id=entry_coid,
                 )
             else:
                 raise ValueError(f"Unknown asset_class: {asset_class}")
@@ -122,6 +132,9 @@ class OrderExecutor:
         if asset_class == "crypto" and signal.target is not None:
             try:
                 tp_side = "sell" if alp_side == "buy" else "buy"
+                tp_coid = make_client_order_id(
+                    self.strategy_name, signal.setup, signal.symbol, Role.TARGET,
+                )
                 tp_order = self.client.submit_order(
                     symbol=signal.symbol,
                     qty=decision.qty,
@@ -129,6 +142,7 @@ class OrderExecutor:
                     order_type="limit",
                     limit_price=round(signal.target, 4),
                     time_in_force="gtc",
+                    client_order_id=tp_coid,
                 )
                 target_order_id = tp_order.get("id")
             except Exception as exc:
@@ -142,6 +156,7 @@ class OrderExecutor:
             stop_order_id=stop_order_id,
             target_order_id=target_order_id,
             initial_stop_px=signal.stop,
+            client_order_id=entry_coid,
         )
         self.book.add(pos)
         # Persist to MySQL so position metadata survives container restarts
@@ -152,9 +167,8 @@ class OrderExecutor:
                 self.logger.error("MYSQL_SAVE_FAILED symbol=%s: %s",
                                   signal.symbol, exc, exc_info=True)
         # Notify Telegram
-        strategy_name = self._mysql.strategy_name if self._mysql else "unknown"
         send_position_open_alert(
-            strategy_name=strategy_name,
+            strategy_name=self.strategy_name,
             symbol=pos.symbol,
             side=pos.side,
             qty=pos.qty,
@@ -171,12 +185,28 @@ class OrderExecutor:
         return pos
 
     def close_position(self, symbol: str, side: str, qty: float) -> dict | None:
-        """Submit a market close order. Used for virtual stops / time stops."""
+        """Submit a market close order. Used for virtual stops / time stops.
+
+        The COID uses setup='_unknown' because this path doesn't know which
+        setup owned the position. Plan 3's reconciler service supersedes this
+        exit path and will use the real setup. The sanitizer strips the leading
+        underscore, so the parsed setup is 'unknown'.
+
+        NOTE: The exit COID is sent to Alpaca but is NOT yet persisted to the
+        MySQL trades.exit_client_order_id column. The current MySQL close path
+        in scheduler/loop.py omits this kwarg. Plan 3's reconciler service will
+        back-fill exit_client_order_id by matching Alpaca filled orders to MySQL
+        rows via the COID, so this asymmetry is acceptable during rollout.
+        """
+        exit_coid = make_client_order_id(
+            self.strategy_name, "_unknown", symbol, Role.EXIT,
+        )
         try:
             return self.client.submit_order(
                 symbol=symbol, qty=qty,
                 side="sell" if side == "long" else "buy",
                 order_type="market", time_in_force="gtc",
+                client_order_id=exit_coid,
             )
         except Exception as exc:
             if "insufficient qty" in str(exc).lower() or "not enough" in str(exc).lower() or "qty" in str(exc).lower():
@@ -191,10 +221,11 @@ class OrderExecutor:
                                 symbol=symbol, qty=actual_qty,
                                 side="sell" if side == "long" else "buy",
                                 order_type="market", time_in_force="gtc",
+                                client_order_id=exit_coid,
                             )
                 except Exception as inner_exc:
                     self.logger.error("CLOSE_FULL_POSITION_FAILED symbol=%s error=%s", symbol, inner_exc)
-            
+
             self.logger.error("CLOSE_FAILED symbol=%s error=%s", symbol, exc, exc_info=True)
             return None
 

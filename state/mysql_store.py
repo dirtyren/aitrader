@@ -311,6 +311,7 @@ class MySQLStore:
             "initial_stop_px": Decimal(str(pos.initial_stop_px)) if pos.initial_stop_px is not None else None,
             "setup_name": pos.setup,
             "order_id": pos.order_id or "",
+            "client_order_id": pos.client_order_id,
             "stop_order_id": pos.stop_order_id or None,
             "breakeven_moved": pos.breakeven_moved,
             "bars_held": pos.bars_held,
@@ -331,6 +332,7 @@ class MySQLStore:
             target_px=float(row.target_px) if row.target_px is not None else None,
             opened_at=row.opened_at,
             order_id=row.order_id or "",
+            client_order_id=row.client_order_id,
             stop_order_id=row.stop_order_id,
             initial_stop_px=float(row.initial_stop_px) if row.initial_stop_px is not None else None,
             breakeven_moved=row.breakeven_moved,
@@ -370,6 +372,7 @@ class MySQLStore:
         close_reason: str,
         closed_at: datetime | None = None,
         setup_name: str | None = None,
+        exit_client_order_id: str | None = None,
     ) -> dict | None:
         """Close the open position for `symbol` (and optionally setup) and archive it to trades.
 
@@ -420,6 +423,7 @@ class MySQLStore:
             row.pnl_usd = pnl_usd
             row.R_realized = R_realized
             row.bars_held = row.bars_held  # keep last known
+            row.exit_client_order_id = exit_client_order_id
 
             # Archive to trades table
             trade = TradeRow(
@@ -434,6 +438,8 @@ class MySQLStore:
                 stop_px=row.stop_px,
                 target_px=row.target_px,
                 initial_stop_px=row.initial_stop_px,
+                client_order_id=row.client_order_id,
+                exit_client_order_id=exit_client_order_id,
                 pnl_usd=pnl_usd,
                 R_realized=R_realized,
                 close_reason=close_reason,

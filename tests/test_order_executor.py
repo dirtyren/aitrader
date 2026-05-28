@@ -1,4 +1,5 @@
 import logging
+import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from broker.alpaca_client import InsufficientBuyingPowerError
@@ -18,7 +19,7 @@ def test_submit_equity_uses_bracket_order():
     client = MagicMock()
     client.submit_bracket_order.return_value = {"id": "ord-1"}
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos is not None
@@ -35,7 +36,7 @@ def test_submit_crypto_uses_market_order_and_virtual_stop():
     client = MagicMock()
     client.submit_order.return_value = {"id": "ord-2"}
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=0.1, notional=5000)
     sig = _signal(symbol="BTC/USD", side="long")
     pos = ex.submit(sig, decision, asset_class="crypto")
@@ -52,7 +53,7 @@ def test_submit_crypto_uses_market_order_and_virtual_stop():
 def test_submit_returns_none_when_rejected():
     client = MagicMock()
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision.reject("denied")
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos is None
@@ -70,7 +71,7 @@ def test_submit_equity_captures_stop_leg_id():
         ],
     }
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos.stop_order_id == "sl-1"
@@ -81,7 +82,7 @@ def test_submit_equity_no_legs_keeps_stop_order_id_none():
     client = MagicMock()
     client.submit_bracket_order.return_value = {"id": "parent-2"}   # paper sometimes omits legs
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos.stop_order_id is None
@@ -96,7 +97,7 @@ def test_submit_skips_when_symbol_just_exited_this_cycle():
     """
     client = MagicMock()
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
 
     # Simulate a same-cycle bracket exit via the public API.
     from state.position_book import OpenPosition
@@ -122,7 +123,7 @@ def test_submit_logs_dtbp_rejection_at_warning_without_stack_trace(caplog):
         403, "insufficient day trading buying power"
     )
     book = PositionBook()
-    ex = OrderExecutor(client, book)  # use real logger so caplog captures it
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave")  # use real logger so caplog captures it
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     with caplog.at_level(logging.WARNING, logger="vwap_wave.executor"):
         pos = ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity")
@@ -141,7 +142,7 @@ def test_dtbp_rejection_short_circuits_subsequent_equity_submits_in_same_cycle()
         403, "insufficient day trading buying power"
     )
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
 
     # First submit triggers the broker call and gets rejected.
@@ -160,7 +161,7 @@ def test_dtbp_short_circuit_does_not_block_crypto_submits():
     )
     client.submit_order.return_value = {"id": "ord-c"}
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=0.1, notional=5000)
 
     ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity")
@@ -178,7 +179,7 @@ def test_reset_cycle_clears_dtbp_short_circuit():
         {"id": "ord-next"},
     ]
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
 
     assert ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity") is None
@@ -196,7 +197,7 @@ def test_submit_proceeds_after_just_exited_cleared():
     client = MagicMock()
     client.submit_bracket_order.return_value = {"id": "ord-x"}
     book = PositionBook()
-    from state.position_book import OpenPosition
+    from state.position_book import OpenPosition  # noqa: F811 (re-import in function scope)
     book.add(OpenPosition(
         symbol="AMZN", setup="return_to_value", side="long", qty=1,
         entry_px=265.0, stop_px=264.0, target_px=267.0,
@@ -206,7 +207,7 @@ def test_submit_proceeds_after_just_exited_cleared():
     book.close("AMZN")
     book.clear_just_exited()  # next cycle starts
 
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     sig = _signal(symbol="AMZN", side="long")
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(sig, decision, asset_class="equity")
@@ -217,7 +218,7 @@ def test_submit_proceeds_after_just_exited_cleared():
 def test_submit_crypto_short_is_blocked_immediately():
     client = MagicMock()
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=0.1, notional=5000)
 
     # Short crypto must return None and NOT call the broker
@@ -233,7 +234,7 @@ def test_crypto_insufficient_buying_power_does_not_trigger_dtbp_exhaustion():
         403, "insufficient balance for USD"
     )
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=0.1, notional=5000)
 
     # First submit triggers a crypto long which gets rejected due to insufficient balance
@@ -263,7 +264,7 @@ def test_virtual_exit_adopted_crypto_target_submits_close():
     )
     book.add(pos)
     
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     # Generate a target exit action
     from core.position_manager import PositionAction
     action = PositionAction(symbol="BTC/USD", setup="adopted", side="long", qty=0.1, price=51000.0, kind="target")
@@ -278,3 +279,62 @@ def test_virtual_exit_adopted_crypto_target_submits_close():
     assert payload["qty"] == 0.1
 
 
+def test_submit_equity_passes_coid_to_bracket_order():
+    """Equity submit must mint a role=entry COID and pass it to submit_bracket_order."""
+    client = MagicMock()
+    client.submit_bracket_order.return_value = {"id": "ord-1"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+
+    pos = ex.submit(_signal(), decision, asset_class="equity")
+
+    assert pos is not None
+    assert client.submit_bracket_order.called
+    coid = client.submit_bracket_order.call_args.kwargs["client_order_id"]
+    assert coid is not None and coid.startswith("aitrader__vwap_wave__price_discovery__AAPL__entry__")
+    # Position carries the same COID
+    assert pos.client_order_id == coid
+
+
+def test_submit_crypto_passes_coid_to_market_order_and_tp_limit():
+    """Crypto submit mints role=entry on market entry and role=target on TP limit."""
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "ord-2"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=0.1, notional=5000)
+
+    pos = ex.submit(_signal(symbol="BTC/USD", side="long"), decision, asset_class="crypto")
+
+    assert pos is not None
+    assert client.submit_order.call_count == 2
+    entry_call = client.submit_order.call_args_list[0]
+    tp_call = client.submit_order.call_args_list[1]
+
+    entry_coid = entry_call.kwargs["client_order_id"]
+    tp_coid = tp_call.kwargs["client_order_id"]
+    assert entry_coid.startswith("aitrader__vwap_wave__price_discovery__BTCUSD__entry__")
+    assert tp_coid.startswith("aitrader__vwap_wave__price_discovery__BTCUSD__target__")
+    # Position carries the entry COID, not the TP one
+    assert pos.client_order_id == entry_coid
+
+
+def test_close_position_passes_role_exit_coid():
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "close-1"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
+
+    result = ex.close_position(symbol="BTCUSD", side="long", qty=0.5)
+
+    assert result == {"id": "close-1"}
+    client.submit_order.assert_called_once()
+    coid = client.submit_order.call_args.kwargs["client_order_id"]
+    # Setup constant "_unknown" is sanitized to "unknown" by the COID format helper.
+    assert coid.startswith("aitrader__vwap_wave__unknown__BTCUSD__exit__")
+
+
+def test_empty_strategy_name_raises():
+    with pytest.raises(ValueError, match="non-empty strategy_name"):
+        OrderExecutor(MagicMock(), PositionBook(), strategy_name="")

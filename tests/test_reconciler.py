@@ -406,3 +406,73 @@ def test_reconcile_skips_adoption_when_owned_by_another_strategy():
     report = r.reconcile(book)
     assert report.adopted_equity == []
     assert book.count() == 0
+
+
+def test_adopted_equity_position_has_role_adopted_coid():
+    """Adoption must stamp a parseable role=adopted COID on the OpenPosition."""
+    from unittest.mock import MagicMock
+    from state.reconciler import Reconciler
+    from state.position_book import PositionBook
+    from broker.client_order_id import parse_client_order_id
+
+    alpaca = MagicMock()
+    alpaca.get_positions.return_value = [{
+        "symbol": "AAPL",
+        "qty": "10",
+        "side": "long",
+        "avg_entry_price": "100.00",
+        "asset_class": "us_equity",
+    }]
+    alpaca.list_orders.return_value = []  # no bracket data
+
+    mysql = MagicMock()
+    mysql.strategy_name = "vwap_wave"
+    mysql.close_positions_not_in_broker.return_value = []
+    mysql.count_strategies_holding.return_value = 0
+
+    book = PositionBook()
+    rec = Reconciler(alpaca, mysql_store=mysql, configured_symbols=["AAPL"])
+    rec.reconcile(book)
+
+    pos = book.get("AAPL")
+    assert pos is not None
+    parsed = parse_client_order_id(pos.client_order_id)
+    assert parsed is not None, f"adopted position COID is not parseable: {pos.client_order_id!r}"
+    assert parsed["strategy"] == "vwap_wave"
+    assert parsed["setup"] == "adopted"
+    assert parsed["symbol"] == "AAPL"
+    assert parsed["role"] == "adopted"
+
+
+def test_adopted_crypto_position_has_role_adopted_coid():
+    from unittest.mock import MagicMock
+    from state.reconciler import Reconciler
+    from state.position_book import PositionBook
+    from broker.client_order_id import parse_client_order_id
+
+    alpaca = MagicMock()
+    alpaca.get_positions.return_value = [{
+        "symbol": "BTCUSD",
+        "qty": "0.5",
+        "side": "long",
+        "avg_entry_price": "50000.00",
+        "current_price": "50100.00",
+        "asset_class": "crypto",
+    }]
+    alpaca.get_crypto_bars.return_value = []  # no bars; ATR computation skipped
+
+    mysql = MagicMock()
+    mysql.strategy_name = "vwap_wave"
+    mysql.close_positions_not_in_broker.return_value = []
+    mysql.count_strategies_holding.return_value = 0
+
+    book = PositionBook()
+    rec = Reconciler(alpaca, mysql_store=mysql, configured_symbols=["BTCUSD"])
+    rec.reconcile(book)
+
+    pos = book.get("BTCUSD")
+    assert pos is not None
+    parsed = parse_client_order_id(pos.client_order_id)
+    assert parsed is not None
+    assert parsed["role"] == "adopted"
+    assert parsed["symbol"] == "BTCUSD"

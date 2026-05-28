@@ -177,3 +177,55 @@ def test_replace_order_rounds_sub_penny_prices():
         body = req.call_args[1]["json"]
         assert body["limit_price"] == 42.99
         assert body["stop_price"] == 41.11
+
+
+def test_submit_order_forwards_client_order_id():
+    client = AlpacaClient()
+    coid = "aitrader__vwap_wave__vwap_bounce__AAPL__entry__abcd1234"
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-1"})) as req:
+        client.submit_order(
+            symbol="AAPL", qty=1, side="buy",
+            order_type="market", time_in_force="day",
+            client_order_id=coid,
+        )
+        body = req.call_args[1]["json"]
+        assert body["client_order_id"] == coid
+
+
+def test_submit_order_omits_client_order_id_when_not_provided():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-1"})) as req:
+        client.submit_order(
+            symbol="AAPL", qty=1, side="buy",
+            order_type="market", time_in_force="day",
+        )
+        body = req.call_args[1]["json"]
+        assert "client_order_id" not in body
+
+
+def test_submit_bracket_order_forwards_client_order_id():
+    client = AlpacaClient()
+    coid = "aitrader__vwap_wave__vwap_bounce__AAPL__entry__abcd1234"
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-1"})) as req:
+        client.submit_bracket_order(
+            symbol="AAPL", qty=10, side="buy",
+            limit_price=100.0, stop_loss=99.0, take_profit=102.0,
+            client_order_id=coid,
+        )
+        body = req.call_args[1]["json"]
+        assert body["client_order_id"] == coid
+
+
+def test_submit_bracket_order_omits_client_order_id_when_not_provided():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-1"})) as req:
+        client.submit_bracket_order(
+            symbol="AAPL", qty=10, side="buy",
+            limit_price=100.0, stop_loss=99.0, take_profit=102.0,
+        )
+        body = req.call_args[1]["json"]
+        assert "client_order_id" not in body

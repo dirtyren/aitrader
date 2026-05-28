@@ -70,6 +70,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from state.position_book import OpenPosition, PositionBook
+from broker.client_order_id import Role, make_client_order_id
 from core.asset_class import AssetClassConfig
 from notifications import send_position_open_alert
 if TYPE_CHECKING:
@@ -340,6 +341,10 @@ class Reconciler:
                     stop_order_id=stop_order_id,
                     initial_stop_px=stop_px,
                     adopted=True,
+                    client_order_id=make_client_order_id(
+                        self._mysql.strategy_name if self._mysql else "unknown",
+                        "adopted", symbol, Role.ADOPTED,
+                    ),
                 )
                 book.add(pos)
                 report.adopted_equity.append(symbol)
@@ -421,6 +426,10 @@ class Reconciler:
                     stop_order_id=None,
                     initial_stop_px=stop_px,
                     adopted=True,
+                    client_order_id=make_client_order_id(
+                        self._mysql.strategy_name if self._mysql else "unknown",
+                        "adopted", symbol, Role.ADOPTED,
+                    ),
                 )
                 book.add(pos)
                 report.adopted_crypto.append(symbol)
