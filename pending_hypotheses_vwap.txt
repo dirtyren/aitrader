@@ -9,6 +9,7 @@ Hypothesis 11: ✅ APPLIED 2026-05-27 — Full crypto deconfliction: removed all
 
 Hypothesis 10: ✅ APPLIED 2026-05-27 — Reduced price_discovery arm_window_bars from 6 to 4 to prevent entering late/exhausted breakout retests. Shorter arming window ensures the setup expires faster if the pullback is sluggish or delayed, avoiding high-risk, lagging entry signals.
 
+Hypothesis 8: ✅ APPLIED 2026-05-28 — Increased vwap.sigma_bands from 1.0 to 1.5. A 1.0 standard deviation band is too narrow and prone to triggering on normal noise, leading to low-conviction counter-trend entries (such as fading short entries in a strong bull market). Widening the bands to 1.5 standard deviations reduces false triggers, filters intraday noise, and ensures the setup only triggers at more significant deviations, aligning with the S&P parameter sweep findings.
+
 Pending ideas:
 - Hyp7: If reconciled_gone persists at 0.20, force market orders for crypto entries. Alpaca crypto supports market orders which always fill; the tradeoff is slippage.
-- Hyp8: After fill reliability improves, consider wider sigma_bands (1.0→1.5) to reduce signal count and increase per-trade conviction.
