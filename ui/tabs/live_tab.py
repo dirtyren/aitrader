@@ -37,9 +37,11 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
 
     enriched["unrealized"] = enriched.apply(unrealized, axis=1)
     enriched["R_so_far"] = enriched.apply(r_so_far, axis=1)
-    enriched["age"] = enriched["opened_at"].apply(
-        lambda t: str(now - pd.Timestamp(t).to_pydatetime()).split(".")[0]
-        if t is not None else "—"
+
+    opened = pd.to_datetime(enriched["opened_at"], errors="coerce", utc=True)
+    age_delta = pd.Timestamp(now) - opened
+    enriched["age"] = age_delta.apply(
+        lambda d: "—" if pd.isna(d) else str(d).split(".")[0]
     )
     return enriched
 
