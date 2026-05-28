@@ -29,7 +29,7 @@ from typing import Callable, Optional
 
 from sqlalchemy import (
     Column, Integer, String, Numeric, DateTime, Boolean, Enum, Index,
-    ForeignKey, Date, create_engine, text,
+    ForeignKey, Date, JSON, create_engine, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 from urllib.parse import quote_plus as urlquote
@@ -70,6 +70,9 @@ class PositionRow(Base):
     setup_name: Mapped[str] = mapped_column(String(64), nullable=False)
     order_id: Mapped[str] = mapped_column(String(64), default="")
     stop_order_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    exit_client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    legacy_untagged: Mapped[bool] = mapped_column(Boolean, default=False)
     breakeven_moved: Mapped[bool] = mapped_column(Boolean, default=False)
     bars_held: Mapped[int] = mapped_column(Integer, default=0)
     adopted: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -85,6 +88,7 @@ class PositionRow(Base):
 
     __table_args__ = (
         Index("idx_open", "strategy_id", "status", "symbol"),
+        Index("idx_client_order_id", "client_order_id"),
     )
 
 
@@ -110,10 +114,61 @@ class TradeRow(Base):
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     bars_held: Mapped[int] = mapped_column(Integer, default=0)
     reflected: Mapped[bool] = mapped_column(Boolean, default=False)
+    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    exit_client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
         Index("idx_trades_time", "strategy_id", "closed_at"),
         Index("idx_trades_symbol", "strategy_id", "symbol"),
+        Index("idx_trades_client_order_id", "client_order_id"),
+    )
+
+
+class StrikeRow(Base):
+    __tablename__ = "reconciliation_strikes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 'key' collides with SQL keyword in some dialects; SQLAlchemy quotes it.
+    key: Mapped[str] = mapped_column("key", String(128), nullable=False)
+    direction: Mapped[str] = mapped_column(
+        Enum("qty_drift", "mysql_only", "broker_only"), nullable=False
+    )
+    strategy_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("strategies.id"), nullable=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    strike_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_observed_state: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("idx_strikes_key", "key", "resolved"),
+        Index("idx_strikes_unresolved", "resolved", "last_seen_at"),
+    )
+
+
+class EventRow(Base):
+    __tablename__ = "reconciliation_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("strategies.id"), nullable=True
+    )
+    symbol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("idx_events_time", "created_at"),
+        Index("idx_events_type", "type", "created_at"),
     )
 
 
@@ -160,17 +215,63 @@ class MySQLStore:
         )
 
     def ensure_schema(self) -> None:
-        """Create tables if they don't exist. Idempotent. Also applies migrations."""
+        """Create tables if they don't exist. Idempotent. Also applies migrations.
+
+        For existing DBs we cannot rely on create_all to add new columns, so each
+        new column gets its own try/except ALTER. Order matters only for the
+        legacy_untagged backfill (must run after the column exists).
+        """
         Base.metadata.create_all(self._engine)
-        # Migration: add reflected column if it doesn't exist (for existing DBs)
+
+        migrations: list[str] = [
+            # trades.reflected — historic, kept for backwards compat
+            "ALTER TABLE trades ADD COLUMN reflected TINYINT(1) DEFAULT 0",
+            # positions: client_order_id columns + legacy_untagged
+            "ALTER TABLE positions ADD COLUMN client_order_id VARCHAR(128) DEFAULT NULL",
+            "ALTER TABLE positions ADD COLUMN exit_client_order_id VARCHAR(128) DEFAULT NULL",
+            "ALTER TABLE positions ADD COLUMN legacy_untagged TINYINT(1) DEFAULT 0",
+            "CREATE INDEX idx_client_order_id ON positions (client_order_id)",
+            # trades: client_order_id columns
+            "ALTER TABLE trades ADD COLUMN client_order_id VARCHAR(128) DEFAULT NULL",
+            "ALTER TABLE trades ADD COLUMN exit_client_order_id VARCHAR(128) DEFAULT NULL",
+            "CREATE INDEX idx_trades_client_order_id ON trades (client_order_id)",
+        ]
+        try:
+            with self._engine.connect() as conn:
+                for stmt in migrations:
+                    try:
+                        conn.execute(text(stmt))
+                        conn.commit()
+                    except Exception as exc:
+                        msg = str(exc).lower()
+                        if "duplicate column" in msg or "duplicate key" in msg:
+                            # Expected on already-applied / fresh DB; swallow.
+                            continue
+                        self._log.warning(
+                            "MYSQL_MIGRATION_UNEXPECTED stmt=%r err=%s",
+                            stmt, exc,
+                        )
+        except Exception as exc:
+            # Could not even open a connection — surface this loudly.
+            self._log.error(
+                "MYSQL_MIGRATION_CONNECT_FAILED: %s", exc, exc_info=True,
+            )
+
+        # One-shot backfill: any row currently open with no client_order_id
+        # is a pre-migration legacy position. Mark it so the reconciler service
+        # in Plan 3 treats it as alert-only and never auto-mutates it.
         try:
             with self._engine.connect() as conn:
                 conn.execute(text(
-                    "ALTER TABLE trades ADD COLUMN reflected TINYINT(1) DEFAULT 0"
+                    "UPDATE positions "
+                    "SET legacy_untagged = 1 "
+                    "WHERE status = 'open' "
+                    "AND client_order_id IS NULL "
+                    "AND legacy_untagged = 0"
                 ))
                 conn.commit()
-        except Exception:
-            pass  # Column already exists (or fresh DB from schema.sql)
+        except Exception as exc:
+            self._log.warning("MYSQL_LEGACY_BACKFILL_FAILED: %s", exc)
 
     def upsert_strategy(self) -> int:
         """INSERT (or get) the strategy row, return its id."""
