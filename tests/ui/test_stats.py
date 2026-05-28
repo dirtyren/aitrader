@@ -106,3 +106,63 @@ def test_compute_kpis_single_trade_returns_none_sharpe():
     df = _trades([{"pnl_usd": 100.0}])
     k = compute_kpis(df)
     assert k.sharpe is None  # need ≥2 daily samples
+
+
+from ui.data.stats import (
+    equity_curve, daily_pnl, r_distribution, winloss_by_setup,
+)
+
+
+def test_equity_curve_cumulative_sorted_by_close_time():
+    df = _trades([
+        {"pnl_usd": 50.0,
+         "closed_at": datetime(2026, 5, 2, 15, 0, tzinfo=timezone.utc)},
+        {"pnl_usd": 100.0,
+         "closed_at": datetime(2026, 5, 1, 15, 0, tzinfo=timezone.utc)},
+        {"pnl_usd": -30.0,
+         "closed_at": datetime(2026, 5, 3, 15, 0, tzinfo=timezone.utc)},
+    ])
+    eq = equity_curve(df)
+    assert list(eq.columns) == ["closed_at", "cum_pnl"]
+    assert list(eq["cum_pnl"]) == [100.0, 150.0, 120.0]
+
+
+def test_daily_pnl_groups_by_calendar_day():
+    df = _trades([
+        {"pnl_usd": 50.0,
+         "closed_at": datetime(2026, 5, 1, 14, 0, tzinfo=timezone.utc)},
+        {"pnl_usd": 30.0,
+         "closed_at": datetime(2026, 5, 1, 18, 0, tzinfo=timezone.utc)},
+        {"pnl_usd": -20.0,
+         "closed_at": datetime(2026, 5, 2, 10, 0, tzinfo=timezone.utc)},
+    ])
+    dp = daily_pnl(df)
+    assert list(dp.columns) == ["day", "pnl"]
+    assert len(dp) == 2
+    assert dp.iloc[0]["pnl"] == 80.0
+    assert dp.iloc[1]["pnl"] == -20.0
+
+
+def test_r_distribution_bins():
+    df = _trades([
+        {"R_realized": 1.0}, {"R_realized": 1.5}, {"R_realized": -0.5},
+        {"R_realized": -1.0}, {"R_realized": 2.5},
+    ])
+    series = r_distribution(df)
+    assert series.tolist() == [1.0, 1.5, -0.5, -1.0, 2.5]
+
+
+def test_winloss_by_setup_counts():
+    df = _trades([
+        {"setup_name": "vwap_bounce", "pnl_usd": 10.0},
+        {"setup_name": "vwap_bounce", "pnl_usd": -5.0},
+        {"setup_name": "orb",         "pnl_usd": 20.0},
+        {"setup_name": "orb",         "pnl_usd": 15.0},
+        {"setup_name": "orb",         "pnl_usd": -8.0},
+    ])
+    wl = winloss_by_setup(df)
+    # columns: setup_name, wins, losses
+    assert set(wl.columns) == {"setup_name", "wins", "losses"}
+    rows = {r["setup_name"]: (r["wins"], r["losses"]) for _, r in wl.iterrows()}
+    assert rows["vwap_bounce"] == (1, 1)
+    assert rows["orb"] == (2, 1)

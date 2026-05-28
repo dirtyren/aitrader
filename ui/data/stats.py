@@ -88,3 +88,46 @@ def _sharpe(df: pd.DataFrame) -> Optional[float]:
     if std == 0 or math.isnan(std):
         return None
     return float(daily.mean() / std * math.sqrt(252))
+
+
+def equity_curve(df: pd.DataFrame) -> pd.DataFrame:
+    """Cumulative PnL over time, ordered by closed_at."""
+    if df.empty:
+        return pd.DataFrame(columns=["closed_at", "cum_pnl"])
+    s = df.sort_values("closed_at").reset_index(drop=True)
+    return pd.DataFrame({
+        "closed_at": s["closed_at"],
+        "cum_pnl": s["pnl_usd"].astype(float).cumsum(),
+    })
+
+
+def daily_pnl(df: pd.DataFrame) -> pd.DataFrame:
+    """Sum PnL per calendar day (UTC), ordered ascending."""
+    if df.empty:
+        return pd.DataFrame(columns=["day", "pnl"])
+    g = (df.assign(day=pd.to_datetime(df["closed_at"]).dt.floor("D"))
+            .groupby("day")["pnl_usd"].sum().astype(float)
+            .reset_index().rename(columns={"pnl_usd": "pnl"}))
+    return g.sort_values("day").reset_index(drop=True)
+
+
+def r_distribution(df: pd.DataFrame) -> pd.Series:
+    """Raw R_realized values for histogram input. Empty Series if df empty."""
+    if df.empty:
+        return pd.Series([], dtype=float, name="R_realized")
+    return df["R_realized"].astype(float).reset_index(drop=True)
+
+
+def winloss_by_setup(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-setup wins (pnl > 0) and losses (pnl <= 0) counts."""
+    if df.empty:
+        return pd.DataFrame(columns=["setup_name", "wins", "losses"])
+    df2 = df.assign(
+        is_win=(df["pnl_usd"].astype(float) > 0).astype(int),
+        is_loss=(df["pnl_usd"].astype(float) <= 0).astype(int),
+    )
+    g = df2.groupby("setup_name").agg(
+        wins=("is_win", "sum"),
+        losses=("is_loss", "sum"),
+    ).reset_index()
+    return g
