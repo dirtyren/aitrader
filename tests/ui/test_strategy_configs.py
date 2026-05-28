@@ -209,3 +209,47 @@ def test_load_yaml_configs_missing_symbols_yields_empty_table(tmp_path):
     eq = next(a for a in cfg.asset_classes if a.name == "equity")
     assert eq.symbols == []
     assert eq.session_open_local == "09:30"
+
+
+def test_discover_strategies_merges_yaml_and_db(tmp_path, monkeypatch):
+    from ui.data import strategy_configs as sc
+
+    cfg_dir = tmp_path / "config"
+    _write_yaml(cfg_dir / "settings_orb.yaml", "system: {name: orb_trader}")
+    _write_yaml(cfg_dir / "settings_def.yaml", "system: {name: defined_only}")
+
+    monkeypatch.setattr(
+        sc, "_db_strategies",
+        lambda: ["orb_trader", "ghost_strategy"],
+    )
+
+    entries = sc.discover_strategies(cfg_dir)
+
+    by_name = {e.name: e for e in entries}
+    assert sorted(by_name) == ["defined_only", "ghost_strategy", "orb_trader"]
+    assert by_name["orb_trader"].status == "active"
+    assert by_name["orb_trader"].config is not None
+    assert by_name["defined_only"].status == "defined"
+    assert by_name["defined_only"].config is not None
+    assert by_name["ghost_strategy"].status == "db-only"
+    assert by_name["ghost_strategy"].config is None
+
+
+def test_discover_strategies_tolerates_db_error(tmp_path, monkeypatch, caplog):
+    import logging
+    from ui.data import strategy_configs as sc
+
+    cfg_dir = tmp_path / "config"
+    _write_yaml(cfg_dir / "settings_orb.yaml", "system: {name: orb_trader}")
+
+    def boom() -> list[str]:
+        raise RuntimeError("mysql is down")
+
+    monkeypatch.setattr(sc, "_db_strategies", boom)
+
+    with caplog.at_level(logging.WARNING, logger="dashboard"):
+        entries = sc.discover_strategies(cfg_dir)
+
+    assert [e.name for e in entries] == ["orb_trader"]
+    assert entries[0].status == "defined"
+    assert any("mysql" in rec.message.lower() for rec in caplog.records)

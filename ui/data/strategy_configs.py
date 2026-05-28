@@ -162,5 +162,33 @@ def load_yaml_configs(config_dir: Path = Path("config")) -> dict[str, StrategyCo
     return _load(config_dir).configs
 
 
+def _db_strategies() -> list[str]:
+    from ui.data.trades_repo import list_strategies
+    return list(list_strategies())
+
+
 def discover_strategies(config_dir: Path = Path("config")) -> list[StrategyEntry]:
-    raise NotImplementedError
+    configs = load_yaml_configs(config_dir)
+    yaml_names = set(configs.keys())
+    try:
+        db_names = set(_db_strategies())
+    except Exception as e:
+        logger.warning("MySQL strategies query failed (%s) — DB list treated as empty", e)
+        db_names = set()
+
+    entries: list[StrategyEntry] = []
+    for name in sorted(yaml_names | db_names):
+        in_yaml = name in yaml_names
+        in_db = name in db_names
+        if in_yaml and in_db:
+            status = "active"
+        elif in_yaml:
+            status = "defined"
+        else:
+            status = "db-only"
+        entries.append(StrategyEntry(
+            name=name,
+            status=status,
+            config=configs.get(name),
+        ))
+    return entries
