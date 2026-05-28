@@ -1,6 +1,12 @@
 # Pending hypotheses for the Opening Range Breakout (ORB) strategy
 # Deferred single-variable optimization hypotheses
 
+## Applied (2026-05-28):
+# Applied: setups.orb_vwap.target_R: 2.5 → 3.0
+#   Reasoning: The market is in a strong bull regime (confirmed by Markov regime classifier).
+#   To capitalize on strong trend follow-through and compensate for stopouts/unfilled trades,
+#   increasing target_R to 3.0 allows winning breakouts to run further and generate larger gains.
+
 ## Applied (2026-05-26):
 # Applied: acceptance.min_distance_atr: 0.25 → 0.15
 #   Reasoning: 5/6 trades reconciled_gone — breakout fires too deep in move,
@@ -13,7 +19,3 @@
 #    stop would reduce loss magnitude. BUT: current 0.75 is already tight;
 #    wait to see if min_distance fix produces fills first, then evaluate
 #    stop adequacy.
-
-# 2. [Bigger runners] target_R: 2.5 → 3.0
-#    Reasoning: If WR improves with better fills, need larger winners to
-#    compensate for remaining losers. Defer until fills improve.
