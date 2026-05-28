@@ -236,15 +236,26 @@ class MySQLStore:
             "ALTER TABLE trades ADD COLUMN exit_client_order_id VARCHAR(128) DEFAULT NULL",
             "CREATE INDEX idx_trades_client_order_id ON trades (client_order_id)",
         ]
-        for stmt in migrations:
-            try:
-                with self._engine.connect() as conn:
-                    conn.execute(text(stmt))
-                    conn.commit()
-            except Exception:
-                # Column / index already exists, or DB is fresh and create_all
-                # already provisioned it. Either is fine.
-                pass
+        try:
+            with self._engine.connect() as conn:
+                for stmt in migrations:
+                    try:
+                        conn.execute(text(stmt))
+                        conn.commit()
+                    except Exception as exc:
+                        msg = str(exc).lower()
+                        if "duplicate column" in msg or "duplicate key" in msg:
+                            # Expected on already-applied / fresh DB; swallow.
+                            continue
+                        self._log.warning(
+                            "MYSQL_MIGRATION_UNEXPECTED stmt=%r err=%s",
+                            stmt, exc,
+                        )
+        except Exception as exc:
+            # Could not even open a connection — surface this loudly.
+            self._log.error(
+                "MYSQL_MIGRATION_CONNECT_FAILED: %s", exc, exc_info=True,
+            )
 
         # One-shot backfill: any row currently open with no client_order_id
         # is a pre-migration legacy position. Mark it so the reconciler service
