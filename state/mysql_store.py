@@ -373,6 +373,7 @@ class MySQLStore:
         closed_at: datetime | None = None,
         setup_name: str | None = None,
         exit_client_order_id: str | None = None,
+        strategy_id: int | None = None,
     ) -> dict | None:
         """Close the open position for `symbol` (and optionally setup) and archive it to trades.
 
@@ -386,8 +387,9 @@ class MySQLStore:
             closed_at = datetime.now(timezone.utc)
 
         with Session(self._engine) as session:
+            target_strategy_id = strategy_id if strategy_id is not None else self.strategy_id
             q = session.query(PositionRow).filter(
-                PositionRow.strategy_id == self.strategy_id,
+                PositionRow.strategy_id == target_strategy_id,
                 PositionRow.symbol.in_(self._get_symbol_candidates(symbol)),
                 PositionRow.status == "open",
             )
@@ -427,7 +429,7 @@ class MySQLStore:
 
             # Archive to trades table
             trade = TradeRow(
-                strategy_id=self.strategy_id,
+                strategy_id=target_strategy_id,
                 symbol=row.symbol,
                 asset_class=row.asset_class,
                 setup_name=row.setup_name,
@@ -762,6 +764,100 @@ class MySQLStore:
                     )
             session.commit()
         return closed
+
+    def find_open_position_by_coid(self, client_order_id: str) -> "PositionRow | None":
+        """Return the open PositionRow with this entry COID, or None.
+
+        Used by the reconciler service to match Alpaca fills to MySQL rows.
+        Crosses strategies — does not filter by self.strategy_id.
+        """
+        with Session(self._engine) as session:
+            return session.query(PositionRow).filter(
+                PositionRow.client_order_id == client_order_id,
+                PositionRow.status == "open",
+            ).one_or_none()
+
+    def find_open_position_by_setup(
+        self, strategy_id: int, symbol: str, setup_name: str,
+    ) -> "PositionRow | None":
+        """Return the open PositionRow for (strategy_id, symbol, setup_name).
+
+        Crypto-symbol-form-aware (matches BTC/USD and BTCUSD).
+        """
+        candidates = self._get_symbol_candidates(symbol)
+        with Session(self._engine) as session:
+            return session.query(PositionRow).filter(
+                PositionRow.strategy_id == strategy_id,
+                PositionRow.symbol.in_(candidates),
+                PositionRow.setup_name == setup_name,
+                PositionRow.status == "open",
+            ).one_or_none()
+
+    def insert_position_from_fill(
+        self,
+        strategy_id: int,
+        setup_name: str,
+        symbol: str,
+        side: str,
+        qty: float,
+        entry_px: float,
+        opened_at: datetime,
+        asset_class: str,
+        client_order_id: str,
+    ) -> int:
+        """Insert a position row recovered from a tagged Alpaca entry fill.
+
+        Used when a strategy submitted an order, Alpaca filled it, but the
+        strategy crashed before writing position_opened() to MySQL. The COID
+        proves the strategy intended to open this position. Returns the new
+        row id. adopted=False because this is recovery, not adoption.
+        """
+        with Session(self._engine) as session:
+            row = PositionRow(
+                strategy_id=strategy_id,
+                symbol=symbol,
+                asset_class=asset_class,
+                side=side,
+                qty=Decimal(str(qty)),
+                entry_px=Decimal(str(entry_px)),
+                stop_px=None,
+                target_px=None,
+                initial_stop_px=None,
+                setup_name=setup_name,
+                order_id="",
+                client_order_id=client_order_id,
+                stop_order_id=None,
+                breakeven_moved=False,
+                bars_held=0,
+                adopted=False,
+                status="open",
+                opened_at=opened_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            self._log.info(
+                "MYSQL_FILL_RECOVERED strategy_id=%d symbol=%s setup=%s qty=%s coid=%s",
+                strategy_id, symbol, setup_name, qty, client_order_id,
+            )
+            return row.id
+
+    def sum_qty_by_symbol(self) -> dict[str, float]:
+        """Aggregate open qty per symbol across ALL strategies.
+
+        Crypto symbols are normalized to broker-flat form (BTC/USD → BTCUSD)
+        so multi-format storage doesn't double-count.
+        """
+        out: dict[str, float] = {}
+        with Session(self._engine) as session:
+            rows = session.query(
+                PositionRow.symbol, PositionRow.qty,
+            ).filter(PositionRow.status == "open").all()
+            for symbol, qty in rows:
+                # Normalize: any "X/Y" form collapses to "XY".
+                key = symbol.replace("/", "")
+                out[key] = out.get(key, 0.0) + float(qty)
+        return out
 
     def get_recent_trades(self, limit: int = 50) -> list[dict]:
         """Retrieve the most recent completed trades for this strategy."""
