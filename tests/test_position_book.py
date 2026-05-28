@@ -124,9 +124,6 @@ def test_symbol_normalization():
 
 
 def test_open_position_client_order_id_defaults_to_none():
-    from datetime import datetime, timezone
-    from state.position_book import OpenPosition
-
     pos = OpenPosition(
         symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
         entry_px=100.0, stop_px=99.0, target_px=101.0,
@@ -136,9 +133,6 @@ def test_open_position_client_order_id_defaults_to_none():
 
 
 def test_open_position_client_order_id_can_be_set():
-    from datetime import datetime, timezone
-    from state.position_book import OpenPosition
-
     pos = OpenPosition(
         symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
         entry_px=100.0, stop_px=99.0, target_px=101.0,
