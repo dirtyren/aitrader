@@ -8,7 +8,12 @@ if [ ! -f .env ]; then
   exit 1
 fi
 # shellcheck disable=SC1091
-. .env
+set -a
+. ./.env
+set +a
+
+: "${DASH_USER:?DASH_USER must be set in .env}"
+: "${DASH_PASSWORD:?DASH_PASSWORD must be set in .env}"
 
 assert() {
   local label="$1" expected="$2" actual="$3"
