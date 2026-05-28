@@ -230,9 +230,7 @@ services:
 
   nginx:
     build: ./nginx
-    environment:
-      - DASH_USER=${DASH_USER:-admin}
-      - DASH_PASSWORD=${DASH_PASSWORD:?DASH_PASSWORD must be set in .env}
+    env_file: ./config/.env
     ports:
       - "127.0.0.1:80:80"
       - "127.0.0.1:443:443"

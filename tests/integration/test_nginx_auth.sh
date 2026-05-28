@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Smoke test for the nginx reverse proxy.
-# Assumes the docker-compose stack is up and DASH_USER/DASH_PASSWORD are set in .env.
+# Assumes the docker-compose stack is up and DASH_USER/DASH_PASSWORD are set
+# in config/.env (the same file the nginx and trader services load).
 set -euo pipefail
 
-if [ ! -f .env ]; then
-  echo "FAIL: .env not found at repo root" >&2
+ENV_FILE="config/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "FAIL: $ENV_FILE not found" >&2
   exit 1
 fi
 # shellcheck disable=SC1091
 set -a
-. ./.env
+. "./$ENV_FILE"
 set +a
 
-: "${DASH_USER:?DASH_USER must be set in .env}"
-: "${DASH_PASSWORD:?DASH_PASSWORD must be set in .env}"
+: "${DASH_USER:?DASH_USER must be set in config/.env}"
+: "${DASH_PASSWORD:?DASH_PASSWORD must be set in config/.env}"
 
 assert() {
   local label="$1" expected="$2" actual="$3"
