@@ -457,7 +457,8 @@ def main():
         sizing_equity=sizing_eq, sizing_crypto=sizing_cr,
         ledger=ledger, book=book,
     )
-    executor = OrderExecutor(alpaca, book, logger=logger, mysql_store=mysql)
+    executor = OrderExecutor(alpaca, book, strategy_name=system_name,
+                             logger=logger, mysql_store=mysql)
 
     # When overrides exist, each symbol may want its own PositionManager. The
     # engine still receives a single PM; we wire a dispatcher that routes

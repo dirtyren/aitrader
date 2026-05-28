@@ -11,7 +11,7 @@ from state.position_book import OpenPosition, PositionBook
 def _make_executor():
     client = MagicMock()
     book = PositionBook()
-    ex = OrderExecutor(client, book, logger=MagicMock())
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     return ex, client
 
 
