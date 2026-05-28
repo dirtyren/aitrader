@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS positions (
     status          ENUM('open', 'closed') NOT NULL DEFAULT 'open',
     opened_at       TIMESTAMP(3) NOT NULL,
     closed_at       TIMESTAMP(3) DEFAULT NULL,
-    close_reason    VARCHAR(32) DEFAULT NULL,
+    close_reason    VARCHAR(32) DEFAULT NULL,     -- 'target', 'stop', 'time_stop', 'breakeven', 'manual', 'drift_adopted'
     exit_px         DECIMAL(20,8) DEFAULT NULL,
     pnl_usd         DECIMAL(20,8) DEFAULT NULL,
     R_realized      DECIMAL(20,8) DEFAULT NULL,
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS trades (
     opened_at       TIMESTAMP(3) NOT NULL,
     closed_at       TIMESTAMP(3) NOT NULL,
     bars_held       INT DEFAULT 0,
-    reflected       TINYINT(1) DEFAULT 0,
+    reflected       TINYINT(1) DEFAULT 0,     -- 1=already processed by optimizer reflection loop
     client_order_id      VARCHAR(128) DEFAULT NULL,
     exit_client_order_id VARCHAR(128) DEFAULT NULL,
     FOREIGN KEY (strategy_id) REFERENCES strategies(id),
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS reconciliation_strikes (
     resolved_at          TIMESTAMP(3) DEFAULT NULL,
     resolved_reason      VARCHAR(64) DEFAULT NULL,
     FOREIGN KEY (strategy_id) REFERENCES strategies(id),
-    UNIQUE KEY uq_open_key (`key`, resolved),
+    INDEX idx_strikes_key (`key`, resolved),
     INDEX idx_strikes_unresolved (resolved, last_seen_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
