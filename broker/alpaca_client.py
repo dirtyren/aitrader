@@ -213,16 +213,23 @@ class AlpacaClient:
         status: str = "open",
         symbols: list[str] | None = None,
         nested: bool = True,
+        after: datetime | None = None,
     ) -> list[dict]:
-        """GET /v2/orders — list orders, optionally filtered by status and symbols.
+        """GET /v2/orders — list orders, optionally filtered.
 
         nested=True returns child legs of bracket orders inside the parent's
         `legs` field; orphaned children whose parent has filled appear as
         top-level orders with `parent_id` set.
+
+        `after` (timezone-aware datetime) filters to orders updated/submitted
+        after the given timestamp. Used by the reconciler service to pull
+        fills since its last cycle.
         """
         params: dict = {"status": status, "nested": "true" if nested else "false"}
         if symbols:
             params["symbols"] = ",".join(symbols)
+        if after is not None:
+            params["after"] = after.isoformat()
         response = self._request("GET", "/v2/orders", params=params)
         return response.json()
 
