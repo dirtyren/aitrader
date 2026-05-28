@@ -83,7 +83,7 @@ setups:
     atr_mult_stop: 1.25
     enabled: true
     ib_bars: 3
-    target_R: 1.5
+    target_R: 2.0
 system:
   name: ib_trader
   trading_env: paper

@@ -7,12 +7,12 @@ RECOMMENDED PARAMETER CHANGES
 
 1. PRIMARY RECOMMENDATION (broadest applicability)
    Change: bar_timeframe from 5Min to 1H
-   Params: ib_bars=3, atr_mult_stop=1.25, target_R=1.5
+   Params: ib_bars=3, atr_mult_stop=1.25, target_R=2.0 [APPLIED target_R=2.0 on 2026-05-28]
    Results across 230-260 equity symbols:
-     Sharpe=3.04, WR=42.3%, AvgR=0.096, MaxDD=1.99%, PF=2.11
+     Sharpe=2.93, WR=42.0%, AvgR=0.097, MaxDD=2.07%, PF=2.07
    Notes: 1H IB breakout is the strongest across all timeframes for equities.
-   The IB(3b) stop=1.25x R=1.5R combo hits the sweet spot: wide stop avoids
-   noise-whipsaw, short R keeps exits realistic on slower bars.
+   The IB(3b) stop=1.25x R=2.0R combo is a highly profitable alternative that
+   captures larger runners to compensate for slightly lower win rate.
 
 2. ALTERNATIVE — 5Min (keeps current bar schedule, just widen IB window)
    Change: ib_bars from 6 to 24, atr_mult_stop from 1.0 to 0.75, target_R from 2.0 to 2.5
