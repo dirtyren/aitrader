@@ -14,7 +14,7 @@ import streamlit as st
 import yaml
 from streamlit_autorefresh import st_autorefresh
 
-from ui.logs_panel import render as render_logs
+from ui.tabs.logs_panel import render as render_logs
 
 st.set_page_config(page_title="VWAP Wave Multi-Strategy Dashboard", layout="wide")
 
