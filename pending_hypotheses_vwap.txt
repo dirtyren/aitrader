@@ -1,3 +1,5 @@
+Hypothesis 12: ✅ APPLIED 2026-05-28 — Increased price_discovery.target_R from 1.5 to 2.0. In a strong bull regime (confirmed by our 20-day rolling return Markov classifier), breakout/continuation moves tend to have greater momentum and extended follow-through. Raising the target_R allows the strategy to capture larger portions of these momentum moves, optimizing profit factor and avoiding cutting winning breakout trades short.
+
 Hypothesis 2: ✅ APPLIED 2026-05-25 — Increased vwap_bounce.arm_window_bars from 4 to 6 to capture slower retracements.
 Hypothesis 3: ❌ REMOVED 2026-05-25 — Stale; trend_majority param doesn't exist in current config.
 Hypothesis 4: Consider increasing opening_blackout_min for crypto from 15 to 30 — all reconciled_gone trades were crypto. May reduce startup reconciliation conflicts.
@@ -15,3 +17,4 @@ Hypothesis 12: ✅ APPLIED 2026-05-28 — Increased vwap_bounce.target_R from 2.
 
 Pending ideas:
 - Hyp7: If reconciled_gone persists at 0.20, force market orders for crypto entries. Alpaca crypto supports market orders which always fill; the tradeoff is slippage.
+- Hyp13: Increase setups.vwap_bounce.target_R from 2.0 to 2.5 in strong bull regime to allow reversion runners to extend further on trend days.
