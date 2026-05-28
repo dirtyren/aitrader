@@ -9,7 +9,7 @@ scheduler:
   poll_fallback_seconds: 60
 
 vwap:
-  sigma_bands: 1.0
+  sigma_bands: 1.5
   min_session_bars: 6
 
 acceptance:
