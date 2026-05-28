@@ -300,6 +300,7 @@ def _collect_snapshot(symbols, contexts, book, ledger, cb,
             "vwap": None if ctx.bar_count == 0 else ctx.vwap,
             "upper": None if ctx.bar_count == 0 else ctx.upper_band,
             "lower": None if ctx.bar_count == 0 else ctx.lower_band,
+            "last_price": None if ctx.bar_count == 0 else ctx.bars[-1].close,
             "open_position": None if pos is None else {
                 "side": pos.side, "qty": pos.qty,
                 "entry": pos.entry_px, "stop": pos.stop_px, "target": pos.target_px,
