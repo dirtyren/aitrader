@@ -29,7 +29,7 @@ from typing import Callable, Optional
 
 from sqlalchemy import (
     Column, Integer, String, Numeric, DateTime, Boolean, Enum, Index,
-    ForeignKey, Date, create_engine, text,
+    ForeignKey, Date, JSON, create_engine, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 from urllib.parse import quote_plus as urlquote
@@ -70,6 +70,9 @@ class PositionRow(Base):
     setup_name: Mapped[str] = mapped_column(String(64), nullable=False)
     order_id: Mapped[str] = mapped_column(String(64), default="")
     stop_order_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    exit_client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    legacy_untagged: Mapped[bool] = mapped_column(Boolean, default=False)
     breakeven_moved: Mapped[bool] = mapped_column(Boolean, default=False)
     bars_held: Mapped[int] = mapped_column(Integer, default=0)
     adopted: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -85,6 +88,7 @@ class PositionRow(Base):
 
     __table_args__ = (
         Index("idx_open", "strategy_id", "status", "symbol"),
+        Index("idx_client_order_id", "client_order_id"),
     )
 
 
@@ -110,10 +114,60 @@ class TradeRow(Base):
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     bars_held: Mapped[int] = mapped_column(Integer, default=0)
     reflected: Mapped[bool] = mapped_column(Boolean, default=False)
+    client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    exit_client_order_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
         Index("idx_trades_time", "strategy_id", "closed_at"),
         Index("idx_trades_symbol", "strategy_id", "symbol"),
+        Index("idx_trades_client_order_id", "client_order_id"),
+    )
+
+
+class StrikeRow(Base):
+    __tablename__ = "reconciliation_strikes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 'key' collides with SQL keyword in some dialects; SQLAlchemy quotes it.
+    key: Mapped[str] = mapped_column("key", String(128), nullable=False)
+    direction: Mapped[str] = mapped_column(
+        Enum("qty_drift", "mysql_only", "broker_only"), nullable=False
+    )
+    strategy_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("strategies.id"), nullable=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    strike_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_observed_state: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("idx_strikes_key", "key", "resolved"),
+        Index("idx_strikes_unresolved", "resolved", "last_seen_at"),
+    )
+
+
+class EventRow(Base):
+    __tablename__ = "reconciliation_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("strategies.id"), nullable=True
+    )
+    symbol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP(3)")
+    )
+
+    __table_args__ = (
+        Index("idx_events_time", "created_at"),
+        Index("idx_events_type", "type", "created_at"),
     )
 
 
