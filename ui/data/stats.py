@@ -66,13 +66,16 @@ def compute_kpis(df: pd.DataFrame) -> KPIs:
 
 
 def _max_drawdown(df: pd.DataFrame) -> float:
-    """Peak-to-trough drawdown of cumulative PnL, ordered by closed_at."""
+    """Peak-to-trough drawdown of cumulative PnL, ordered by closed_at.
+    Anchored at 0 so a series of pure losses produces the cumulative loss as drawdown.
+    """
     s = df.sort_values("closed_at")["pnl_usd"].astype(float).cumsum()
     if s.empty:
         return 0.0
+    s = pd.concat([pd.Series([0.0]), s], ignore_index=True)
     peak = s.cummax()
     drawdown = s - peak
-    return float(drawdown.min())  # most negative number, or 0 if no drawdown
+    return float(drawdown.min())
 
 
 def _sharpe(df: pd.DataFrame) -> Optional[float]:
