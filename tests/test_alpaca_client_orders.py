@@ -217,3 +217,15 @@ def test_submit_bracket_order_forwards_client_order_id():
         )
         body = req.call_args[1]["json"]
         assert body["client_order_id"] == coid
+
+
+def test_submit_bracket_order_omits_client_order_id_when_not_provided():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-1"})) as req:
+        client.submit_bracket_order(
+            symbol="AAPL", qty=10, side="buy",
+            limit_price=100.0, stop_loss=99.0, take_profit=102.0,
+        )
+        body = req.call_args[1]["json"]
+        assert "client_order_id" not in body

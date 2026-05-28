@@ -246,7 +246,7 @@ class AlpacaClient:
         }
         if limit_price is not None:
             payload["limit_price"] = _round_to_tick(limit_price)
-        if client_order_id is not None:
+        if client_order_id:
             payload["client_order_id"] = client_order_id
         response = self._request("POST", "/v2/orders", json=payload)
         return response.json()
@@ -274,7 +274,7 @@ class AlpacaClient:
             "stop_loss": {"stop_price": _round_to_tick(stop_loss)},
             "take_profit": {"limit_price": _round_to_tick(take_profit)},
         }
-        if client_order_id is not None:
+        if client_order_id:
             payload["client_order_id"] = client_order_id
         response = self._request("POST", "/v2/orders", json=payload)
         return response.json()
