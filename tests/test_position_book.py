@@ -122,3 +122,28 @@ def test_symbol_normalization():
     assert book.get("BTC/USD") is None
     assert book.was_just_exited("BTC/USD") is True
 
+
+def test_open_position_client_order_id_defaults_to_none():
+    from datetime import datetime, timezone
+    from state.position_book import OpenPosition
+
+    pos = OpenPosition(
+        symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
+        entry_px=100.0, stop_px=99.0, target_px=101.0,
+        opened_at=datetime(2026, 5, 28, tzinfo=timezone.utc), order_id="o1",
+    )
+    assert pos.client_order_id is None
+
+
+def test_open_position_client_order_id_can_be_set():
+    from datetime import datetime, timezone
+    from state.position_book import OpenPosition
+
+    pos = OpenPosition(
+        symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
+        entry_px=100.0, stop_px=99.0, target_px=101.0,
+        opened_at=datetime(2026, 5, 28, tzinfo=timezone.utc), order_id="o1",
+        client_order_id="aitrader__vwap_wave__vwap_bounce__AAPL__entry__abcd1234",
+    )
+    assert pos.client_order_id == "aitrader__vwap_wave__vwap_bounce__AAPL__entry__abcd1234"
+

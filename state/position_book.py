@@ -33,6 +33,7 @@ class OpenPosition:
     target_order_id: str | None = None    # limit order id for crypto TP
     initial_stop_px: float | None = None  # original stop at entry; survives breakeven moves
     adopted: bool = False                 # True for positions reconciled from broker
+    client_order_id: str | None = None     # COID stamped at order submit (Plan 2)
 
     @property
     def initial_risk_per_share(self) -> float:
