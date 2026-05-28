@@ -20,11 +20,12 @@ def test_write_dashboard_state_round_trips_payload(tmp_path: Path):
     snap = _snap(
         symbols=[
             {"symbol": "AAPL", "vwap": 100.5, "upper": 101.0, "lower": 100.0,
-             "regime": "Range", "open_position": None},
+             "last_price": 100.7, "regime": "Range", "open_position": None},
             {"symbol": "BTC/USD", "vwap": 50_100.0, "upper": 50_300.0, "lower": 49_900.0,
-             "regime": "Trend", "open_position": {"side": "long", "qty": 0.1,
-                                                  "entry": 50_000, "stop": 49_500,
-                                                  "target": 51_000}},
+             "last_price": 50_050.0, "regime": "Trend",
+             "open_position": {"side": "long", "qty": 0.1,
+                               "entry": 50_000, "stop": 49_500,
+                               "target": 51_000}},
         ],
         rejects=[
             {"filter": "consecutive_loss", "symbol": "AAPL",
@@ -38,6 +39,8 @@ def test_write_dashboard_state_round_trips_payload(tmp_path: Path):
     assert data["day_pnl"] == 100.0
     assert data["circuit_level"] == 0
     assert len(data["symbols"]) == 2
+    assert data["symbols"][0]["last_price"] == 100.7
+    assert data["symbols"][1]["last_price"] == 50_050.0
     assert data["symbols"][1]["open_position"]["side"] == "long"
     assert data["recent_filter_rejects"][0]["filter"] == "consecutive_loss"
     assert data["timestamp"] == "2026-05-14T14:00:00+00:00"
