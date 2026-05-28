@@ -234,6 +234,7 @@ class AlpacaClient:
         order_type: str = "market",
         time_in_force: str = "day",
         limit_price: float | None = None,
+        client_order_id: str | None = None,
     ) -> dict:
         """POST /v2/orders — submit a new order and return the order dict."""
         payload = {
@@ -245,6 +246,8 @@ class AlpacaClient:
         }
         if limit_price is not None:
             payload["limit_price"] = _round_to_tick(limit_price)
+        if client_order_id is not None:
+            payload["client_order_id"] = client_order_id
         response = self._request("POST", "/v2/orders", json=payload)
         return response.json()
 
@@ -257,6 +260,7 @@ class AlpacaClient:
         stop_loss: float,
         take_profit: float,
         time_in_force: str = "day",
+        client_order_id: str | None = None,
     ) -> dict:
         """POST /v2/orders with order_class='bracket' (entry as limit + OCO stop/target)."""
         payload = {
@@ -270,6 +274,8 @@ class AlpacaClient:
             "stop_loss": {"stop_price": _round_to_tick(stop_loss)},
             "take_profit": {"limit_price": _round_to_tick(take_profit)},
         }
+        if client_order_id is not None:
+            payload["client_order_id"] = client_order_id
         response = self._request("POST", "/v2/orders", json=payload)
         return response.json()
 
