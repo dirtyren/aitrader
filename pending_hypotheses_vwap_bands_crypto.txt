@@ -1,9 +1,10 @@
-# VWAP Bands Crypto Pending Hypotheses — May 27 2026
+# VWAP Bands Crypto Pending Hypotheses — May 28 2026
 
-## APPLIED (this cycle — 2026-05-27):
-- target_R: 1.5 → 2.0 — With the WR improving to 80% (4/5 wins) and realizing very large gains (average realized R of 2.99), the strategy is successfully capturing strong reversion moves in a bull regime. Increasing the target_R to 2.0 allows the strategy to capture larger run-ups, especially during strong trend/bull phases in crypto.
+## APPLIED (this cycle — 2026-05-28):
+- sigma: 2.5 → 2.6 — In active bull regimes, crypto assets exhibit high momentum and deep, sharp pullbacks. Increasing the entry deviation threshold from sigma 2.5 to 2.6 will refine our entries to only capture the most extreme exhaustion points, thereby reducing whipsaw stop-outs while preserving high-R reversion wins.
 
 ## PREVIOUSLY APPLIED (superseded by new symptom):
+- target_R: 1.5 → 2.0 — With the WR improving to 80% (4/5 wins) and realizing very large gains (average realized R of 2.99), the strategy is successfully capturing strong reversion moves in a bull regime. Increasing the target_R to 2.0 allows the strategy to capture larger run-ups, especially during strong trend/bull phases in crypto.
 - sigma: 2.0 → 2.5 — Despite the previous increase from 1.5 to 2.0, all 5 unreflected trades in a bull regime (long setups) stopped out immediately (0-2 bars held). This indicates that 2.0σ deviations on 5Min are still caught in localized crypto momentum noise before reversing. Moving to 2.5σ (optimal from the parameter sweep results) narrows the entries to deeper, more extreme deviations that have significantly higher reversion probabilities.
 - sigma: 1.5 → 2.0 — Previous fix (min_distance_atr 0.25→0.15) resolved the reconciled_gone fill issue, but now 4/5 trades are stopping at -1.0R immediately (0-4 bars held). Entries at 1.5σ on 5Min are not extreme enough in crypto — price continues past entry and hits 0.75xATR stop. Increasing sigma to 2.0 filters out noise entries, requiring deeper deviations with higher reversion probability.
 - min_distance_atr: 0.25 → 0.15 — Fixed reconciled_gone (fills now land). No longer relevant.
