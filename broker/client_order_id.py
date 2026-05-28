@@ -40,8 +40,10 @@ _VALID_ROLES = frozenset({Role.ENTRY, Role.EXIT, Role.STOP, Role.TARGET, Role.AD
 
 def _sanitize_strategy_or_setup(value: str, max_len: int) -> str:
     cleaned = _RE_STRATEGY_SETUP.sub("_", value.lower())
-    # Strip leading/trailing underscores to prevent collisions with the __ separator.
-    return cleaned.strip("_")[:max_len]
+    # Collapse runs of "_" so they cannot collide with the "__" separator,
+    # then strip leading/trailing "_" so segments never start or end with one.
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned[:max_len]
 
 
 def _sanitize_symbol(value: str) -> str:

@@ -115,6 +115,26 @@ def test_parse_round_trip():
     assert re.fullmatch(r"[0-9a-f]{8}", parsed["uuid"])
 
 
+def test_round_trip_with_dirty_inputs():
+    """make() outputs must always be parseable by parse(); raw inputs
+    survive sanitization without breaking round-trip."""
+    cases = [
+        # (raw_strategy, raw_setup, raw_symbol, expected_strategy, expected_setup, expected_symbol)
+        ("VWAP-Wave!",   "Setup.2",      "BTC/USD",  "vwap_wave",  "setup_2",      "BTCUSD"),
+        ("a__b",         "x__y",         "AAPL",     "a_b",        "x_y",          "AAPL"),
+        ("___strategy",  "setup___",     "AAPL",     "strategy",   "setup",        "AAPL"),
+        ("strat---name", "set!@#name",   "AAPL",     "strat_name", "set_name",     "AAPL"),
+    ]
+    for s, st, sym, exp_s, exp_st, exp_sym in cases:
+        coid = make_client_order_id(s, st, sym, Role.ENTRY)
+        parsed = parse_client_order_id(coid)
+        assert parsed is not None, f"COID not parseable: raw=({s!r},{st!r},{sym!r}) coid={coid!r}"
+        assert parsed["strategy"] == exp_s, f"strategy mismatch: got {parsed['strategy']!r} expected {exp_s!r}"
+        assert parsed["setup"] == exp_st,   f"setup mismatch: got {parsed['setup']!r} expected {exp_st!r}"
+        assert parsed["symbol"] == exp_sym, f"symbol mismatch: got {parsed['symbol']!r} expected {exp_sym!r}"
+        assert parsed["role"] == "entry"
+
+
 def test_parse_returns_none_for_non_aitrader_prefix():
     assert parse_client_order_id("foo__vwap_wave__bounce__AAPL__entry__abcd1234") is None
     assert parse_client_order_id("AITRADER__vwap_wave__bounce__AAPL__entry__abcd1234") is None
