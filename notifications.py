@@ -115,3 +115,47 @@ def send_position_open_alert(
     except requests.RequestException as exc:
         log.warning("TELEGRAM_NOTIFY_ERROR symbol=%s: %s", symbol, exc)
         return False
+
+
+def send_reconcile_alert(
+    direction: str,
+    symbol: str,
+    strategy_name: str | None,
+    snapshot: dict,
+    strike_count: int,
+    strike_threshold: int,
+) -> bool:
+    """Send a Telegram alert for a confirmed reconciliation anomaly.
+
+    Returns True if sent, False if Telegram is not configured.
+    """
+    token, chat_id = _load_telegram_config()
+    if token is None:
+        log.debug("RECONCILE_TELEGRAM_SKIPPED — TELEGRAM_BOT_TOKEN/CHAT_ID not set")
+        return False
+
+    severity = "🚨 FROZEN" if strike_count >= strike_threshold else "⚠️ STRIKE"
+    parts: list[str] = [
+        f"{severity} reconciliation: {direction} on {symbol}",
+        f"strike {strike_count}/{strike_threshold}",
+    ]
+    if strategy_name:
+        parts.insert(1, f"strategy={strategy_name}")
+    if "mysql_sum" in snapshot:
+        parts.append(f"mysql_sum={snapshot.get('mysql_sum')}")
+    if "broker_qty" in snapshot:
+        parts.append(f"broker_qty={snapshot.get('broker_qty')}")
+    if "mysql_qty" in snapshot:
+        parts.append(f"mysql_qty={snapshot.get('mysql_qty')}")
+
+    text = "\n".join(parts)
+    try:
+        resp = requests.post(
+            _TELEGRAM_API.format(token=token),
+            json={"chat_id": chat_id, "text": text},
+            timeout=5,
+        )
+        return resp.ok
+    except Exception as exc:
+        log.warning("RECONCILE_TELEGRAM_FAILED err=%s", exc)
+        return False

@@ -49,3 +49,24 @@ def test_list_orders_returns_parsed_json():
     client = _make_client_with_response(payload)
     result = client.list_orders()
     assert result == payload
+
+
+def test_list_orders_forwards_after_parameter():
+    """`after` is sent as the `after` query param when provided."""
+    from datetime import datetime, timezone
+    client = _make_client_with_response([])
+    after_ts = datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc)
+    client.list_orders(status="closed", after=after_ts, nested=True)
+    _, kwargs = client._request.call_args
+    params = kwargs["params"]
+    # Alpaca expects ISO 8601 — confirm a string starting with the date
+    assert "after" in params
+    assert params["after"].startswith("2026-05-28T14:00:00")
+
+
+def test_list_orders_omits_after_when_not_provided():
+    client = _make_client_with_response([])
+    client.list_orders(status="open")
+    _, kwargs = client._request.call_args
+    params = kwargs["params"]
+    assert "after" not in params

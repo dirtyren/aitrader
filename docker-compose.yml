@@ -207,6 +207,32 @@ services:
       mysql:
         condition: service_healthy
 
+  reconciler:
+    build: .
+    command: python -m reconciler.main
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+      - RECONCILE_INTERVAL_S=${RECONCILE_INTERVAL_S:-30}
+      - RECONCILE_STRIKE_THRESHOLD=${RECONCILE_STRIKE_THRESHOLD:-3}
+      - RECONCILE_STRIKE_MIN_GAP_S=${RECONCILE_STRIKE_MIN_GAP_S:-60}
+      - RECONCILE_QTY_EPS=${RECONCILE_QTY_EPS:-1e-6}
+      - SHADOW_MODE=${SHADOW_MODE:-true}
+      - RECONCILE_STATE_FILE=/app/runtime/reconciler_state.json
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
   dashboard:
     build: .
     command: streamlit run ui/dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
