@@ -399,8 +399,8 @@ class MySQLStore:
 
             if row is None:
                 self._log.warning(
-                    "MYSQL_CLOSE_NOT_FOUND symbol=%s strategy=%s",
-                    symbol, self.strategy_name,
+                    "MYSQL_CLOSE_NOT_FOUND symbol=%s strategy=%s strategy_id=%d",
+                    symbol, self.strategy_name, target_strategy_id,
                 )
                 return None
 
@@ -770,6 +770,10 @@ class MySQLStore:
 
         Used by the reconciler service to match Alpaca fills to MySQL rows.
         Crosses strategies — does not filter by self.strategy_id.
+
+        NOTE: returned object is detached from its session — access scalar
+        columns (symbol, strategy_id, etc.) safely; do NOT access lazy
+        relationships like `.strategy` (raises DetachedInstanceError).
         """
         with Session(self._engine) as session:
             return session.query(PositionRow).filter(
@@ -783,6 +787,10 @@ class MySQLStore:
         """Return the open PositionRow for (strategy_id, symbol, setup_name).
 
         Crypto-symbol-form-aware (matches BTC/USD and BTCUSD).
+
+        NOTE: returned object is detached from its session — access scalar
+        columns (symbol, strategy_id, etc.) safely; do NOT access lazy
+        relationships like `.strategy` (raises DetachedInstanceError).
         """
         candidates = self._get_symbol_candidates(symbol)
         with Session(self._engine) as session:
@@ -846,9 +854,11 @@ class MySQLStore:
         """Aggregate open qty per symbol across ALL strategies.
 
         Crypto symbols are normalized to broker-flat form (BTC/USD → BTCUSD)
-        so multi-format storage doesn't double-count.
+        so multi-format storage doesn't double-count. Accumulates as Decimal
+        for precision parity with sum_qty_across_strategies, converting to
+        float only at the boundary.
         """
-        out: dict[str, float] = {}
+        out: dict[str, Decimal] = {}
         with Session(self._engine) as session:
             rows = session.query(
                 PositionRow.symbol, PositionRow.qty,
@@ -856,8 +866,8 @@ class MySQLStore:
             for symbol, qty in rows:
                 # Normalize: any "X/Y" form collapses to "XY".
                 key = symbol.replace("/", "")
-                out[key] = out.get(key, 0.0) + float(qty)
-        return out
+                out[key] = out.get(key, Decimal("0")) + qty
+        return {k: float(v) for k, v in out.items()}
 
     def get_recent_trades(self, limit: int = 50) -> list[dict]:
         """Retrieve the most recent completed trades for this strategy."""
