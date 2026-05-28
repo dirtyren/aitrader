@@ -869,6 +869,141 @@ class MySQLStore:
                 out[key] = out.get(key, Decimal("0")) + qty
         return {k: float(v) for k, v in out.items()}
 
+    def list_unresolved_strikes(self) -> list["StrikeRow"]:
+        """Return all unresolved reconciliation strikes, newest last_seen first."""
+        with Session(self._engine) as session:
+            rows = session.query(StrikeRow).filter(
+                StrikeRow.resolved == False,  # noqa: E712
+            ).order_by(StrikeRow.last_seen_at.desc()).all()
+            for r in rows:
+                session.expunge(r)
+            return rows
+
+    def get_strike_by_id(self, strike_id: int) -> "StrikeRow | None":
+        """Return the StrikeRow with this id, or None.
+
+        NOTE: returned object is detached — access scalar columns only.
+        """
+        with Session(self._engine) as session:
+            row = session.query(StrikeRow).filter(
+                StrikeRow.id == strike_id,
+            ).one_or_none()
+            if row is not None:
+                session.expunge(row)
+            return row
+
+    def resolve_strike(
+        self, strike_id: int, *, reason: str, operator_note: str,
+    ) -> bool:
+        """Flip a strike to resolved with operator-supplied reason.
+
+        Writes an `operator_action` event for audit trail. Returns False
+        if the strike doesn't exist or is already resolved.
+        """
+        with Session(self._engine) as session:
+            row = session.query(StrikeRow).filter(
+                StrikeRow.id == strike_id,
+            ).one_or_none()
+            if row is None or row.resolved:
+                return False
+            row.resolved = True
+            row.resolved_at = datetime.now(timezone.utc)
+            row.resolved_reason = reason
+            session.add(EventRow(
+                type="operator_action",
+                strategy_id=row.strategy_id,
+                symbol=row.symbol,
+                payload={
+                    "strike_id": strike_id,
+                    "key": row.key,
+                    "direction": row.direction,
+                    "resolved_reason": reason,
+                    "operator_note": operator_note,
+                },
+            ))
+            session.commit()
+            return True
+
+    def recent_events(self, limit: int = 50) -> list["EventRow"]:
+        """Most recent reconciliation_events rows, newest first."""
+        with Session(self._engine) as session:
+            rows = session.query(EventRow).order_by(
+                EventRow.created_at.desc(),
+            ).limit(limit).all()
+            for r in rows:
+                session.expunge(r)
+            return rows
+
+    def events_for_strike(
+        self, strike: "StrikeRow", limit: int = 20,
+    ) -> list["EventRow"]:
+        """Recent events that share this strike's symbol (and strategy_id, if set).
+
+        For qty_drift / broker_only strikes (strategy_id=None), filters by symbol
+        only. For mysql_only strikes (strategy_id set), filters by both —
+        events with strategy_id=None (e.g. heartbeats) are also included.
+        """
+        with Session(self._engine) as session:
+            q = session.query(EventRow).filter(
+                EventRow.symbol == strike.symbol,
+            )
+            if strike.strategy_id is not None:
+                q = q.filter(
+                    (EventRow.strategy_id == strike.strategy_id)
+                    | (EventRow.strategy_id.is_(None))
+                )
+            rows = q.order_by(EventRow.created_at.desc()).limit(limit).all()
+            for r in rows:
+                session.expunge(r)
+            return rows
+
+    def insert_adopted_position(
+        self,
+        strategy_id: int,
+        setup_name: str,
+        symbol: str,
+        side: str,
+        qty: float,
+        entry_px: float,
+        opened_at: datetime,
+        asset_class: str,
+        client_order_id: str,
+    ) -> int:
+        """Insert a position row for an operator-adopted broker_only orphan.
+
+        Same shape as insert_position_from_fill but with adopted=True.
+        Used by `scripts/reconcile_resolve.py adopt`.
+        """
+        with Session(self._engine) as session:
+            row = PositionRow(
+                strategy_id=strategy_id,
+                symbol=symbol,
+                asset_class=asset_class,
+                side=side,
+                qty=Decimal(str(qty)),
+                entry_px=Decimal(str(entry_px)),
+                stop_px=None,
+                target_px=None,
+                initial_stop_px=None,
+                setup_name=setup_name,
+                order_id="",
+                client_order_id=client_order_id,
+                stop_order_id=None,
+                breakeven_moved=False,
+                bars_held=0,
+                adopted=True,
+                status="open",
+                opened_at=opened_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            self._log.info(
+                "MYSQL_OPERATOR_ADOPTED strategy_id=%d symbol=%s setup=%s qty=%s coid=%s",
+                strategy_id, symbol, setup_name, qty, client_order_id,
+            )
+            return row.id
+
     def get_recent_trades(self, limit: int = 50) -> list[dict]:
         """Retrieve the most recent completed trades for this strategy."""
         with Session(self._engine) as session:
