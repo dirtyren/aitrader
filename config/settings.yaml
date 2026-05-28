@@ -44,7 +44,7 @@ setups:
   vwap_bounce:
     enabled: true
     atr_mult_stop: 1.25
-    target_R: 2.0
+    target_R: 2.5
     arm_window_bars: 6
     cooldown_bars: 8
 
