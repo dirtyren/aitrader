@@ -8,6 +8,7 @@ import streamlit as st
 
 from ui.data.positions_repo import get_open
 from ui.data.state_files import get_last_price
+from ui.data.trades_repo import list_strategies
 
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
@@ -51,18 +52,34 @@ def render() -> None:
 
     try:
         df = get_open()
+        all_strategies = sorted(list_strategies())
     except Exception as e:
         st.error(f"MySQL unreachable: {e}")
         st.stop()
         return
 
+    open_strategies = sorted(df["strategy"].unique().tolist()) if not df.empty else []
+    options = sorted(set(all_strategies) | set(open_strategies))
+
+    if not options:
+        st.info("No strategies registered yet.")
+        return
+
+    selected = st.multiselect(
+        "Filter strategies",
+        options=options,
+        default=options,
+        key="live_strategy_filter",
+    )
+
     if df.empty:
         st.info("No open positions across any strategy.")
         return
 
-    strategies = sorted(df["strategy"].unique().tolist())
-    selected = st.multiselect("Filter strategies", options=strategies, default=strategies)
     df = df[df["strategy"].isin(selected)]
+    if df.empty:
+        st.info("No open positions for the selected strategies.")
+        return
 
     enriched = _enrich(df)
 
