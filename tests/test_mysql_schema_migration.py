@@ -7,7 +7,6 @@ the statements it would execute.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine, inspect
@@ -146,8 +145,16 @@ def test_ensure_schema_executes_all_expected_alters(monkeypatch, store_with_mock
     assert "ALTER TABLE trades ADD COLUMN exit_client_order_id" in executed
     assert "CREATE INDEX idx_client_order_id ON positions" in executed
     assert "CREATE INDEX idx_trades_client_order_id ON trades" in executed
-    # Backfill must run
-    assert "UPDATE positions" in executed and "legacy_untagged = 1" in executed
+    # Backfill must run and include all idempotency guards
+    update_stmt = next(
+        (s for s in store_with_mock_engine._engine.conn.executed if "UPDATE positions" in s),
+        None,
+    )
+    assert update_stmt is not None, "Backfill UPDATE missing"
+    assert "legacy_untagged = 1" in update_stmt
+    assert "status = 'open'" in update_stmt
+    assert "client_order_id IS NULL" in update_stmt
+    assert "legacy_untagged = 0" in update_stmt
 
 
 def test_ensure_schema_swallows_duplicate_column_errors(monkeypatch, store_with_mock_engine):
@@ -174,3 +181,51 @@ def test_ensure_schema_runs_legacy_backfill_after_alters(monkeypatch, store_with
         None,
     )
     assert update_idx is not None, "legacy backfill UPDATE was not executed"
+
+
+class _GenericFailingEngine:
+    """Engine whose connection raises a non-duplicate-column error on every execute."""
+
+    class _Conn:
+        def __init__(self):
+            self.executed: list[str] = []
+
+        def execute(self, stmt):
+            self.executed.append(str(stmt))
+            raise Exception("Table is full (simulated)")
+
+        def commit(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def __init__(self):
+        self.conn = self._Conn()
+
+    def connect(self):
+        return self.conn
+
+
+def test_ensure_schema_logs_unexpected_errors_as_warning(monkeypatch, caplog):
+    """Non-duplicate-column errors must be logged as warnings, not silently swallowed."""
+    import logging
+
+    store = MySQLStore.__new__(MySQLStore)
+    store.strategy_name = "test"
+    store._strategy_id = None
+    store._log = logging.getLogger("test_unexpected")
+    store._engine = _GenericFailingEngine()
+
+    monkeypatch.setattr(Base.metadata, "create_all", lambda _engine: None)
+
+    with caplog.at_level(logging.WARNING, logger="test_unexpected"):
+        store.ensure_schema()  # must not raise
+
+    warning_messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("MYSQL_MIGRATION_UNEXPECTED" in m for m in warning_messages), (
+        f"Expected MYSQL_MIGRATION_UNEXPECTED warning, got: {warning_messages}"
+    )
