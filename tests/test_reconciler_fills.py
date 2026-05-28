@@ -205,3 +205,76 @@ def test_tagged_fill_for_unknown_strategy_writes_untagged(store):
     with Session(store._engine) as session:
         assert _events(session) == ["untagged_fill"]
         assert session.query(PositionRow).count() == 0
+
+
+def test_tagged_adopted_role_treated_like_entry(store):
+    """role=adopted (reconciler-tagged orphan) follows the same path as entry."""
+    coid = _coid(role="adopted")
+    fill = _filled_order(coid=coid)
+    with Session(store._engine) as session:
+        apply_tagged_fill(session, fill, store)
+        session.commit()
+    with Session(store._engine) as session:
+        rows = session.query(PositionRow).all()
+        assert len(rows) == 1
+        assert rows[0].client_order_id == coid
+        assert rows[0].adopted is False
+        # We don't mark recovered rows as adopted; the adopted=True flag is
+        # only set when state/reconciler.py adopts a truly orphan position.
+        assert _events(session) == ["tagged_entry_inserted"]
+
+
+def test_tagged_stop_role_closes_position(store):
+    """role=stop (equity bracket stop fill) closes the position like exit."""
+    entry_coid = _coid(role="entry")
+    pos = OpenPosition(
+        symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
+        entry_px=100.0, stop_px=99.0, target_px=101.0,
+        opened_at=datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
+        order_id="o1", initial_stop_px=99.0, client_order_id=entry_coid,
+    )
+    store.position_opened(pos, "equity")
+
+    stop_coid = _coid(role="stop", uuid="abad1dea")
+    fill = _filled_order(
+        coid=stop_coid, side="sell", filled_avg_price="98.50",
+    )
+    with Session(store._engine) as session:
+        apply_tagged_fill(session, fill, store)
+        session.commit()
+    with Session(store._engine) as session:
+        pos_row = session.query(PositionRow).one()
+        assert pos_row.status == "closed"
+        assert pos_row.exit_client_order_id == stop_coid
+        assert pos_row.close_reason == "broker_fill"
+
+
+def test_tagged_entry_with_zero_qty_writes_untagged_event_no_row(store):
+    """Defensive: corrupt fill data must not produce a zero-qty position row."""
+    coid = _coid(role="entry")
+    fill = _filled_order(coid=coid, qty="0", filled_avg_price="100.00")
+    with Session(store._engine) as session:
+        apply_tagged_fill(session, fill, store)
+        session.commit()
+    with Session(store._engine) as session:
+        # No position created
+        assert session.query(PositionRow).count() == 0
+        # Event written with the diagnostic reason
+        events = session.query(EventRow).all()
+        assert len(events) == 1
+        assert events[0].type == "untagged_fill"
+        assert events[0].payload.get("reason") == "missing_fill_data"
+
+
+def test_tagged_entry_with_missing_avg_price_writes_untagged_event_no_row(store):
+    coid = _coid(role="entry")
+    fill = _filled_order(coid=coid, qty="1")
+    fill.pop("filled_avg_price")
+    with Session(store._engine) as session:
+        apply_tagged_fill(session, fill, store)
+        session.commit()
+    with Session(store._engine) as session:
+        assert session.query(PositionRow).count() == 0
+        events = session.query(EventRow).all()
+        assert len(events) == 1
+        assert events[0].payload.get("reason") == "missing_fill_data"

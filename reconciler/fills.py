@@ -1,7 +1,7 @@
 """Apply a single Alpaca filled order to the MySQL state.
 
 Pure function (modulo the SQLAlchemy session it receives). The caller owns
-session lifecycle (session.commit) and the loop loop.
+session lifecycle (session.commit).
 
 Decision tree:
     - COID missing or unparseable             → untagged_fill event, no mutation.
@@ -90,9 +90,28 @@ def apply_tagged_fill(
         if existing is not None:
             return  # idempotent noop, already applied
         # Crash-before-write recovery: insert the row.
+        try:
+            qty = float(fill.get("filled_qty") or 0)
+            entry_px = float(fill.get("filled_avg_price") or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+            entry_px = 0.0
+        if qty <= 0 or entry_px <= 0:
+            emit_event(
+                session,
+                type="untagged_fill",
+                strategy_id=strategy_id,
+                symbol=symbol,
+                payload={
+                    "alpaca_id": fill.get("id"),
+                    "client_order_id": coid,
+                    "reason": "missing_fill_data",
+                    "filled_qty": fill.get("filled_qty"),
+                    "filled_avg_price": fill.get("filled_avg_price"),
+                },
+            )
+            return
         side = "long" if fill.get("side") == "buy" else "short"
-        qty = float(fill.get("filled_qty") or 0)
-        entry_px = float(fill.get("filled_avg_price") or 0)
         opened_at = _parse_fill_time(fill.get("filled_at"))
         asset_class = "crypto" if fill.get("asset_class") == "crypto" else "equity"
         store.insert_position_from_fill(
