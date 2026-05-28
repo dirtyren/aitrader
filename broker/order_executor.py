@@ -83,12 +83,12 @@ class OrderExecutor:
             return None
 
         alp_side = self._alpaca_side(signal.side)
+        entry_coid = make_client_order_id(
+            self.strategy_name, signal.setup, signal.symbol, Role.ENTRY,
+        )
 
         try:
             if asset_class == "equity":
-                entry_coid = make_client_order_id(
-                    self.strategy_name, signal.setup, signal.symbol, Role.ENTRY,
-                )
                 order = self.client.submit_bracket_order(
                     symbol=signal.symbol,
                     qty=decision.qty,
@@ -100,9 +100,6 @@ class OrderExecutor:
                     client_order_id=entry_coid,
                 )
             elif asset_class == "crypto":
-                entry_coid = make_client_order_id(
-                    self.strategy_name, signal.setup, signal.symbol, Role.ENTRY,
-                )
                 # Crypto: market entry + engine-managed virtual stop/target
                 order = self.client.submit_order(
                     symbol=signal.symbol,
@@ -194,6 +191,12 @@ class OrderExecutor:
         setup owned the position. Plan 3's reconciler service supersedes this
         exit path and will use the real setup. The sanitizer strips the leading
         underscore, so the parsed setup is 'unknown'.
+
+        NOTE: The exit COID is sent to Alpaca but is NOT yet persisted to the
+        MySQL trades.exit_client_order_id column. The current MySQL close path
+        in scheduler/loop.py omits this kwarg. Plan 3's reconciler service will
+        back-fill exit_client_order_id by matching Alpaca filled orders to MySQL
+        rows via the COID, so this asymmetry is acceptable during rollout.
         """
         exit_coid = make_client_order_id(
             self.strategy_name, "_unknown", symbol, Role.EXIT,

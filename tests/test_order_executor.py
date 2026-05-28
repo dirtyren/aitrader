@@ -1,4 +1,5 @@
 import logging
+import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from broker.alpaca_client import InsufficientBuyingPowerError
@@ -332,3 +333,8 @@ def test_close_position_passes_role_exit_coid():
     coid = client.submit_order.call_args.kwargs["client_order_id"]
     # Setup constant "_unknown" is sanitized to "unknown" by the COID format helper.
     assert coid.startswith("aitrader__vwap_wave__unknown__BTCUSD__exit__")
+
+
+def test_empty_strategy_name_raises():
+    with pytest.raises(ValueError, match="non-empty strategy_name"):
+        OrderExecutor(MagicMock(), PositionBook(), strategy_name="")
