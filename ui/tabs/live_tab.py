@@ -95,4 +95,24 @@ def render() -> None:
         "unrealized": "Unrealized PnL", "R_so_far": "R so far",
         "stop_px": "Stop", "target_px": "Target", "age": "Age",
     })
-    st.dataframe(show, use_container_width=True, hide_index=True)
+    styled = show.style.map(_pnl_color, subset=["Unrealized PnL"])
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+def _pnl_color(value) -> str:
+    """Tailwind-ish red for negative PnL, blue for positive, neutral otherwise.
+
+    Streamlit's default theme is dark, so we pick saturated foreground colors
+    rather than backgrounds — matches the existing financial-dashboard look.
+    """
+    if value is None or pd.isna(value):
+        return ""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if v > 0:
+        return "color: #3b82f6; font-weight: 600"  # blue-500
+    if v < 0:
+        return "color: #ef4444; font-weight: 600"  # red-500
+    return ""
