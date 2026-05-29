@@ -211,6 +211,24 @@ def test_load_yaml_configs_missing_symbols_yields_empty_table(tmp_path):
     assert eq.session_open_local == "09:30"
 
 
+def test_list_yaml_strategy_names_returns_sorted_system_names(tmp_path):
+    from ui.data import strategy_configs as sc
+
+    cfg_dir = tmp_path / "config"
+    _write_yaml(cfg_dir / "settings_b.yaml", "system: {name: zzz_trader}")
+    _write_yaml(cfg_dir / "settings_a.yaml", "system: {name: aaa_trader}")
+
+    assert sc.list_yaml_strategy_names(cfg_dir) == ["aaa_trader", "zzz_trader"]
+
+
+def test_list_yaml_strategy_names_empty_dir_returns_empty_list(tmp_path):
+    from ui.data import strategy_configs as sc
+
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    assert sc.list_yaml_strategy_names(cfg_dir) == []
+
+
 def test_discover_strategies_merges_yaml_and_db(tmp_path, monkeypatch):
     from ui.data import strategy_configs as sc
 
