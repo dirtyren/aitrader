@@ -32,7 +32,14 @@ def test_submit_equity_uses_bracket_order():
     assert payload["take_profit"] == 102
 
 
-def test_submit_crypto_uses_market_order_and_virtual_stop():
+def test_submit_crypto_uses_market_order_and_virtual_stop_and_target():
+    """Crypto: market entry only — stop AND target are engine-virtual.
+
+    The previous behavior (immediate limit TP after entry) was removed
+    because Alpaca rejects the second order as a wash trade, leaving the
+    broker holding a phantom position once the engine virtual-target
+    closed it on its side. Both exits now route through close_position().
+    """
     client = MagicMock()
     client.submit_order.return_value = {"id": "ord-2"}
     book = PositionBook()
@@ -41,13 +48,15 @@ def test_submit_crypto_uses_market_order_and_virtual_stop():
     sig = _signal(symbol="BTC/USD", side="long")
     pos = ex.submit(sig, decision, asset_class="crypto")
     assert pos is not None
-    assert client.submit_order.call_count == 2  # market entry + limit TP
-    first_call = client.submit_order.call_args_list[0]
-    payload = first_call.kwargs
+    # Exactly one broker call — the market entry. No follow-up TP.
+    assert client.submit_order.call_count == 1
+    payload = client.submit_order.call_args.kwargs
     assert payload["symbol"] == "BTC/USD"
     assert payload["order_type"] == "market"
-    # Virtual stop is tracked in the book
+    # Stop and target are tracked in the book; broker has no resting orders.
     assert book.get("BTC/USD").stop_px == 99
+    assert book.get("BTC/USD").target_px == 102
+    assert book.get("BTC/USD").target_order_id is None
 
 
 def test_submit_returns_none_when_rejected():
@@ -169,7 +178,7 @@ def test_dtbp_short_circuit_does_not_block_crypto_submits():
     pos = ex.submit(_signal(symbol="BTC/USD", side="long"), decision,
                     asset_class="crypto")
     assert pos is not None
-    assert client.submit_order.call_count == 2  # market entry + limit TP
+    assert client.submit_order.call_count == 1  # market entry only
 
 
 def test_reset_cycle_clears_dtbp_short_circuit():
@@ -297,8 +306,9 @@ def test_submit_equity_passes_coid_to_bracket_order():
     assert pos.client_order_id == coid
 
 
-def test_submit_crypto_passes_coid_to_market_order_and_tp_limit():
-    """Crypto submit mints role=entry on market entry and role=target on TP limit."""
+def test_submit_crypto_passes_role_entry_coid_to_market_order():
+    """Crypto entry mints role=entry on the market order. No TP limit is
+    submitted (target is engine-virtual since the wash-trade fix)."""
     client = MagicMock()
     client.submit_order.return_value = {"id": "ord-2"}
     book = PositionBook()
@@ -308,15 +318,9 @@ def test_submit_crypto_passes_coid_to_market_order_and_tp_limit():
     pos = ex.submit(_signal(symbol="BTC/USD", side="long"), decision, asset_class="crypto")
 
     assert pos is not None
-    assert client.submit_order.call_count == 2
-    entry_call = client.submit_order.call_args_list[0]
-    tp_call = client.submit_order.call_args_list[1]
-
-    entry_coid = entry_call.kwargs["client_order_id"]
-    tp_coid = tp_call.kwargs["client_order_id"]
+    assert client.submit_order.call_count == 1
+    entry_coid = client.submit_order.call_args.kwargs["client_order_id"]
     assert entry_coid.startswith("aitrader__vwap_wave__price_discovery__BTCUSD__entry__")
-    assert tp_coid.startswith("aitrader__vwap_wave__price_discovery__BTCUSD__target__")
-    # Position carries the entry COID, not the TP one
     assert pos.client_order_id == entry_coid
 
 
@@ -333,6 +337,59 @@ def test_close_position_passes_role_exit_coid():
     coid = client.submit_order.call_args.kwargs["client_order_id"]
     # Setup constant "_unknown" is sanitized to "unknown" by the COID format helper.
     assert coid.startswith("aitrader__vwap_wave__unknown__BTCUSD__exit__")
+
+
+def test_close_position_insufficient_balance_triggers_qty_reconcile():
+    """Alpaca crypto closes return 'insufficient balance for <asset>' when
+    the trader-book qty exceeds on-broker qty (fees came out of asset side).
+    Must trigger the qty-reconcile fallback, not just log CLOSE_FAILED.
+    """
+    from broker.alpaca_client import InsufficientBuyingPowerError
+
+    client = MagicMock()
+    # First submit (with stale book qty) raises insufficient_balance.
+    # Fallback re-submits at the broker's reported qty — that one succeeds.
+    client.submit_order.side_effect = [
+        InsufficientBuyingPowerError(
+            403, "insufficient balance for SOL "
+                 "(requested: 1233.09915901, available: 1230.318126774)",
+        ),
+        {"id": "close-recovered"},
+    ]
+    client.get_positions.return_value = [
+        {"symbol": "SOLUSD", "qty": "1230.318126774"},
+    ]
+
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_bands",
+                       logger=MagicMock())
+
+    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.09915901)
+
+    assert result == {"id": "close-recovered"}
+    assert client.submit_order.call_count == 2
+    # Second call must use the broker-reported qty.
+    second_call = client.submit_order.call_args_list[1].kwargs
+    assert second_call["qty"] == 1230.318126774
+
+
+def test_close_position_insufficient_balance_no_broker_position_returns_none():
+    """If the broker has no matching position, the fallback bails — caller
+    sees None instead of an exception."""
+    from broker.alpaca_client import InsufficientBuyingPowerError
+
+    client = MagicMock()
+    client.submit_order.side_effect = InsufficientBuyingPowerError(
+        403, "insufficient balance for SOL",
+    )
+    client.get_positions.return_value = []
+
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_bands",
+                       logger=MagicMock())
+
+    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.0)
+    assert result is None
 
 
 def test_empty_strategy_name_raises():

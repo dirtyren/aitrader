@@ -170,30 +170,6 @@ def build_setups(cfg: dict, symbol: str):
             atr_mult_stop=s["orb_vwap"]["atr_mult_stop"],
             target_R=s["orb_vwap"]["target_R"],
         ))
-    if "initial_balance" in s and s["initial_balance"].get("enabled", False):
-        from strategies.setup_initial_balance import InitialBalanceSetup
-        setups.append(InitialBalanceSetup(
-            symbol,
-            ib_bars=s["initial_balance"].get("ib_bars", 6),
-            atr_mult_stop=s["initial_balance"]["atr_mult_stop"],
-            target_R=s["initial_balance"]["target_R"],
-        ))
-    if "vwap_dev_bands" in s and s["vwap_dev_bands"].get("enabled", False):
-        from strategies.setup_vwap_dev_bands import VWAPDevBandsSetup
-        setups.append(VWAPDevBandsSetup(
-            symbol,
-            sigma=s["vwap_dev_bands"].get("sigma", 2.5),
-            atr_mult_stop=s["vwap_dev_bands"]["atr_mult_stop"],
-            target_R=s["vwap_dev_bands"]["target_R"],
-        ))
-    if "orb_vwap" in s and s["orb_vwap"].get("enabled", False):
-        from strategies.setup_orb_vwap import ORBVWAPSetup
-        setups.append(ORBVWAPSetup(
-            symbol,
-            orb_bars=s["orb_vwap"].get("orb_bars", 3),
-            atr_mult_stop=s["orb_vwap"]["atr_mult_stop"],
-            target_R=s["orb_vwap"]["target_R"],
-        ))
     return setups
 
 

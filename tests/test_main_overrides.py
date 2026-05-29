@@ -89,6 +89,31 @@ def test_build_setups_uses_override_for_overridden_symbol():
     assert len(spy) == 4
 
 
+def test_build_setups_does_not_double_register_setups():
+    """Regression: build_setups previously instantiated initial_balance,
+    vwap_dev_bands, and orb_vwap twice, causing every signal to fire twice
+    per tick (with the second always rejected by the concurrent_position
+    filter)."""
+    from main import build_setups
+    cfg = {
+        "setups": {
+            "initial_balance": {"enabled": True, "ib_bars": 6,
+                                "atr_mult_stop": 1.0, "target_R": 2.0},
+            "vwap_dev_bands": {"enabled": True, "sigma": 2.5,
+                               "atr_mult_stop": 1.0, "target_R": 2.0},
+            "orb_vwap": {"enabled": True, "orb_bars": 3,
+                         "atr_mult_stop": 0.75, "target_R": 3.0},
+        },
+    }
+    setups = build_setups(cfg, "SPY")
+    type_names = [type(s).__name__ for s in setups]
+    # Each setup must register exactly once.
+    assert type_names.count("InitialBalanceSetup") == 1
+    assert type_names.count("VWAPDevBandsSetup") == 1
+    assert type_names.count("ORBVWAPSetup") == 1
+    assert len(setups) == 3
+
+
 def test_position_manager_for_uses_override_values():
     from main import position_manager_for
     from state.position_book import PositionBook

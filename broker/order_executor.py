@@ -141,27 +141,14 @@ class OrderExecutor:
             return None
 
         stop_order_id = self._extract_stop_leg_id(order) if asset_class == "equity" else None
+        # Crypto: target is engine-virtual. Submitting an immediate limit TP
+        # right after a market entry trips Alpaca's wash-trade detector
+        # ("potential wash trade detected. use complex orders") — and when
+        # the TP submit fails, handle_actions used to skip the broker close
+        # on virtual target hits, leaving phantom broker positions that ate
+        # buying power. Stops are already virtual; making target virtual too
+        # keeps the crypto path consistent and removes both failure modes.
         target_order_id = None
-        
-        # For crypto, place limit TP order immediately
-        if asset_class == "crypto" and signal.target is not None:
-            try:
-                tp_side = "sell" if alp_side == "buy" else "buy"
-                tp_coid = make_client_order_id(
-                    self.strategy_name, signal.setup, signal.symbol, Role.TARGET,
-                )
-                tp_order = self.client.submit_order(
-                    symbol=signal.symbol,
-                    qty=decision.qty,
-                    side=tp_side,
-                    order_type="limit",
-                    limit_price=round(signal.target, 4),
-                    time_in_force="gtc",
-                    client_order_id=tp_coid,
-                )
-                target_order_id = tp_order.get("id")
-            except Exception as exc:
-                self.logger.error("Failed to place crypto TP limit order for %s: %s", signal.symbol, exc)
 
         pos = OpenPosition(
             symbol=signal.symbol, setup=signal.setup, side=signal.side,
@@ -225,7 +212,18 @@ class OrderExecutor:
                 client_order_id=exit_coid,
             )
         except Exception as exc:
-            if "insufficient qty" in str(exc).lower() or "not enough" in str(exc).lower() or "qty" in str(exc).lower():
+            msg = str(exc).lower()
+            # "insufficient balance for <ASSET>" — Alpaca crypto returns this
+            # when the trader-book qty exceeds the on-broker qty (fees come
+            # out of the asset side, so book and broker drift over the life
+            # of a position). Treat it as the same qty-mismatch class as the
+            # equity "insufficient qty" / "not enough" wording.
+            if (
+                "insufficient qty" in msg
+                or "not enough" in msg
+                or "qty" in msg
+                or "insufficient balance" in msg
+            ):
                 self.logger.warning("CLOSE_QTY_MISMATCH symbol=%s qty=%s, attempting full position close", symbol, qty)
                 try:
                     positions = self.client.get_positions()
@@ -287,19 +285,18 @@ class OrderExecutor:
 
             elif asset_class == "crypto":
                 if a.kind in ("stop", "target", "time_stop"):
+                    # Crypto exits are fully engine-managed: stop, target, and
+                    # time_stop all translate to a market close on the broker.
                     pos = self.book.get(a.symbol, a.setup)
                     if pos and getattr(pos, "target_order_id", None):
+                        # Legacy adopted positions may still carry a TP id —
+                        # cancel before closing to keep the broker side tidy.
                         try:
                             self.client.cancel_order(pos.target_order_id)
                         except Exception as exc:
                             self.logger.error("CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
                                               a.symbol, pos.target_order_id, exc)
-                    
-                    is_adopted = pos and getattr(pos, "adopted", False)
-                    if a.kind != "target" or is_adopted:
-                        # If it wasn't the target filling, or if the position was adopted,
-                        # we must submit a market order to close the position on the broker.
-                        self.close_position(a.symbol, a.side, a.qty)
+                    self.close_position(a.symbol, a.side, a.qty)
                     self.logger.info("VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s",
                                      a.symbol, a.kind, a.price, a.qty)
                     continue
