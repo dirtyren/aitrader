@@ -67,6 +67,33 @@ def _broker_position_by_symbol(positions: list[dict]) -> dict[str, dict]:
     return out
 
 
+# Defensive backstop against a runaway chunk loop (e.g. if a future bug ever
+# returns a near-zero price). Real positions need at most ~10 chunks even at
+# multi-million-dollar notionals with a $190k cap.
+_MAX_CHUNKS_PER_POSITION = 50
+
+
+def _broker_price(broker_pos: dict) -> float | None:
+    """Pick the per-share price for sizing a close.
+
+    Alpaca's position dict carries `current_price` (live mark) and
+    `avg_entry_price`. We prefer the mark — it's what actually drives Alpaca's
+    per-order notional check. Falls back to entry price if the mark is
+    missing or unparseable. Returns None if neither is usable.
+    """
+    for field in ("current_price", "avg_entry_price"):
+        raw = broker_pos.get(field)
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def auto_close_broker_only(
     *,
     alpaca: Any,
@@ -84,12 +111,17 @@ def auto_close_broker_only(
     `cfg.strike_threshold` consecutive observations, the position is
     confirmed unmanaged and we flatten it.
 
-    Idempotent: if the market close fails or partially fills, the position
-    persists, the strike stays unresolved, and the next cycle retries. If
-    it succeeds, the position is gone next cycle and `auto_clear_resolved`
-    marks the strike `self_healed`.
+    Alpaca rejects single orders whose notional exceeds $200k. When the
+    position notional is over `cfg.auto_close_max_notional_usd`, the close is
+    split into N market-order chunks each sized below the cap.
 
-    Returns the number of close orders submitted this cycle.
+    Idempotent: if any chunk fails, the strike stays unresolved and the next
+    cycle retries against fresh broker truth (Alpaca will report whatever
+    remains). If every chunk submits, the position drains over the next few
+    seconds and `auto_clear_resolved` marks the strike `self_healed`.
+
+    Returns the number of close orders submitted this cycle (sum across all
+    chunks across all anomalies).
     """
     if cfg.shadow_mode:
         return 0
@@ -118,21 +150,20 @@ def auto_close_broker_only(
         if broker_qty == 0:
             continue
 
-        side = "sell" if broker_qty > 0 else "buy"
-        qty = abs(broker_qty)
         # Crypto symbols come back from Alpaca already in slash-form; stocks
         # are flat. Use the broker's own symbol so the close matches what we
         # observed.
         broker_symbol = broker_pos.get("symbol") or a.symbol
-        try:
-            order = alpaca.submit_order(
-                symbol=broker_symbol, qty=qty, side=side,
-                order_type="market", time_in_force="gtc",
-            )
-        except Exception as exc:
+        side = "sell" if broker_qty > 0 else "buy"
+        total_qty = abs(broker_qty)
+
+        price = _broker_price(broker_pos)
+        if price is None:
+            # No price means we can't safely size a chunk against the $200k
+            # cap. Bail loudly rather than send a single oversized order.
             log.error(
-                "AUTO_CLOSE_FAILED symbol=%s side=%s qty=%s error=%s",
-                broker_symbol, side, qty, exc, exc_info=True,
+                "AUTO_CLOSE_NO_PRICE symbol=%s qty=%s — leaving strike unresolved",
+                broker_symbol, total_qty,
             )
             emit_event(
                 session,
@@ -140,27 +171,96 @@ def auto_close_broker_only(
                 symbol=a.symbol,
                 payload={
                     "broker_symbol": broker_symbol,
-                    "side": side, "qty": qty,
+                    "side": side, "qty": total_qty,
                     "strike_count": existing.strike_count,
-                    "error": str(exc),
+                    "error": "no usable price field on broker position",
                 },
             )
             continue
 
-        submitted += 1
-        order_id = order.get("id") if isinstance(order, dict) else None
-        log.warning(
-            "AUTO_CLOSE_SUBMITTED symbol=%s side=%s qty=%s order_id=%s strike_count=%d",
-            broker_symbol, side, qty, order_id, existing.strike_count,
-        )
+        max_qty_per_chunk = cfg.auto_close_max_notional_usd / price
+        chunks = _split_qty(total_qty, max_qty_per_chunk)
+        if len(chunks) > _MAX_CHUNKS_PER_POSITION:
+            # Defensive: refuse to fan out past a sane limit. Indicates either
+            # a bad price or an unrealistic position; let an operator look.
+            log.error(
+                "AUTO_CLOSE_TOO_MANY_CHUNKS symbol=%s qty=%s price=%.6f chunks=%d cap=%d",
+                broker_symbol, total_qty, price, len(chunks),
+                _MAX_CHUNKS_PER_POSITION,
+            )
+            emit_event(
+                session,
+                type="auto_close_broker_only_failed",
+                symbol=a.symbol,
+                payload={
+                    "broker_symbol": broker_symbol,
+                    "side": side, "qty": total_qty,
+                    "price": price,
+                    "would_be_chunks": len(chunks),
+                    "max_chunks": _MAX_CHUNKS_PER_POSITION,
+                    "strike_count": existing.strike_count,
+                    "error": "too many chunks — operator review required",
+                },
+            )
+            continue
+
+        all_ok = True
+        order_ids: list[str | None] = []
+        for chunk_qty in chunks:
+            try:
+                order = alpaca.submit_order(
+                    symbol=broker_symbol, qty=chunk_qty, side=side,
+                    order_type="market", time_in_force="gtc",
+                )
+            except Exception as exc:
+                log.error(
+                    "AUTO_CLOSE_FAILED symbol=%s side=%s qty=%s chunk=%d/%d error=%s",
+                    broker_symbol, side, chunk_qty,
+                    len(order_ids) + 1, len(chunks), exc, exc_info=True,
+                )
+                emit_event(
+                    session,
+                    type="auto_close_broker_only_failed",
+                    symbol=a.symbol,
+                    payload={
+                        "broker_symbol": broker_symbol,
+                        "side": side, "qty": chunk_qty,
+                        "chunk_index": len(order_ids) + 1,
+                        "total_chunks": len(chunks),
+                        "submitted_so_far": order_ids,
+                        "strike_count": existing.strike_count,
+                        "error": str(exc),
+                    },
+                )
+                all_ok = False
+                break
+
+            submitted += 1
+            order_id = order.get("id") if isinstance(order, dict) else None
+            order_ids.append(order_id)
+            log.warning(
+                "AUTO_CLOSE_SUBMITTED symbol=%s side=%s qty=%s order_id=%s "
+                "chunk=%d/%d strike_count=%d",
+                broker_symbol, side, chunk_qty, order_id,
+                len(order_ids), len(chunks), existing.strike_count,
+            )
+
+        if not all_ok:
+            # Partial submission — strike stays unresolved so next cycle
+            # retries against whatever's still on the broker.
+            continue
+
         emit_event(
             session,
             type="auto_close_broker_only",
             symbol=a.symbol,
             payload={
                 "broker_symbol": broker_symbol,
-                "side": side, "qty": qty,
-                "order_id": order_id,
+                "side": side,
+                "total_qty": total_qty,
+                "price": price,
+                "chunks": len(chunks),
+                "order_ids": order_ids,
                 "strike_count": existing.strike_count,
             },
         )
@@ -169,6 +269,26 @@ def auto_close_broker_only(
         existing.resolved_reason = "auto_closed_broker_only"
 
     return submitted
+
+
+def _split_qty(total_qty: float, max_qty_per_chunk: float) -> list[float]:
+    """Split ``total_qty`` into chunks no larger than ``max_qty_per_chunk``.
+
+    The last chunk holds the remainder, which is always > 0 (we never
+    return a zero-qty chunk). All chunks except the last are exactly
+    ``max_qty_per_chunk``; the last is total_qty - max * (n-1).
+    """
+    if max_qty_per_chunk <= 0:
+        # Caller has already validated price > 0; this is defense-in-depth.
+        return [total_qty]
+    if total_qty <= max_qty_per_chunk:
+        return [total_qty]
+    n_full = int(total_qty // max_qty_per_chunk)
+    remainder = total_qty - n_full * max_qty_per_chunk
+    chunks = [max_qty_per_chunk] * n_full
+    if remainder > 0:
+        chunks.append(remainder)
+    return chunks
 
 
 def run_one_cycle(

@@ -28,6 +28,10 @@ class ReconcilerConfig:
     shadow_mode: bool
     state_file_path: str
     heartbeat_stale_after_s: int
+    # Auto-close chunking: Alpaca rejects single orders whose notional exceeds
+    # $200k. Cap below the limit so post-rounding/price-drift each child order
+    # stays clear; oversized auto-closes split into N chunks.
+    auto_close_max_notional_usd: float
 
     @classmethod
     def from_env(cls) -> "ReconcilerConfig":
@@ -42,5 +46,8 @@ class ReconcilerConfig:
             ),
             heartbeat_stale_after_s=int(os.environ.get(
                 "RECONCILE_HEARTBEAT_STALE_AFTER_S", "300"
+            )),
+            auto_close_max_notional_usd=float(os.environ.get(
+                "RECONCILE_AUTO_CLOSE_MAX_NOTIONAL_USD", "190000"
             )),
         )
