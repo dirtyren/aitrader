@@ -1,31 +1,16 @@
 acceptance:
-  consecutive_closes: 1
-  min_distance_atr: 0.15
+  consecutive_closes: 2
+  min_distance_atr: 0.25
 asset_classes:
-  crypto:
-    commission_bps: 25
-    session_close_local: '23:59'
-    session_open_local: 00:00
-    slippage_bps: 5
-    symbols:
-    - BTC/USD
-    - ETH/USD
-    - SOL/USD
-    - AVAX/USD
-    - LINK/USD
-    timezone: UTC
   equity:
     commission_per_share: 0.0
-    session_close_local: '23:59'
-    session_open_local: '00:00'
+    session_close_local: '16:00'
+    session_open_local: '09:30'
     slippage_bps: 2
     symbols:
     - SPY
     - QQQ
     - IWM
-    - XLF
-    - XLE
-    - GLD
     - AAPL
     - MSFT
     - NVDA
@@ -40,6 +25,9 @@ asset_classes:
     - COIN
     - PLTR
     - UBER
+    - NKE
+    - GIS
+    - HPQ
     timezone: America/New_York
 backtest:
   cache_dir: runtime/bars_cache
@@ -54,7 +42,7 @@ filters:
   volume_deficit_pct: 0.3
 logging:
   level: INFO
-  log_file: logs/vwap_bands_trader.log
+  log_file: logs/ib_equity_trader.log
 news_blackouts: []
 overrides:
   enabled: true
@@ -80,17 +68,17 @@ risk:
   max_notional_per_trade_pct: 0.10
   max_risk_per_trade: 0.005
 scheduler:
-  bar_timeframe: 5Min
+  bar_timeframe: 1Hour
   poll_fallback_seconds: 60
   wake_grace_seconds: 5
 setups:
-  vwap_dev_bands:
-    atr_mult_stop: 0.75
+  initial_balance:
+    atr_mult_stop: 1.25
     enabled: true
-    sigma: 2.5
+    ib_bars: 3
     target_R: 2.0
 system:
-  name: vwap_bands_trader
+  name: ib_equity_trader
   trading_env: paper
   version: 2.0.0
 vwap:

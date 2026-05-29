@@ -16,7 +16,7 @@ def render(active_path: Path, audit_path: Path, runs_root: Path) -> None:
     syms = payload.get("symbols") or {}
 
     if not syms:
-        st.caption("No active overrides. Live trader uses settings.yaml defaults.")
+        st.caption("No active overrides. Live trader uses its strategy yaml defaults.")
     else:
         rows = []
         for s, entry in syms.items():

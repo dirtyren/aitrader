@@ -1,10 +1,10 @@
 system:
-  name: vwap_wave
+  name: vwap_wave_crypto_trader
   version: "2.0.0"
   trading_env: paper            # paper | live | backtest
 
 scheduler:
-  bar_timeframe: "5Min"
+  bar_timeframe: "1Hour"
   wake_grace_seconds: 5
   poll_fallback_seconds: 60
 
@@ -49,62 +49,45 @@ setups:
     cooldown_bars: 8
 
 risk:
-  max_risk_per_trade: 0.005
-  max_notional_per_trade_pct: 0.10
-  max_concurrent_positions: 4
-  max_daily_risk_open: 0.02
-  consecutive_loss_limit: 2
+  max_risk_per_trade: 0.008
+  max_notional_per_trade_pct: 0.15
+  max_concurrent_positions: 3
+  max_daily_risk_open: 0.03
+  consecutive_loss_limit: 3
   loss_filter_scope: per_symbol
   circuit_breaker:
-    daily_loss_limit_1: 0.015
-    daily_loss_limit_2: 0.025
-    drawdown_limit: 0.05
+    daily_loss_limit_1: 0.025
+    daily_loss_limit_2: 0.04
+    drawdown_limit: 0.08
 
 filters:
-  opening_blackout_min: 15
+  opening_blackout_min: 0
   volume_deficit_pct: 0.30
 
 position_management:
-  max_hold_bars: 12
+  max_hold_bars: 24
   breakeven_at_R: 1.0
   trail_at_R: 1.5
   trail_atr: 1.0
 
 asset_classes:
-  equity:
-    timezone: "America/New_York"
-    session_open_local: "00:00"
-    session_close_local: "23:59"
-    slippage_bps: 2
-    commission_per_share: 0.0
-    symbols:
-      - SPY
-      - QQQ
-      - IWM
-      - XLF
-      - XLE
-      - GLD
-      - AAPL
-      - MSFT
-      - NVDA
-      - TSLA
-      - AMZN
-      - GOOGL
-      - META
-      - AMD
-      - JPM
-      - AVGO
-      - NFLX
-      - COIN
-      - PLTR
-      - UBER
   crypto:
     timezone: "UTC"
     session_open_local: "00:00"
     session_close_local: "23:59"
     slippage_bps: 5
     commission_bps: 25
-    symbols: []
+    symbols:
+      - BTC/USD
+      - ETH/USD
+      - SOL/USD
+      - AVAX/USD
+      - LINK/USD
+      - ADA/USD
+      - DOGE/USD
+      - DOT/USD
+      - PEPE/USD
+      - XRP/USD
 
 news_blackouts: []
 
@@ -116,11 +99,11 @@ backtest:
 
 broker:
   paper_trading: true
-  handshake_symbol: SPY
+  handshake_symbol: BTC/USD
 
 logging:
   level: INFO
-  log_file: logs/vwap_wave.log
+  log_file: logs/vwap_wave_crypto_trader.log
 
 overrides:
   path: runtime/wfo/active/live_overrides.yaml

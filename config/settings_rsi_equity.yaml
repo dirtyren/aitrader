@@ -64,13 +64,6 @@ asset_classes:
     - COIN
     - PLTR
     - UBER
-  crypto:
-    timezone: UTC
-    session_open_local: 00:00
-    session_close_local: '23:59'
-    slippage_bps: 5
-    commission_bps: 25
-    symbols: []
 news_blackouts: []
 backtest:
   start: '2024-01-01'

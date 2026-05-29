@@ -49,12 +49,12 @@ Strategies are composed at boot from the `setups:` block in `config/settings_*.y
 
 ```
 aitrader/
-├── config/
-│   ├── settings.yaml                 # Default (vwap_wave) strategy
-│   ├── settings_rsi_*.yaml           # Per-strategy configs (one per container)
-│   ├── settings_vwap_bands_*.yaml
-│   ├── settings_orb_*.yaml
-│   ├── settings_ib*.yaml
+├── config/                           # Per-strategy configs split by asset class
+│   ├── settings_vwap_wave_{equity,crypto}.yaml
+│   ├── settings_rsi_{equity,crypto}.yaml
+│   ├── settings_orb_{equity,crypto}.yaml
+│   ├── settings_vwap_bands_{equity,crypto}.yaml
+│   ├── settings_ib_{equity,crypto}.yaml
 │   ├── wfo.yaml                      # Walk-forward optimizer config
 │   └── .env.example                  # ALPACA_*, TELEGRAM_*, DASH_*, MYSQL_*
 ├── core/                             # Domain primitives shared by live + backtest
@@ -165,11 +165,11 @@ RECONCILE_HEARTBEAT_STALE_AFTER_S=300
 ### Bring up the stack
 
 ```bash
-docker compose up -d mysql                # initializes schema from state/schema.sql
-docker compose up -d trader               # default vwap_wave strategy
-docker compose up -d trader-rsi-equity    # any of the 9 strategy containers
-docker compose up -d reconciler           # 30s reconciliation loop (shadow mode by default)
-docker compose up -d dashboard nginx      # https://localhost (basic auth)
+docker compose up -d mysql                       # initializes schema from state/schema.sql
+docker compose up -d trader-vwap-wave-equity     # any of the per-asset-class strategy containers
+docker compose up -d trader-rsi-equity
+docker compose up -d reconciler                  # 30s reconciliation loop (shadow mode by default)
+docker compose up -d dashboard nginx             # https://localhost (basic auth)
 ```
 
 Or bring everything up at once:
@@ -178,7 +178,7 @@ Or bring everything up at once:
 docker compose up -d
 ```
 
-The compose file defines 9 trader containers (`trader`, `trader-rsi-equity`, `trader-rsi-crypto`, `trader-ib`, `trader-ib-crypto`, `trader-vwap-bands-equity`, `trader-vwap-bands-crypto`, `trader-orb-equity`, `trader-orb-crypto`) — each runs `python main.py --config config/settings_<strategy>.yaml` against the shared MySQL.
+The compose file defines 10 trader containers, one per (strategy, asset class) pair: `trader-vwap-wave-equity`, `trader-vwap-wave-crypto`, `trader-rsi-equity`, `trader-rsi-crypto`, `trader-ib-equity`, `trader-ib-crypto`, `trader-vwap-bands-equity`, `trader-vwap-bands-crypto`, `trader-orb-equity`, `trader-orb-crypto`. Each runs `python main.py --config config/settings_<strategy>_<asset_class>.yaml` against the shared MySQL.
 
 ---
 
@@ -338,7 +338,7 @@ docker compose up -d trader  # or any other trader-* service
 ## Backtest
 
 ```bash
-docker compose run --rm trader python scripts/run_backtest.py --config config/settings.yaml
+docker compose run --rm trader-vwap-wave-equity python scripts/run_backtest.py --config config/settings_vwap_wave_equity.yaml
 ```
 
 Or programmatically:
@@ -347,7 +347,7 @@ Or programmatically:
 from backtest.intraday_replay import IntradayReplay
 import yaml, main as boot
 
-cfg = yaml.safe_load(open("config/settings.yaml"))
+cfg = yaml.safe_load(open("config/settings_vwap_wave_equity.yaml"))
 ac_configs = boot.build_asset_class_configs(cfg)
 symbols = [(s, ac) for ac, raw in cfg["asset_classes"].items() for s in raw["symbols"]]
 
@@ -373,7 +373,7 @@ Tunes setup parameters per `(symbol, timeframe)` over rolling IS/OOS windows acr
 - `runtime/wfo/<run_id>/live_overrides.yaml` — per-symbol best `(timeframe, setup, params)` for symbols whose aggregate **WFE ≥ 0.5** AND total OOS P&L > 0 (Pardo gate).
 - `runtime/wfo/<run_id>/summary.md` — ranked human-readable table.
 
-Approval flow: the dashboard's **WFO** tab promotes per-symbol candidates from a run into `runtime/wfo/active/live_overrides.yaml`, which `main.py` reads at boot and layers on top of `config/settings.yaml`. Approvals take effect on the next trader restart; `runtime/wfo/active/audit.jsonl` records who approved what.
+Approval flow: the dashboard's **WFO** tab promotes per-symbol candidates from a run into `runtime/wfo/active/live_overrides.yaml`, which `main.py` reads at boot and layers on top of the strategy's settings yaml. Approvals take effect on the next trader restart; `runtime/wfo/active/audit.jsonl` records who approved what.
 
 Tunables: `config/wfo.yaml` (universe scan, IS/OOS lengths, parameter grids per setup, fitness floor, gate thresholds).
 

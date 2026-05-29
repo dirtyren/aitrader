@@ -75,15 +75,18 @@ with config_t:
 
 with logs_t:
     state_files = sorted(glob.glob("runtime/trading_state_*.json"))
-    strategies = [Path(f).stem.replace("trading_state_", "") for f in state_files] or ["vwap_wave"]
+    strategies = [Path(f).stem.replace("trading_state_", "") for f in state_files]
     if Path("logs/dashboard.log").exists():
         strategies = ["dashboard", *strategies]
-    selected = st.selectbox("Log source", strategies, key="logs_strategy")
-    log_path = Path(f"logs/{selected}.log")
-    if log_path.exists():
-        render_logs(log_path)
+    if not strategies:
+        st.info("No strategy state files found yet — start a trader service to see logs here.")
     else:
-        st.info(f"Log file not found at {log_path} yet.")
+        selected = st.selectbox("Log source", strategies, key="logs_strategy")
+        log_path = Path(f"logs/{selected}.log")
+        if log_path.exists():
+            render_logs(log_path)
+        else:
+            st.info(f"Log file not found at {log_path} yet.")
 
 with wfo_t:
     _safe_render("wfo", wfo_tab.render)
