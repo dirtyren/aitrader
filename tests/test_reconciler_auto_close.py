@@ -51,6 +51,7 @@ def _cfg(shadow=False, threshold=3, min_gap=60):
         state_file_path="/tmp/state.json",
         heartbeat_stale_after_s=300,
         auto_close_max_notional_usd=190_000.0,
+        auto_close_dust_usd=1.0,
     )
 
 
@@ -350,13 +351,15 @@ def test_three_cycle_progression_auto_closes_on_third(store):
 # ---------------------------------------------------------------------------
 
 
-def _cfg_with_max(max_notional: float, threshold: int = 3):
+def _cfg_with_max(max_notional: float, threshold: int = 3,
+                  dust_usd: float = 1.0):
     return ReconcilerConfig(
         interval_s=30, strike_threshold=threshold, strike_min_gap_s=60,
         qty_eps=1e-6, shadow_mode=False,
         state_file_path="/tmp/state.json",
         heartbeat_stale_after_s=300,
         auto_close_max_notional_usd=max_notional,
+        auto_close_dust_usd=dust_usd,
     )
 
 
@@ -730,3 +733,133 @@ def test_cancel_helper_passes_correct_symbol_to_list_orders(store):
     kwargs = alpaca.list_orders.call_args.kwargs
     assert kwargs["status"] == "open"
     assert kwargs["symbols"] == ["PLTR"]
+
+
+# ---------------------------------------------------------------------------
+# Dust handling — positions too small for Alpaca to accept
+# ---------------------------------------------------------------------------
+
+
+def test_dust_position_skips_submit_and_resolves_strike(store):
+    """SOL=1e-9 (a billionth of a share) is below Alpaca's minimum qty for
+    crypto. Submitting it returns 'order qty must be >= minimal qty of
+    order N.NNN' on every cycle. Treat such positions as effectively flat:
+    resolve the strike with reason='auto_close_dust', no submit, no retry."""
+    cfg = _cfg_with_max(max_notional=190_000.0, dust_usd=1.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = []
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "SOLUSD", count=3, now=now)
+        session.commit()
+        # 1e-9 SOL @ $90 = $9e-8, well under $1 dust threshold.
+        anomaly = _broker_only_anomaly("SOLUSD", broker_qty=1e-9)
+        submitted = auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={
+                "SOLUSD": {"symbol": "SOL/USD", "qty": "1e-09",
+                           "current_price": "90.0"},
+            },
+            anomalies=[anomaly], cfg=cfg, now=now,
+        )
+        session.commit()
+
+    assert submitted == 0
+    alpaca.submit_order.assert_not_called()
+
+    with Session(store._engine) as session:
+        row = session.query(StrikeRow).filter(StrikeRow.symbol == "SOLUSD").one()
+        assert row.resolved is True
+        assert row.resolved_reason == "auto_close_dust"
+
+
+def test_dust_emits_event_with_payload_for_audit(store):
+    cfg = _cfg_with_max(max_notional=190_000.0, dust_usd=1.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = []
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "SOLUSD", count=3, now=now)
+        session.commit()
+        auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={
+                "SOLUSD": {"symbol": "SOL/USD", "qty": "1e-09",
+                           "current_price": "90.0"},
+            },
+            anomalies=[_broker_only_anomaly("SOLUSD", broker_qty=1e-9)],
+            cfg=cfg, now=now,
+        )
+        session.commit()
+
+    with Session(store._engine) as session:
+        evts = session.query(EventRow).filter(
+            EventRow.type == "auto_close_dust",
+        ).all()
+        assert len(evts) == 1
+        payload = evts[0].payload
+        assert payload["broker_symbol"] == "SOL/USD"
+        assert payload["total_qty"] == 1e-9
+        assert payload["price"] == 90.0
+        assert payload["notional"] == pytest.approx(9e-8)
+        assert payload["dust_threshold_usd"] == 1.0
+        assert payload["strike_count"] == 3
+
+
+def test_just_above_dust_still_closes_normally(store):
+    """A position whose notional barely exceeds the dust threshold goes
+    through the standard chunked-close path."""
+    cfg = _cfg_with_max(max_notional=190_000.0, dust_usd=1.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = []
+    alpaca.submit_order.return_value = {"id": "close-1"}
+
+    # 0.02 SOL @ $90 = $1.80 — over the $1 threshold.
+    with Session(store._engine) as session:
+        _seed_strike(session, "SOLUSD", count=3, now=now)
+        session.commit()
+        submitted = auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={
+                "SOLUSD": {"symbol": "SOL/USD", "qty": "0.02",
+                           "current_price": "90.0"},
+            },
+            anomalies=[_broker_only_anomaly("SOLUSD", broker_qty=0.02)],
+            cfg=cfg, now=now,
+        )
+
+    assert submitted == 1
+    alpaca.submit_order.assert_called_once()
+
+
+def test_dust_threshold_is_env_tunable(store):
+    """A higher dust threshold catches positions that would otherwise
+    submit. Operator can crank it up if Alpaca rejects sub-$5 orders."""
+    cfg = _cfg_with_max(max_notional=190_000.0, dust_usd=10.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = []
+
+    # 0.05 SOL @ $90 = $4.50 — below the bumped $10 threshold.
+    with Session(store._engine) as session:
+        _seed_strike(session, "SOLUSD", count=3, now=now)
+        session.commit()
+        submitted = auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={
+                "SOLUSD": {"symbol": "SOL/USD", "qty": "0.05",
+                           "current_price": "90.0"},
+            },
+            anomalies=[_broker_only_anomaly("SOLUSD", broker_qty=0.05)],
+            cfg=cfg, now=now,
+        )
+        session.commit()
+
+    assert submitted == 0
+    alpaca.submit_order.assert_not_called()
+    with Session(store._engine) as session:
+        row = session.query(StrikeRow).filter(StrikeRow.symbol == "SOLUSD").one()
+        assert row.resolved_reason == "auto_close_dust"

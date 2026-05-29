@@ -219,6 +219,39 @@ def auto_close_broker_only(
             )
             continue
 
+        # Dust check: a position whose notional is below the dust threshold
+        # is too small for Alpaca to accept (the broker enforces a per-asset
+        # minimum qty, and the prior chunked-close path can leave 1e-9
+        # remainders that re-trigger the auto-close on every cycle). Treat
+        # such positions as effectively flat: resolve the strike, emit an
+        # event, skip the submit. If a fresh entry later pushes the position
+        # above the threshold, the normal flow resumes next cycle.
+        notional = total_qty * price
+        if notional < cfg.auto_close_dust_usd:
+            log.warning(
+                "AUTO_CLOSE_DUST symbol=%s qty=%s price=%.6f notional=%.6f "
+                "threshold=%.2f — resolving strike without submit",
+                broker_symbol, total_qty, price, notional,
+                cfg.auto_close_dust_usd,
+            )
+            emit_event(
+                session,
+                type="auto_close_dust",
+                symbol=a.symbol,
+                payload={
+                    "broker_symbol": broker_symbol,
+                    "total_qty": total_qty,
+                    "price": price,
+                    "notional": notional,
+                    "dust_threshold_usd": cfg.auto_close_dust_usd,
+                    "strike_count": existing.strike_count,
+                },
+            )
+            existing.resolved = True
+            existing.resolved_at = now
+            existing.resolved_reason = "auto_close_dust"
+            continue
+
         max_qty_per_chunk = cfg.auto_close_max_notional_usd / price
         chunks = _split_qty(total_qty, max_qty_per_chunk)
         if len(chunks) > _MAX_CHUNKS_PER_POSITION:
