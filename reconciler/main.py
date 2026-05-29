@@ -165,6 +165,10 @@ def run_one_cycle(
 
         session.commit()
 
+    log.info(
+        "RECONCILER_CYCLE_DONE broker_symbols=%d anomalies=%d fills=%d shadow=%s",
+        len(broker_norm), len(anomalies), len(recent_fills), cfg.shadow_mode,
+    )
     return now
 
 
