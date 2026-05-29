@@ -32,7 +32,7 @@ RECOMMENDED PARAMETER CHANGES
    Params: ib_bars=2, atr_mult_stop=1.25, target_R=2.0
    Results across 7-8 crypto pairs:
      Sharpe=6.61, WR=54.1%, AvgR=0.511, MaxDD=4.22%, PF=4.09
-   Alternate: ib_bars=3, atr_mult_stop=1.25, target_R=1.5
+   Alternate: ib_bars=3, atr_mult_stop=1.25, target_R=1.5 [APPLIED ib_bars=3 on 2026-05-29]
      Sharpe=7.10, WR=58.7%, AvgR=0.453, MaxDD=4.28%, PF=3.08
    Notes: 1H IB breakout on crypto is exceptionally profitable. 2-bar IB on 1H
    (2-hour range) hits the crypto session rhythm. Use separate trader config.
