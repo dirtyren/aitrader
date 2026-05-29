@@ -1,12 +1,23 @@
-"""Reconciliation tab — read-only view of strikes, events, and heartbeat.
+"""Reconciliation tab — visibility plus scoped operator action.
 
-All resolution actions go through scripts/reconcile_resolve.py for
-auditability. This tab is for visibility only.
+Visibility for all strikes/events. Operator action is scoped to
+`broker_only` strikes only — that's the one direction the dashboard can
+safely flatten without altering managed-position state. All other
+resolutions still go through scripts/reconcile_resolve.py for auditability.
+
+Every dashboard close writes:
+  - an `operator_action` event row (via MySQLStore.resolve_strike), AND
+  - a runtime/operator_close_audit_<timestamp>.jsonl record.
 """
 from __future__ import annotations
 
+import os
+
 import streamlit as st
 
+from broker.alpaca_client import AlpacaClient
+from state.mysql_store import MySQLStore
+from state.operator_close import close_broker_only_strike
 from ui.data import reconciliation_repo as repo
 
 
@@ -49,6 +60,139 @@ def _resolve_hint(direction: str) -> str:
     )
 
 
+@st.cache_resource
+def _get_alpaca() -> AlpacaClient:
+    return AlpacaClient()
+
+
+@st.cache_resource
+def _get_store() -> MySQLStore:
+    s = MySQLStore(strategy_name="operator")
+    s.ensure_schema()
+    s.upsert_strategy()
+    return s
+
+
+def _alpaca_dashboard_url() -> str:
+    base = (os.getenv("ALPACA_BASE_URL") or "").lower()
+    if "paper" in base:
+        return "https://app.alpaca.markets/paper/dashboard/overview"
+    return "https://app.alpaca.markets/live/dashboard/overview"
+
+
+def _broker_qty_from_snapshot(snapshot) -> float | None:
+    if isinstance(snapshot, str):
+        try:
+            import json
+            snapshot = json.loads(snapshot)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(snapshot, dict):
+        return None
+    val = snapshot.get("broker_qty")
+    try:
+        return float(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _render_unmanaged_section(broker_only_df) -> None:
+    st.subheader("Unmanaged broker positions")
+    st.caption(
+        "Positions held at Alpaca with no managed MySQL row. Closing here "
+        "submits a market order tagged `role=exit` (operator/cleanslate) and "
+        "resolves the strike. Audit written to `runtime/operator_close_audit_*.jsonl`."
+    )
+    alpaca_link = _alpaca_dashboard_url()
+
+    for _, row in broker_only_df.iterrows():
+        strike_id = int(row["id"])
+        symbol = str(row["symbol"])
+        snapshot = row.get("last_observed_state")
+        qty = _broker_qty_from_snapshot(snapshot)
+        last_seen = row.get("last_seen_at")
+
+        confirm_key = f"recon_confirm_close_{strike_id}"
+        note_key = f"recon_close_note_{strike_id}"
+
+        with st.container(border=True):
+            head_cols = st.columns([2, 2, 3, 2])
+            head_cols[0].markdown(f"**{symbol}**")
+            head_cols[1].markdown(
+                f"qty: `{qty:+.4f}`" if qty is not None else "qty: —"
+            )
+            head_cols[2].markdown(
+                f"last seen: `{last_seen}`" if last_seen else "last seen: —"
+            )
+            head_cols[3].markdown(f"[view in Alpaca]({alpaca_link})")
+
+            note_col, btn_col = st.columns([4, 2])
+            note = note_col.text_input(
+                "Operator note (≥3 chars, required)",
+                key=note_key,
+                placeholder="e.g. manual leftover from yesterday",
+            )
+
+            confirming = st.session_state.get(confirm_key, False)
+
+            if not confirming:
+                disabled = len((note or "").strip()) < 3
+                if btn_col.button(
+                    "Close on Alpaca",
+                    key=f"recon_close_btn_{strike_id}",
+                    disabled=disabled,
+                    type="primary",
+                ):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning(
+                    f"Confirm: submit a market order to close **{symbol}** "
+                    f"(broker qty `{qty:+.4f}`)?"
+                    if qty is not None
+                    else f"Confirm: submit a market order to close **{symbol}**?"
+                )
+                c_col, x_col = st.columns([1, 1])
+                if c_col.button(
+                    "Confirm close",
+                    key=f"recon_confirm_btn_{strike_id}",
+                    type="primary",
+                ):
+                    try:
+                        result = close_broker_only_strike(
+                            store=_get_store(),
+                            alpaca=_get_alpaca(),
+                            strike_id=strike_id,
+                            operator_note=note,
+                        )
+                    except Exception as exc:
+                        st.error(f"close failed: {exc}")
+                        st.session_state[confirm_key] = False
+                    else:
+                        if result.status == "submitted":
+                            st.success(
+                                f"submitted close: {symbol} "
+                                f"order_id={result.alpaca_order_id} "
+                                f"coid={result.coid}"
+                            )
+                        elif result.status == "already_flat":
+                            st.info(
+                                f"{symbol} was already flat — strike resolved."
+                            )
+                        elif result.status == "submit_failed":
+                            st.error(
+                                f"submit failed: {result.error}. "
+                                "strike left unresolved for retry."
+                            )
+                        else:
+                            st.info(f"status: {result.status}")
+                        st.session_state[confirm_key] = False
+                        st.rerun()
+                if x_col.button("Cancel", key=f"recon_cancel_btn_{strike_id}"):
+                    st.session_state[confirm_key] = False
+                    st.rerun()
+
+
 def render() -> None:
     st.header("Reconciliation")
 
@@ -65,9 +209,18 @@ def render() -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Unresolved strikes ────────────────────────────────────────────
-    st.subheader("Unresolved strikes")
+    # ── Strikes ───────────────────────────────────────────────────────
     strikes = repo.get_unresolved_strikes()
+
+    # New: actionable surface for broker_only strikes only.
+    broker_only = (
+        strikes[strikes["direction"] == "broker_only"]
+        if not strikes.empty else strikes
+    )
+    if not broker_only.empty:
+        _render_unmanaged_section(broker_only)
+
+    st.subheader("Unresolved strikes")
     if strikes.empty:
         st.success("No unresolved strikes.")
     else:
@@ -78,10 +231,11 @@ def render() -> None:
             ]],
             use_container_width=True,
         )
-        with st.expander("How to resolve a strike"):
+        with st.expander("How to resolve a strike via CLI"):
             st.markdown(
-                "Every action goes through the operator CLI for audit-trail "
-                "reasons. Connect to the trader container:"
+                "All resolutions other than the broker_only close button "
+                "above go through the operator CLI for audit-trail reasons. "
+                "Connect to the trader container:"
             )
             st.code(
                 "docker compose exec trader python scripts/reconcile_resolve.py list",

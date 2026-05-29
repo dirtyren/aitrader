@@ -22,6 +22,10 @@ from ui.tabs import config_tab, live_tab, reconciliation_tab, strategies_tab
 from ui.tabs.logs_panel import render as render_logs
 from ui.wfo import tab as wfo_tab
 
+_ASSETS = Path(__file__).parent / "assets"
+_FAVICON = _ASSETS / "favicon.svg"
+_LOGO = _ASSETS / "logo.svg"
+
 
 _dashboard_logger = setup_logging(
     log_level=logging.INFO,
@@ -40,9 +44,17 @@ def _safe_render(name: str, fn) -> None:
         st.error(f"`{name}` tab failed — see Logs tab (dashboard.log) for traceback.")
 
 
-st.set_page_config(page_title="aitrader", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="aitrader",
+    page_icon=str(_FAVICON) if _FAVICON.exists() else None,
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 inject_theme()
-st.title("aitrader")
+if _LOGO.exists():
+    st.image(str(_LOGO), width=200)
+else:
+    st.title("aitrader")
 
 strategies_t, live_t, recon_t, config_t, logs_t, wfo_t = st.tabs([
     "Strategies", "Live Trading", "Reconciliation", "Configuration", "Logs", "WFO",
