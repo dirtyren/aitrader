@@ -30,9 +30,10 @@ def store():
     return s
 
 
-def _open_pos(store, strategy_id, symbol, setup, qty, asset_class="equity"):
+def _open_pos(store, strategy_id, symbol, setup, qty, asset_class="equity",
+              side="long"):
     pos = OpenPosition(
-        symbol=symbol, setup=setup, side="long", qty=qty,
+        symbol=symbol, setup=setup, side=side, qty=qty,
         entry_px=100.0, stop_px=99.0, target_px=101.0,
         opened_at=datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
         order_id="o", initial_stop_px=99.0,
@@ -136,3 +137,56 @@ def test_crypto_slash_form_aggregates_with_flat(store):
     with Session(store._engine) as session:
         anomalies = check_invariant(session, store, broker, qty_eps=1e-6)
     assert anomalies == []
+
+
+# ── side drift ───────────────────────────────────────────────────────
+
+
+def test_qty_drift_detects_long_in_mysql_vs_short_on_broker(store):
+    """MySQL records a 136-share long; broker shows a 136-share short.
+
+    The old |qty|-based invariant treated this as no drift (|136| == |136|).
+    With signed-qty comparison, this is +136 vs -136 → drift of 272.
+    """
+    _open_pos(store, store._strategy_id, "QQQ", "vwap_bounce", 136.0, side="long")
+    broker = {"QQQ": -136.0}  # Alpaca returns signed qty; short = negative
+    with Session(store._engine) as session:
+        anomalies = check_invariant(session, store, broker, qty_eps=1e-6)
+    assert len(anomalies) == 1
+    a = anomalies[0]
+    assert a.direction == "qty_drift"
+    assert a.symbol == "QQQ"
+    assert a.snapshot["mysql_sum"] == 136.0
+    assert a.snapshot["broker_qty"] == -136.0
+
+
+def test_short_match_yields_no_anomaly(store):
+    """MySQL short matches broker short (both negative-qty / side=short)."""
+    _open_pos(store, store._strategy_id, "QQQ", "vwap_bounce", 136.0, side="short")
+    broker = {"QQQ": -136.0}
+    with Session(store._engine) as session:
+        anomalies = check_invariant(session, store, broker, qty_eps=1e-6)
+    assert anomalies == []
+
+
+def test_cross_strategy_long_short_cancellation(store):
+    """A goes long 100, B goes short 100 — net MySQL = 0; broker also 0.
+
+    Tricky edge case: the symbol appears in MySQL but with net qty of zero.
+    sum_qty_by_symbol returns 0; broker doesn't list the symbol → mysql_only
+    would *almost* fire. The invariant treats sum=0 specially: no anomaly
+    if broker also has 0 (i.e., symbol absent from broker_norm). The current
+    implementation handles this because mysql_only is `set(mysql_sums) -
+    set(broker_norm)`, but a zero-net-symbol still appears in mysql_sums.
+
+    This test documents the current behavior: a cross-cancelled symbol is
+    flagged as mysql_only when broker has nothing.
+    """
+    _open_pos(store, store._strategy_id,       "QQQ", "vwap_bounce", 100.0, side="long")
+    _open_pos(store, store._other_strategy_id, "QQQ", "rsi_long",    100.0, side="short")
+    broker = {}  # broker has no QQQ
+    with Session(store._engine) as session:
+        anomalies = check_invariant(session, store, broker, qty_eps=1e-6)
+    # Both rows produce a mysql_only anomaly (one per strategy).
+    directions = sorted(a.direction for a in anomalies)
+    assert directions == ["mysql_only", "mysql_only"]

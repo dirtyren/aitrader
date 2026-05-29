@@ -851,7 +851,12 @@ class MySQLStore:
             return row.id
 
     def sum_qty_by_symbol(self) -> dict[str, float]:
-        """Aggregate open qty per symbol across ALL strategies.
+        """Aggregate open SIGNED qty per symbol across ALL strategies.
+
+        Returns positive qty for net-long, negative for net-short. Brokers
+        like Alpaca already return signed qty, so the reconciler invariant
+        compares like-with-like — long-vs-short divergence between MySQL and
+        broker is caught instead of silently treated as equal magnitudes.
 
         Crypto symbols are normalized to broker-flat form (BTC/USD → BTCUSD)
         so multi-format storage doesn't double-count. Accumulates as Decimal
@@ -861,12 +866,13 @@ class MySQLStore:
         out: dict[str, Decimal] = {}
         with Session(self._engine) as session:
             rows = session.query(
-                PositionRow.symbol, PositionRow.qty,
+                PositionRow.symbol, PositionRow.side, PositionRow.qty,
             ).filter(PositionRow.status == "open").all()
-            for symbol, qty in rows:
+            for symbol, side, qty in rows:
                 # Normalize: any "X/Y" form collapses to "XY".
                 key = symbol.replace("/", "")
-                out[key] = out.get(key, Decimal("0")) + qty
+                signed_qty = qty if side == "long" else -qty
+                out[key] = out.get(key, Decimal("0")) + signed_qty
         return {k: float(v) for k, v in out.items()}
 
     def list_unresolved_strikes(self) -> list["StrikeRow"]:
