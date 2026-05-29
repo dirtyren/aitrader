@@ -121,10 +121,21 @@ def _kv_table(d: dict[str, Any]) -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
-def _scalar(v: Any) -> Any:
+def _scalar(v: Any) -> str:
+    """Render any YAML scalar/container as a single string for display.
+
+    The "Value" column in _kv_table mixes bools, ints, floats, and strings
+    in one pandas Series. PyArrow can't pick a uniform dtype, so Streamlit
+    logs an Arrow-conversion warning every render. Stringifying here is
+    lossless for display and silences the warning.
+    """
+    if v is None:
+        return "—"
     if isinstance(v, (dict, list)):
         return yaml.safe_dump(v, default_flow_style=True).strip()
-    return v
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
 
 
 def _render_risk(risk: dict[str, Any]) -> None:
