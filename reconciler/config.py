@@ -32,6 +32,12 @@ class ReconcilerConfig:
     # $200k. Cap below the limit so post-rounding/price-drift each child order
     # stays clear; oversized auto-closes split into N chunks.
     auto_close_max_notional_usd: float
+    # Auto-close dust threshold: positions with notional below this value are
+    # too small to submit (Alpaca enforces a minimum qty per asset, and many
+    # close-rejection loops bottom out at floating-point dust). Treat them as
+    # effectively flat: resolve the strike with reason='auto_close_dust' and
+    # emit an event for audit.
+    auto_close_dust_usd: float
 
     @classmethod
     def from_env(cls) -> "ReconcilerConfig":
@@ -49,5 +55,8 @@ class ReconcilerConfig:
             )),
             auto_close_max_notional_usd=float(os.environ.get(
                 "RECONCILE_AUTO_CLOSE_MAX_NOTIONAL_USD", "190000"
+            )),
+            auto_close_dust_usd=float(os.environ.get(
+                "RECONCILE_AUTO_CLOSE_DUST_USD", "1.0"
             )),
         )

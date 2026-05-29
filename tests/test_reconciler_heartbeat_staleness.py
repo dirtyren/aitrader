@@ -41,6 +41,7 @@ def _cfg(stale_after_s=300):
         state_file_path="/tmp/state.json",
         heartbeat_stale_after_s=stale_after_s,
         auto_close_max_notional_usd=190_000.0,
+        auto_close_dust_usd=1.0,
     )
 
 
