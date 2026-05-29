@@ -27,6 +27,7 @@ class ReconcilerConfig:
     qty_eps: float
     shadow_mode: bool
     state_file_path: str
+    heartbeat_stale_after_s: int
 
     @classmethod
     def from_env(cls) -> "ReconcilerConfig":
@@ -39,4 +40,7 @@ class ReconcilerConfig:
             state_file_path=os.environ.get(
                 "RECONCILE_STATE_FILE", "/app/runtime/reconciler_state.json"
             ),
+            heartbeat_stale_after_s=int(os.environ.get(
+                "RECONCILE_HEARTBEAT_STALE_AFTER_S", "300"
+            )),
         )

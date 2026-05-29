@@ -18,7 +18,7 @@ from streamlit_autorefresh import st_autorefresh
 
 from ui.components.theme import inject_theme
 from ui.logging_setup import setup_logging
-from ui.tabs import config_tab, live_tab, strategies_tab
+from ui.tabs import config_tab, live_tab, reconciliation_tab, strategies_tab
 from ui.tabs.logs_panel import render as render_logs
 from ui.wfo import tab as wfo_tab
 
@@ -44,8 +44,8 @@ st.set_page_config(page_title="aitrader", layout="wide", initial_sidebar_state="
 inject_theme()
 st.title("aitrader")
 
-strategies_t, live_t, config_t, logs_t, wfo_t = st.tabs([
-    "Strategies", "Live Trading", "Configuration", "Logs", "WFO",
+strategies_t, live_t, recon_t, config_t, logs_t, wfo_t = st.tabs([
+    "Strategies", "Live Trading", "Reconciliation", "Configuration", "Logs", "WFO",
 ])
 
 with strategies_t:
@@ -54,6 +54,9 @@ with strategies_t:
 with live_t:
     st_autorefresh(interval=5_000, key="live_refresh")
     _safe_render("live", live_tab.render)
+
+with recon_t:
+    _safe_render("reconciliation", reconciliation_tab.render)
 
 with config_t:
     _safe_render("config", config_tab.render)

@@ -224,6 +224,7 @@ services:
       - RECONCILE_QTY_EPS=${RECONCILE_QTY_EPS:-1e-6}
       - SHADOW_MODE=${SHADOW_MODE:-true}
       - RECONCILE_STATE_FILE=/app/runtime/reconciler_state.json
+      - RECONCILE_HEARTBEAT_STALE_AFTER_S=${RECONCILE_HEARTBEAT_STALE_AFTER_S:-300}
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs

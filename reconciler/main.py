@@ -22,14 +22,14 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from broker.alpaca_client import AlpacaClient
-from notifications import send_reconcile_alert
+from notifications import send_reconcile_alert, send_reconcile_heartbeat_stale
 from reconciler.config import ReconcilerConfig
 from reconciler.events import emit_event
 from reconciler.fills import apply_tagged_fill
 from reconciler.invariant import check_invariant
 from reconciler.state import load_state, save_state
 from reconciler.strikes import auto_clear_resolved, process_anomaly
-from state.mysql_store import MySQLStore
+from state.mysql_store import EventRow, MySQLStore
 
 log = logging.getLogger("reconciler")
 
@@ -76,6 +76,32 @@ def run_one_cycle(
     broker_norm = _broker_qty_by_symbol(broker_positions)
 
     with Session(store._engine) as session:
+        # 1.5. Heartbeat staleness check (before fills, so the alert is the
+        # first artifact written this cycle).
+        last_hb = session.query(EventRow.created_at).filter(
+            EventRow.type == "heartbeat",
+        ).order_by(EventRow.created_at.desc()).first()
+        if last_hb is not None:
+            last_hb_ts = last_hb[0]
+            if last_hb_ts.tzinfo is None:
+                last_hb_ts = last_hb_ts.replace(tzinfo=timezone.utc)
+            age_s = (now - last_hb_ts).total_seconds()
+            if age_s > cfg.heartbeat_stale_after_s:
+                emit_event(
+                    session,
+                    type="reconciler_heartbeat_stale",
+                    payload={
+                        "last_seen_at": last_hb_ts.isoformat(),
+                        "age_seconds": age_s,
+                        "threshold_s": cfg.heartbeat_stale_after_s,
+                    },
+                )
+                send_reconcile_heartbeat_stale(
+                    last_seen_at=last_hb_ts,
+                    age_seconds=age_s,
+                    stale_threshold_s=cfg.heartbeat_stale_after_s,
+                )
+
         # 2. Apply tagged fills (or shadow-log them).
         for fill in recent_fills:
             if cfg.shadow_mode:

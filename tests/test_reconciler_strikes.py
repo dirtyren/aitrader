@@ -29,6 +29,7 @@ def _cfg(threshold=3, min_gap_s=60):
         interval_s=30, strike_threshold=threshold, strike_min_gap_s=min_gap_s,
         qty_eps=1e-6, shadow_mode=False,
         state_file_path="/tmp/state.json",
+        heartbeat_stale_after_s=300,
     )
 
 
