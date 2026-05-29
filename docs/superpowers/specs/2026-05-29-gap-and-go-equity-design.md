@@ -1,6 +1,6 @@
 # Gap-and-Go Equity Strategy — Design
 
-**Status:** Design approved, awaiting implementation plan
+**Status:** Done
 **Date:** 2026-05-29
 **Owner:** Alessandro Ren
 **Scope:** New equity strategy `gap_and_go`, deployed as its own trader container `trader-alpaca-gap_and_go`
