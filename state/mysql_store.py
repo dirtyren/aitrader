@@ -771,15 +771,36 @@ class MySQLStore:
         Used by the reconciler service to match Alpaca fills to MySQL rows.
         Crosses strategies — does not filter by self.strategy_id.
 
+        If multiple open rows share the same COID (a data-integrity bug — a
+        prior reconciler crash inserting recovery rows in a feedback loop is
+        the known cause), return the most recent and log MYSQL_DUPLICATE_OPEN_COID
+        so the dedupe script can be run.
+
         NOTE: returned object is detached from its session — access scalar
         columns (symbol, strategy_id, etc.) safely; do NOT access lazy
         relationships like `.strategy` (raises DetachedInstanceError).
         """
         with Session(self._engine) as session:
+            rows = session.query(PositionRow).filter(
+                PositionRow.client_order_id == client_order_id,
+                PositionRow.status == "open",
+            ).order_by(PositionRow.opened_at.desc()).all()
+            if not rows:
+                return None
+            if len(rows) > 1:
+                self._log.warning(
+                    "MYSQL_DUPLICATE_OPEN_COID coid=%s count=%d ids=%s",
+                    client_order_id, len(rows), [r.id for r in rows],
+                )
+            return rows[0]
+
+    def count_open_positions_by_coid(self, client_order_id: str) -> int:
+        """Number of open PositionRow rows with this entry COID. Cross-strategy."""
+        with Session(self._engine) as session:
             return session.query(PositionRow).filter(
                 PositionRow.client_order_id == client_order_id,
                 PositionRow.status == "open",
-            ).one_or_none()
+            ).count()
 
     def find_open_position_by_setup(
         self, strategy_id: int, symbol: str, setup_name: str,

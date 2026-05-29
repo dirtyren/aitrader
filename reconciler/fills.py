@@ -88,6 +88,22 @@ def apply_tagged_fill(
     if role in _ENTRY_ROLES:
         existing = store.find_open_position_by_coid(coid)
         if existing is not None:
+            # If duplicates exist, the store logged a warning. Surface it as
+            # an event so an operator sees it without trawling logs. The
+            # check is cheap and only runs when we already have at least one
+            # open row for this COID.
+            dupe_count = store.count_open_positions_by_coid(coid)
+            if dupe_count > 1:
+                emit_event(
+                    session,
+                    type="duplicate_open_coid",
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    payload={
+                        "client_order_id": coid,
+                        "open_row_count": dupe_count,
+                    },
+                )
             return  # idempotent noop, already applied
         # Crash-before-write recovery: insert the row.
         try:

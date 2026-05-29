@@ -278,3 +278,36 @@ def test_tagged_entry_with_missing_avg_price_writes_untagged_event_no_row(store)
         events = session.query(EventRow).all()
         assert len(events) == 1
         assert events[0].payload.get("reason") == "missing_fill_data"
+
+
+def test_tagged_entry_with_duplicate_open_rows_does_not_crash_and_emits_event(store):
+    """When two open rows share a COID (a prior crashloop artifact), the
+    reconciler must not raise and must surface a duplicate_open_coid event."""
+    coid = _coid(role="entry")
+    pos = OpenPosition(
+        symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
+        entry_px=100.0, stop_px=99.0, target_px=101.0,
+        opened_at=datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
+        order_id="o1", initial_stop_px=99.0, client_order_id=coid,
+    )
+    store.position_opened(pos, "equity")
+    pos2 = OpenPosition(
+        symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
+        entry_px=100.0, stop_px=99.0, target_px=101.0,
+        opened_at=datetime(2026, 5, 28, 14, 5, tzinfo=timezone.utc),
+        order_id="o2", initial_stop_px=99.0, client_order_id=coid,
+    )
+    store.position_opened(pos2, "equity")
+
+    fill = _filled_order(coid=coid)
+    with Session(store._engine) as session:
+        apply_tagged_fill(session, fill, store)
+        session.commit()
+
+    with Session(store._engine) as session:
+        assert session.query(PositionRow).count() == 2  # no recovery row inserted
+        events = session.query(EventRow).all()
+        assert len(events) == 1
+        assert events[0].type == "duplicate_open_coid"
+        assert events[0].payload["client_order_id"] == coid
+        assert events[0].payload["open_row_count"] == 2

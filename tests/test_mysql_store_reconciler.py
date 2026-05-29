@@ -80,6 +80,38 @@ def test_find_open_position_by_coid_returns_none_for_closed(store):
     assert store.find_open_position_by_coid(coid) is None
 
 
+def test_find_open_position_by_coid_returns_latest_when_duplicates_exist(store):
+    """Data-integrity bug recovery: two open rows for the same COID must not
+    crash the reconciler. Pick the most recent (largest opened_at)."""
+    coid = "aitrader__vwap_wave__vwap_bounce__AAPL__entry__abcd1234"
+    older = OpenPosition(
+        symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
+        entry_px=100.0, stop_px=99.0, target_px=101.0,
+        opened_at=datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
+        order_id="o1", initial_stop_px=99.0, client_order_id=coid,
+    )
+    newer = OpenPosition(
+        symbol="AAPL", setup="vwap_bounce", side="long", qty=1.0,
+        entry_px=100.0, stop_px=99.0, target_px=101.0,
+        opened_at=datetime(2026, 5, 28, 14, 5, tzinfo=timezone.utc),
+        order_id="o2", initial_stop_px=99.0, client_order_id=coid,
+    )
+    store.position_opened(older, "equity")
+    store.position_opened(newer, "equity")
+
+    row = store.find_open_position_by_coid(coid)
+    assert row is not None
+    # Compare naive — SQLite drops tzinfo on persistence.
+    assert row.opened_at.replace(tzinfo=None) == newer.opened_at.replace(tzinfo=None)
+
+
+def test_count_open_positions_by_coid(store):
+    coid = "aitrader__vwap_wave__vwap_bounce__AAPL__entry__abcd1234"
+    assert store.count_open_positions_by_coid(coid) == 0
+    _open_pos(store, store._strategy_id, "AAPL", "vwap_bounce", 1.0, coid)
+    assert store.count_open_positions_by_coid(coid) == 1
+
+
 def test_find_open_position_by_setup_cross_strategy(store):
     """Reconciler must look up positions in any strategy, not just self.strategy_id."""
     _open_pos(store, store._other_strategy_id, "AAPL", "rsi_long", 5.0)
