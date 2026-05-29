@@ -580,3 +580,153 @@ def test_too_many_chunks_aborts_before_any_submit(store):
         ).all()
         assert len(evts) == 1
         assert "too many chunks" in evts[0].payload["error"]
+
+
+# ---------------------------------------------------------------------------
+# Cancel-before-close: stale bracket children lock broker qty
+# ---------------------------------------------------------------------------
+
+
+def test_open_orders_on_symbol_are_cancelled_before_close(store):
+    """Equity bracket children (stop + target legs) from the original entry
+    keep the broker qty locked — Alpaca returns 'insufficient qty available
+    for order (requested: N, available: 0)' on any close attempt. The
+    reconciler must cancel them first, then submit the close."""
+    cfg = _cfg_with_max(max_notional=190_000.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = [
+        {"id": "stop-leg-1"},
+        {"id": "target-leg-1"},
+    ]
+    alpaca.submit_order.return_value = {"id": "close-1"}
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "PLTR", count=3, now=now)
+        session.commit()
+        anomaly = _broker_only_anomaly("PLTR", broker_qty=399.0)
+        submitted = auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={"PLTR": {"symbol": "PLTR", "qty": "399",
+                                       "current_price": "100.0"}},
+            anomalies=[anomaly], cfg=cfg, now=now,
+        )
+        session.commit()
+
+    # Both bracket children must have been cancelled first.
+    assert alpaca.cancel_order.call_count == 2
+    cancelled_ids = [c.args[0] for c in alpaca.cancel_order.call_args_list]
+    assert set(cancelled_ids) == {"stop-leg-1", "target-leg-1"}
+
+    # And the close itself still went through.
+    assert submitted == 1
+    alpaca.submit_order.assert_called_once()
+
+
+def test_no_open_orders_means_no_cancels(store):
+    """Path unchanged when the broker has nothing to cancel for the symbol."""
+    cfg = _cfg_with_max(max_notional=190_000.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = []
+    alpaca.submit_order.return_value = {"id": "close-1"}
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "PLTR", count=3, now=now)
+        session.commit()
+        auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={"PLTR": {"symbol": "PLTR", "qty": "399",
+                                       "current_price": "100.0"}},
+            anomalies=[_broker_only_anomaly("PLTR", broker_qty=399.0)],
+            cfg=cfg, now=now,
+        )
+
+    alpaca.cancel_order.assert_not_called()
+    alpaca.submit_order.assert_called_once()
+
+
+def test_individual_cancel_failure_does_not_block_close(store):
+    """A cancel that fails (e.g. order already filled / cancelled in the
+    meantime) is logged-and-skipped; the close proceeds."""
+    cfg = _cfg_with_max(max_notional=190_000.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = [
+        {"id": "leg-A"},
+        {"id": "leg-B"},
+    ]
+    alpaca.cancel_order.side_effect = [
+        RuntimeError("already filled"),
+        True,  # second cancel succeeds
+    ]
+    alpaca.submit_order.return_value = {"id": "close-1"}
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "PLTR", count=3, now=now)
+        session.commit()
+        submitted = auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={"PLTR": {"symbol": "PLTR", "qty": "399",
+                                       "current_price": "100.0"}},
+            anomalies=[_broker_only_anomaly("PLTR", broker_qty=399.0)],
+            cfg=cfg, now=now,
+        )
+
+    # Both cancels were attempted, but only one succeeded.
+    assert alpaca.cancel_order.call_count == 2
+    # Close proceeded regardless.
+    assert submitted == 1
+    alpaca.submit_order.assert_called_once()
+
+
+def test_list_orders_failure_does_not_block_close(store):
+    """If list_orders itself raises, log and proceed to the close — the
+    close will fail loudly if qty is still locked, and the next cycle
+    retries against fresh broker state."""
+    cfg = _cfg_with_max(max_notional=190_000.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.side_effect = RuntimeError("rate limited")
+    alpaca.submit_order.return_value = {"id": "close-1"}
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "PLTR", count=3, now=now)
+        session.commit()
+        submitted = auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={"PLTR": {"symbol": "PLTR", "qty": "399",
+                                       "current_price": "100.0"}},
+            anomalies=[_broker_only_anomaly("PLTR", broker_qty=399.0)],
+            cfg=cfg, now=now,
+        )
+
+    alpaca.cancel_order.assert_not_called()
+    assert submitted == 1
+    alpaca.submit_order.assert_called_once()
+
+
+def test_cancel_helper_passes_correct_symbol_to_list_orders(store):
+    """Belt-and-braces: the list_orders call must scope by symbol so we
+    don't accidentally cancel orders on unrelated tickers."""
+    cfg = _cfg_with_max(max_notional=190_000.0)
+    now = datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = []
+    alpaca.submit_order.return_value = {"id": "close-1"}
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "PLTR", count=3, now=now)
+        session.commit()
+        auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={"PLTR": {"symbol": "PLTR", "qty": "399",
+                                       "current_price": "100.0"}},
+            anomalies=[_broker_only_anomaly("PLTR", broker_qty=399.0)],
+            cfg=cfg, now=now,
+        )
+
+    alpaca.list_orders.assert_called_once()
+    kwargs = alpaca.list_orders.call_args.kwargs
+    assert kwargs["status"] == "open"
+    assert kwargs["symbols"] == ["PLTR"]

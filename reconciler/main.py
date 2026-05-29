@@ -94,6 +94,47 @@ def _broker_price(broker_pos: dict) -> float | None:
     return None
 
 
+def _cancel_open_orders_for_symbol(alpaca: Any, symbol: str) -> list[str]:
+    """Cancel every open order for ``symbol`` on the broker. Best-effort.
+
+    Why: a position whose qty is locked by open bracket children (stop /
+    target legs from the original entry) cannot be market-closed — Alpaca
+    returns "insufficient qty available for order (requested: N,
+    available: 0)". Cancel-then-close is the standard remediation; if any
+    individual cancel fails we log and continue (the close itself will
+    fail loudly and the next reconciler cycle retries).
+
+    Returns the list of order IDs that were cancelled. Does not raise.
+    """
+    try:
+        open_orders = alpaca.list_orders(
+            status="open", symbols=[symbol], nested=False,
+        )
+    except Exception as exc:
+        log.error(
+            "AUTO_CLOSE_LIST_ORDERS_FAILED symbol=%s error=%s",
+            symbol, exc, exc_info=True,
+        )
+        return []
+
+    cancelled: list[str] = []
+    for order in open_orders or []:
+        # `nested=False` flattens bracket children into the top level — they
+        # carry parent_id but otherwise behave like any cancellable order.
+        order_id = order.get("id")
+        if not order_id:
+            continue
+        try:
+            alpaca.cancel_order(order_id)
+            cancelled.append(order_id)
+        except Exception as exc:
+            log.warning(
+                "AUTO_CLOSE_CANCEL_FAILED symbol=%s order_id=%s error=%s",
+                symbol, order_id, exc,
+            )
+    return cancelled
+
+
 def auto_close_broker_only(
     *,
     alpaca: Any,
@@ -203,6 +244,20 @@ def auto_close_broker_only(
                 },
             )
             continue
+
+        # Cancel any open orders on this symbol before submitting the close.
+        # Stale bracket children (stop / target legs) from the original entry
+        # lock the broker qty: Alpaca returns "insufficient qty available
+        # for order (requested: N, available: 0)" until those are gone.
+        # Best-effort — individual cancel failures are logged and the close
+        # proceeds anyway; if the qty is still locked, the close itself
+        # fails and we retry next cycle.
+        cancelled_ids = _cancel_open_orders_for_symbol(alpaca, broker_symbol)
+        if cancelled_ids:
+            log.info(
+                "AUTO_CLOSE_CANCELLED_OPEN_ORDERS symbol=%s count=%d ids=%s",
+                broker_symbol, len(cancelled_ids), cancelled_ids,
+            )
 
         all_ok = True
         order_ids: list[str | None] = []
