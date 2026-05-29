@@ -242,8 +242,19 @@ class AlpacaClient:
         time_in_force: str = "day",
         limit_price: float | None = None,
         client_order_id: str | None = None,
+        extended_hours: bool = False,
     ) -> dict:
-        """POST /v2/orders — submit a new order and return the order dict."""
+        """POST /v2/orders — submit a new order and return the order dict.
+
+        Set ``extended_hours=True`` to allow the order to fill outside regular
+        session hours (Alpaca pre-market / after-hours window). Alpaca only
+        accepts limit orders with TIF=day for extended-hours routing.
+        """
+        if extended_hours:
+            if order_type != "limit":
+                raise ValueError("extended_hours requires order_type='limit'")
+            if time_in_force != "day":
+                raise ValueError("extended_hours requires time_in_force='day'")
         payload = {
             "symbol": symbol,
             "qty": qty,
@@ -253,6 +264,40 @@ class AlpacaClient:
         }
         if limit_price is not None:
             payload["limit_price"] = _round_to_tick(limit_price)
+        if client_order_id:
+            payload["client_order_id"] = client_order_id
+        if extended_hours:
+            payload["extended_hours"] = True
+        response = self._request("POST", "/v2/orders", json=payload)
+        return response.json()
+
+    def attach_oco(
+        self,
+        symbol: str,
+        qty: float,
+        side: str,
+        stop_price: float,
+        target_price: float,
+        time_in_force: str = "day",
+        client_order_id: str | None = None,
+    ) -> dict:
+        """POST /v2/orders with order_class='oco' — attach stop+target to an
+        already-open position (no entry leg).
+
+        Used post-09:30 to bracket Gap-and-Go positions that filled in the
+        pre-market via plain extended-hours limits.
+        """
+        payload = {
+            "symbol": symbol,
+            "qty": qty,
+            "side": side,
+            "type": "limit",
+            "limit_price": _round_to_tick(target_price),
+            "time_in_force": time_in_force,
+            "order_class": "oco",
+            "stop_loss": {"stop_price": _round_to_tick(stop_price)},
+            "take_profit": {"limit_price": _round_to_tick(target_price)},
+        }
         if client_order_id:
             payload["client_order_id"] = client_order_id
         response = self._request("POST", "/v2/orders", json=payload)

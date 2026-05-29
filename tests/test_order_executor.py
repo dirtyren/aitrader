@@ -338,3 +338,60 @@ def test_close_position_passes_role_exit_coid():
 def test_empty_strategy_name_raises():
     with pytest.raises(ValueError, match="non-empty strategy_name"):
         OrderExecutor(MagicMock(), PositionBook(), strategy_name="")
+
+
+# ---------------------------------------------------------------------------
+# Extended-hours (Gap-and-Go) entry path
+# ---------------------------------------------------------------------------
+
+
+def _eh_signal(symbol="AAPL"):
+    return SetupSignal(
+        setup="gap_and_go", symbol=symbol, side="long",
+        entry=200.0, stop=198.0, target=204.0, atr=1.0, level=200.0,
+        ts=datetime(2026, 5, 29, 12, 30, tzinfo=timezone.utc),
+        notes={"style": "gap_continuation", "extended_hours": True,
+               "premarket_high": 199.95, "premarket_low": 197.0},
+    )
+
+
+def test_submit_extended_hours_uses_plain_limit_not_bracket():
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "eh-1"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="gap_and_go", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=2000)
+    pos = ex.submit(_eh_signal(), decision, asset_class="equity")
+    assert pos is not None
+    client.submit_bracket_order.assert_not_called()
+    client.submit_order.assert_called_once()
+    payload = client.submit_order.call_args.kwargs
+    assert payload["order_type"] == "limit"
+    assert payload["time_in_force"] == "day"
+    assert payload["extended_hours"] is True
+    assert payload["limit_price"] == 200.0
+    assert payload["side"] == "buy"
+
+
+def test_submit_extended_hours_marks_position_pending_oco_attach():
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "eh-2"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="gap_and_go", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=2000)
+    pos = ex.submit(_eh_signal(), decision, asset_class="equity")
+    assert pos.pending_oco_attach is True
+    assert pos.stop_px == 198.0
+    assert pos.target_px == 204.0
+    assert pos.stop_order_id is None  # no bracket leg yet
+
+
+def test_submit_regular_equity_does_not_set_pending_oco_attach():
+    """The default bracket path must not flip the new flag."""
+    client = MagicMock()
+    client.submit_bracket_order.return_value = {"id": "ord-1"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="orb_vwap", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+    pos = ex.submit(_signal(), decision, asset_class="equity")
+    assert pos.pending_oco_attach is False

@@ -87,8 +87,23 @@ class OrderExecutor:
             self.strategy_name, signal.setup, signal.symbol, Role.ENTRY,
         )
 
+        extended_hours = bool(signal.notes.get("extended_hours"))
+
         try:
-            if asset_class == "equity":
+            if asset_class == "equity" and extended_hours:
+                # Pre-market entry: plain limit with extended_hours=True. The
+                # OCO bracket is attached after the regular session opens.
+                order = self.client.submit_order(
+                    symbol=signal.symbol,
+                    qty=decision.qty,
+                    side=alp_side,
+                    order_type="limit",
+                    time_in_force="day",
+                    limit_price=signal.entry,
+                    client_order_id=entry_coid,
+                    extended_hours=True,
+                )
+            elif asset_class == "equity":
                 order = self.client.submit_bracket_order(
                     symbol=signal.symbol,
                     qty=decision.qty,
@@ -157,6 +172,7 @@ class OrderExecutor:
             target_order_id=target_order_id,
             initial_stop_px=signal.stop,
             client_order_id=entry_coid,
+            pending_oco_attach=extended_hours,
         )
         self.book.add(pos)
         # Persist to MySQL so position metadata survives container restarts

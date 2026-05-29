@@ -228,6 +228,28 @@ services:
       mysql:
         condition: service_healthy
 
+  trader-alpaca-gap_and_go:
+    build: .
+    command: python main_gap_and_go.py --config config/settings_gap_and_go_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_gap_and_go_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+      - ./config/universe_russell_1000.csv:/app/config/universe_russell_1000.csv:ro
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
   reconciler:
     build: .
     command: python -m reconciler.main

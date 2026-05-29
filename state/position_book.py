@@ -34,6 +34,7 @@ class OpenPosition:
     initial_stop_px: float | None = None  # original stop at entry; survives breakeven moves
     adopted: bool = False                 # True for positions reconciled from broker
     client_order_id: str | None = None     # COID stamped at order submit (Plan 2)
+    pending_oco_attach: bool = False       # extended-hours fill awaiting 09:30 OCO attach
 
     @property
     def initial_risk_per_share(self) -> float:
