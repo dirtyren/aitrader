@@ -35,13 +35,19 @@ log = logging.getLogger("reconciler")
 
 
 def _broker_qty_by_symbol(positions: list[dict]) -> dict[str, float]:
+    """Map broker symbol → signed qty (positive=long, negative=short).
+
+    Alpaca returns `qty` already signed (e.g. -136 for a 136-share short),
+    so we pass it through unchanged. Side-aware so the invariant catches
+    long-vs-short divergence between MySQL and broker.
+    """
     out: dict[str, float] = {}
     for p in positions:
         sym = p.get("symbol", "").replace("/", "")
         if not sym:
             continue
         try:
-            out[sym] = abs(float(p.get("qty", 0)))
+            out[sym] = float(p.get("qty", 0))
         except (TypeError, ValueError):
             log.warning("RECONCILER_BAD_BROKER_QTY symbol=%s p=%s", sym, p)
     return out
