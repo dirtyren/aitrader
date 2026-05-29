@@ -11,6 +11,7 @@ import streamlit as st
 from ui.components import period_selector, strategy_card
 from ui.components.kpi_row import render_kpi_row
 from ui.data import stats, trades_repo
+from ui.data.strategy_configs import list_yaml_strategy_names
 
 
 def render() -> None:
@@ -18,14 +19,14 @@ def render() -> None:
     st.session_state["period"] = (start, end)
 
     try:
-        all_strategies = trades_repo.list_strategies()
+        all_strategies = list_yaml_strategy_names()
     except Exception as e:
-        st.error(f"MySQL unreachable: {e}")
+        st.error(f"Failed to load strategy configs: {e}")
         st.stop()
         return
 
     if not all_strategies:
-        st.info("No strategies registered yet.")
+        st.info("No strategies configured yet.")
         return
 
     selected: str | None = st.session_state.get("selected_strategy")

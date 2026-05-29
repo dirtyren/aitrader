@@ -8,7 +8,7 @@ import streamlit as st
 
 from ui.data.positions_repo import get_open
 from ui.data.state_files import get_last_price
-from ui.data.trades_repo import list_strategies
+from ui.data.strategy_configs import list_yaml_strategy_names
 
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
@@ -52,14 +52,14 @@ def render() -> None:
 
     try:
         df = get_open()
-        all_strategies = sorted(list_strategies())
+        yaml_strategies = list_yaml_strategy_names()
     except Exception as e:
         st.error(f"MySQL unreachable: {e}")
         st.stop()
         return
 
     open_strategies = sorted(df["strategy"].unique().tolist()) if not df.empty else []
-    options = sorted(set(all_strategies) | set(open_strategies))
+    options = sorted(set(yaml_strategies) | set(open_strategies))
 
     if not options:
         st.info("No strategies registered yet.")

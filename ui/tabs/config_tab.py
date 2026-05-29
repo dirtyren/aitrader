@@ -63,7 +63,11 @@ def _format_sidebar_label(entry: StrategyEntry) -> str:
 def _render_db_only(name: str) -> None:
     st.markdown(f"### {name}")
     st.caption("Status: **db-only**")
-    st.info("No YAML config found for this strategy. See Strategies tab for trade history.")
+    st.info(
+        "This strategy is registered in MySQL but has no current YAML config — "
+        "likely renamed or retired. Trades are retained in the database but no "
+        "longer shown in the Strategies/Live tabs."
+    )
 
 
 def _render_detail(status: str, cfg: StrategyConfig) -> None:

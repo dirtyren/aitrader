@@ -162,6 +162,11 @@ def load_yaml_configs(config_dir: Path = Path("config")) -> dict[str, StrategyCo
     return _load(config_dir).configs
 
 
+def list_yaml_strategy_names(config_dir: Path = Path("config")) -> list[str]:
+    """Sorted strategy names from `config/settings*.yaml` (system.name)."""
+    return sorted(load_yaml_configs(config_dir).keys())
+
+
 def _db_strategies() -> list[str]:
     from ui.data.trades_repo import list_strategies
     return list(list_strategies())
