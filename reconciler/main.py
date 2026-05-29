@@ -29,7 +29,7 @@ from reconciler.fills import apply_tagged_fill
 from reconciler.invariant import check_invariant
 from reconciler.state import load_state, save_state
 from reconciler.strikes import auto_clear_resolved, process_anomaly
-from state.mysql_store import EventRow, MySQLStore
+from state.mysql_store import EventRow, MySQLStore, StrikeRow
 
 log = logging.getLogger("reconciler")
 
@@ -51,6 +51,124 @@ def _broker_qty_by_symbol(positions: list[dict]) -> dict[str, float]:
         except (TypeError, ValueError):
             log.warning("RECONCILER_BAD_BROKER_QTY symbol=%s p=%s", sym, p)
     return out
+
+
+def _broker_position_by_symbol(positions: list[dict]) -> dict[str, dict]:
+    """Same key shape as _broker_qty_by_symbol, but values are the full dict.
+
+    Needed by the auto-close path so it can read the broker's authoritative
+    qty (not the snapshot's, which drifts) and infer side from the sign.
+    """
+    out: dict[str, dict] = {}
+    for p in positions:
+        sym = p.get("symbol", "").replace("/", "")
+        if sym:
+            out[sym] = p
+    return out
+
+
+def auto_close_broker_only(
+    *,
+    alpaca: Any,
+    store: MySQLStore,
+    session: Session,
+    broker_positions: dict[str, dict],
+    anomalies: list,
+    cfg: ReconcilerConfig,
+    now: datetime,
+) -> int:
+    """Market-close every broker_only anomaly whose strike count >= threshold.
+
+    aitrader cannot enforce position-management invariants on broker-only
+    orphans (no MySQL row → no PositionManager, no stop, no target). After
+    `cfg.strike_threshold` consecutive observations, the position is
+    confirmed unmanaged and we flatten it.
+
+    Idempotent: if the market close fails or partially fills, the position
+    persists, the strike stays unresolved, and the next cycle retries. If
+    it succeeds, the position is gone next cycle and `auto_clear_resolved`
+    marks the strike `self_healed`.
+
+    Returns the number of close orders submitted this cycle.
+    """
+    if cfg.shadow_mode:
+        return 0
+
+    submitted = 0
+    for a in anomalies:
+        if a.direction != "broker_only":
+            continue
+        existing = session.query(StrikeRow).filter(
+            StrikeRow.key == a.key,
+            StrikeRow.resolved == False,  # noqa: E712 — SQLAlchemy idiom
+        ).one_or_none()
+        if existing is None or existing.strike_count < cfg.strike_threshold:
+            continue
+
+        broker_pos = broker_positions.get(a.symbol)
+        if broker_pos is None:
+            # Vanished between snapshot and now — let auto_clear_resolved
+            # pick it up next cycle.
+            continue
+        try:
+            broker_qty = float(broker_pos.get("qty", 0))
+        except (TypeError, ValueError):
+            log.error("AUTO_CLOSE_BAD_QTY symbol=%s p=%s", a.symbol, broker_pos)
+            continue
+        if broker_qty == 0:
+            continue
+
+        side = "sell" if broker_qty > 0 else "buy"
+        qty = abs(broker_qty)
+        # Crypto symbols come back from Alpaca already in slash-form; stocks
+        # are flat. Use the broker's own symbol so the close matches what we
+        # observed.
+        broker_symbol = broker_pos.get("symbol") or a.symbol
+        try:
+            order = alpaca.submit_order(
+                symbol=broker_symbol, qty=qty, side=side,
+                order_type="market", time_in_force="gtc",
+            )
+        except Exception as exc:
+            log.error(
+                "AUTO_CLOSE_FAILED symbol=%s side=%s qty=%s error=%s",
+                broker_symbol, side, qty, exc, exc_info=True,
+            )
+            emit_event(
+                session,
+                type="auto_close_broker_only_failed",
+                symbol=a.symbol,
+                payload={
+                    "broker_symbol": broker_symbol,
+                    "side": side, "qty": qty,
+                    "strike_count": existing.strike_count,
+                    "error": str(exc),
+                },
+            )
+            continue
+
+        submitted += 1
+        order_id = order.get("id") if isinstance(order, dict) else None
+        log.warning(
+            "AUTO_CLOSE_SUBMITTED symbol=%s side=%s qty=%s order_id=%s strike_count=%d",
+            broker_symbol, side, qty, order_id, existing.strike_count,
+        )
+        emit_event(
+            session,
+            type="auto_close_broker_only",
+            symbol=a.symbol,
+            payload={
+                "broker_symbol": broker_symbol,
+                "side": side, "qty": qty,
+                "order_id": order_id,
+                "strike_count": existing.strike_count,
+            },
+        )
+        existing.resolved = True
+        existing.resolved_at = now
+        existing.resolved_reason = "auto_closed_broker_only"
+
+    return submitted
 
 
 def run_one_cycle(
@@ -150,6 +268,16 @@ def run_one_cycle(
                         strike_count=outcome.strike_count,
                         strike_threshold=cfg.strike_threshold,
                     )
+
+        # 4.5. Auto-close broker_only anomalies whose strike has confirmed
+        # them as unmanaged. Strike-gated so transient races (in-flight fill
+        # not yet written to MySQL) self-heal before we flatten anything.
+        broker_positions_by_sym = _broker_position_by_symbol(broker_positions)
+        auto_close_broker_only(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions=broker_positions_by_sym,
+            anomalies=anomalies, cfg=cfg, now=now,
+        )
 
         # 5. Auto-clear strikes whose anomaly is no longer present.
         auto_clear_resolved(
