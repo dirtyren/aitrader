@@ -185,14 +185,14 @@ def attach_oco(self, symbol, qty, side, stop_price, target_price,
 
 ### Change 3: `OrderExecutor` — branch on `extended_hours` flag
 
-Existing `submit_signal()` always calls `submit_bracket_order`. New behavior:
+Existing `submit()` always calls `submit_bracket_order`. New behavior:
 
 - If `signal.notes.get("extended_hours")` → submit plain limit with `extended_hours=True`. Mark the resulting `OpenPosition.pending_oco_attach = True`.
 - Else → existing bracket path, unchanged.
 
 ### Change 4: `OpenPosition` — add `pending_oco_attach: bool = False`
 
-Tracks pre-market fills awaiting 09:30 OCO submission. Defined wherever `OpenPosition` lives (existing class is in `state/position_book.py`). The flag is set by `OrderExecutor.submit_signal()` when it submits an extended-hours entry, and cleared by `attach_brackets_for_premarket_fills()` after successful OCO submit. Existing call sites do not set the flag, preserving current behavior.
+Tracks pre-market fills awaiting 09:30 OCO submission. Defined wherever `OpenPosition` lives (existing class is in `state/position_book.py`). The flag is set by `OrderExecutor.submit()` when it submits an extended-hours entry, and cleared by `attach_brackets_for_premarket_fills()` after successful OCO submit. Existing call sites do not set the flag, preserving current behavior.
 
 ### Change 5: New module `broker/post_open_attach.py`
 
@@ -313,7 +313,7 @@ New files:
 
 Modified files (additive only):
 - `broker/alpaca_client.py` — add `extended_hours` to `submit_order`, add `attach_oco`
-- `broker/order_executor.py` — branch on `extended_hours` in `submit_signal`
+- `broker/order_executor.py` — branch on `extended_hours` in `submit`
 - `state/position_book.py` (or wherever `OpenPosition` is defined) — add `pending_oco_attach`
 - `docker-compose.yml` — new service entry
 
