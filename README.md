@@ -238,6 +238,103 @@ Live trading is gated on the `system.trading_env` field in each strategy's setti
 
 ---
 
+## Maintenance commands
+
+These are the commands you run when picking up the latest changes from `main`, recovering from incidents, or starting fresh.
+
+### After pulling updates — pick up new code
+
+```bash
+git pull
+docker compose build reconciler trader
+docker compose up -d reconciler
+
+# Watch the new RECONCILER_CYCLE_DONE log line every 30s
+docker compose logs -f reconciler
+```
+
+The reconciler now logs one INFO line per successful cycle so you can confirm at a glance that it's alive (was previously silent after startup).
+
+### Backfill `client_order_id` onto legacy rows
+
+Pre-Plan-2 positions (open before COID minting was introduced) carry `legacy_untagged=1` and `client_order_id IS NULL`. To upgrade them to first-class COID-tagged rows so the operator CLI and reconciler can match them by COID:
+
+```bash
+# Preview — print what would change
+docker compose exec trader python scripts/backfill_legacy_coids.py --dry-run
+
+# Apply — stamps synthetic role=adopted COIDs, clears legacy_untagged, writes audit events
+docker compose exec trader python scripts/backfill_legacy_coids.py --apply
+```
+
+Idempotent: rerunning finds zero candidates after the first apply.
+
+### Resolving reconciliation strikes
+
+When the reconciler confirms an anomaly across 3 cycles (`broker_only`, `mysql_only`, or `qty_drift`), use the operator CLI:
+
+```bash
+# 1. List unresolved strikes
+docker compose exec trader python scripts/reconcile_resolve.py list
+
+# 2. Inspect one
+docker compose exec trader python scripts/reconcile_resolve.py show <id>
+
+# 3. Resolve it — pick the right action for the strike's direction
+#    (see the dashboard's "How to resolve a strike" expander for full hints)
+docker compose exec trader python scripts/reconcile_resolve.py adopt <id> ...
+docker compose exec trader python scripts/reconcile_resolve.py close <id> ...
+docker compose exec trader python scripts/reconcile_resolve.py force-zero <id> ...
+docker compose exec trader python scripts/reconcile_resolve.py extend <id> --note "..."
+docker compose exec trader python scripts/reconcile_resolve.py dismiss <id> --note "..."
+```
+
+Every action writes a `reconciliation_events` row of `type='operator_action'` for audit trail.
+
+### `search_and_destroy` — clean slate (DESTRUCTIVE)
+
+> ⚠️ **This command closes EVERY open position on Alpaca and wipes the MySQL `positions`, `trades`, `daily_stats`, `reconciliation_strikes`, and `reconciliation_events` tables.** It does not touch `strategies` (so trader containers keep their FK targets). It is a one-way operation — use only when starting from scratch.
+
+The script is gated behind a typed account-number confirmation that must match the Alpaca account `/v2/account` returns. This prevents misfiring against a different account.
+
+**Step 1 — preview:**
+
+```bash
+docker compose exec trader python scripts/search_and_destroy.py --dry-run
+```
+
+This prints the Alpaca account info, every open broker position, and current MySQL row counts. Nothing is mutated.
+
+**Step 2 — apply (after reading the dry-run output carefully):**
+
+```bash
+# Replace <ACCOUNT_NUMBER> with the value printed in the dry-run output —
+# it must match exactly or the script refuses.
+docker compose exec trader python scripts/search_and_destroy.py \
+    --apply --confirm-account <ACCOUNT_NUMBER>
+```
+
+**What happens, in order:**
+
+1. **Cancel every open order** on Alpaca (so brackets / stops / TPs don't fight the close orders).
+2. **Submit market closes** for every position (sell-to-close longs, buy-to-cover shorts), each tagged with a synthetic `aitrader__operator__cleanslate__<symbol>__exit__<uuid>` COID for traceability.
+3. **Poll `/v2/positions`** for up to 20s waiting for confirmations.
+4. **Write `runtime/clean_slate_audit_<timestamp>.jsonl`** — full before/after snapshot, written outside MySQL so it survives the truncation.
+5. **Truncate MySQL** wipe tables. `strategies` is preserved.
+
+**Safety:** if the broker is still not flat after the poll deadline (some closes failed), the script writes the audit file and **exits without truncating MySQL** — so you keep the history to investigate. Re-run after manually closing the remaining positions.
+
+**Exit codes:** `0` success, `2` confirmation mismatch, `3` broker not flat after poll, `4` MySQL truncation failed.
+
+After a successful clean slate:
+
+```bash
+# Bring up a strategy fresh
+docker compose up -d trader  # or any other trader-* service
+```
+
+---
+
 ## Backtest
 
 ```bash
