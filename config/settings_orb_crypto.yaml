@@ -14,13 +14,6 @@ asset_classes:
     - AVAX/USD
     - LINK/USD
     timezone: UTC
-  equity:
-    commission_per_share: 0.0
-    session_close_local: '16:00'
-    session_open_local: '09:30'
-    slippage_bps: 2
-    symbols: []
-    timezone: America/New_York
 backtest:
   cache_dir: runtime/bars_cache
   end: '2026-04-30'

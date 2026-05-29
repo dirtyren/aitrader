@@ -2,13 +2,6 @@ acceptance:
   consecutive_closes: 2
   min_distance_atr: 0.15
 asset_classes:
-  crypto:
-    commission_bps: 25
-    session_close_local: '23:59'
-    session_open_local: 00:00
-    slippage_bps: 5
-    symbols: []
-    timezone: UTC
   equity:
     commission_per_share: 0.0
     session_close_local: '16:00'

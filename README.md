@@ -178,7 +178,7 @@ Or bring everything up at once:
 docker compose up -d
 ```
 
-The compose file defines 9 trader containers (`trader`, `trader-rsi-equity`, `trader-rsi-crypto`, `trader-ib`, `trader-ib-crypto`, `trader-vwap-bands-equity`, `trader-vwap-bands-crypto`, `trader-orb-equity`, `trader-orb-crypto`) — each runs `python main.py --config config/settings_<strategy>.yaml` against the shared MySQL.
+The compose file defines 10 trader containers, one per (strategy, asset class) pair: `trader-vwap-wave-equity`, `trader-vwap-wave-crypto`, `trader-rsi-equity`, `trader-rsi-crypto`, `trader-ib-equity`, `trader-ib-crypto`, `trader-vwap-bands-equity`, `trader-vwap-bands-crypto`, `trader-orb-equity`, `trader-orb-crypto`. Each runs `python main.py --config config/settings_<strategy>_<asset_class>.yaml` against the shared MySQL.
 
 ---
 
