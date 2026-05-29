@@ -229,3 +229,99 @@ def test_submit_bracket_order_omits_client_order_id_when_not_provided():
         )
         body = req.call_args[1]["json"]
         assert "client_order_id" not in body
+
+
+def test_submit_order_extended_hours_emits_flag():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-1"})) as req:
+        client.submit_order(
+            symbol="AAPL", qty=10, side="buy",
+            order_type="limit", time_in_force="day",
+            limit_price=200.0, extended_hours=True,
+        )
+        body = req.call_args[1]["json"]
+        assert body["extended_hours"] is True
+        assert body["type"] == "limit"
+        assert body["time_in_force"] == "day"
+
+
+def test_submit_order_extended_hours_omits_flag_when_false():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "ord-1"})) as req:
+        client.submit_order(
+            symbol="AAPL", qty=10, side="buy",
+            order_type="market", time_in_force="day",
+        )
+        body = req.call_args[1]["json"]
+        assert "extended_hours" not in body
+
+
+def test_submit_order_extended_hours_rejects_market_order():
+    client = AlpacaClient()
+    with pytest.raises(ValueError, match="order_type='limit'"):
+        client.submit_order(
+            symbol="AAPL", qty=10, side="buy",
+            order_type="market", time_in_force="day",
+            extended_hours=True,
+        )
+
+
+def test_submit_order_extended_hours_rejects_bad_tif():
+    client = AlpacaClient()
+    with pytest.raises(ValueError, match="time_in_force='day'"):
+        client.submit_order(
+            symbol="AAPL", qty=10, side="buy",
+            order_type="limit", time_in_force="gtc",
+            limit_price=200.0, extended_hours=True,
+        )
+
+
+def test_attach_oco_payload_shape():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "oco-1"})) as req:
+        order = client.attach_oco(
+            symbol="AAPL", qty=10, side="sell",
+            stop_price=99.0, target_price=102.0,
+        )
+        assert order["id"] == "oco-1"
+        method, url = req.call_args[0]
+        assert method == "POST"
+        assert url.endswith("/v2/orders")
+        body = req.call_args[1]["json"]
+        assert body["order_class"] == "oco"
+        assert body["type"] == "limit"
+        assert body["limit_price"] == 102.0
+        assert body["stop_loss"]["stop_price"] == 99.0
+        assert body["take_profit"]["limit_price"] == 102.0
+        assert body["side"] == "sell"
+        assert body["qty"] == 10
+
+
+def test_attach_oco_rounds_sub_penny_prices():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "oco-2"})) as req:
+        client.attach_oco(
+            symbol="AAPL", qty=10, side="sell",
+            stop_price=99.123456, target_price=102.987654,
+        )
+        body = req.call_args[1]["json"]
+        assert body["stop_loss"]["stop_price"] == 99.12
+        assert body["take_profit"]["limit_price"] == 102.99
+        assert body["limit_price"] == 102.99
+
+
+def test_attach_oco_forwards_client_order_id():
+    client = AlpacaClient()
+    with patch.object(client._session, "request",
+                       return_value=_resp(200, {"id": "oco-3"})) as req:
+        client.attach_oco(
+            symbol="AAPL", qty=10, side="sell",
+            stop_price=99.0, target_price=102.0,
+            client_order_id="my-coid",
+        )
+        body = req.call_args[1]["json"]
+        assert body["client_order_id"] == "my-coid"
