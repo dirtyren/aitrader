@@ -1,0 +1,117 @@
+system:
+  name: vwap_wave_crypto_trader
+  version: "2.0.0"
+  trading_env: paper            # paper | live | backtest
+
+scheduler:
+  bar_timeframe: "1Hour"
+  wake_grace_seconds: 5
+  poll_fallback_seconds: 60
+
+vwap:
+  sigma_bands: 1.5
+  min_session_bars: 6
+
+acceptance:
+  consecutive_closes: 2
+  min_distance_atr: 0.20
+
+regime_detector:
+  trend_day_range_mult: 1.5
+  trend_day_in_value_max: 0.30
+  balance_day_in_value_min: 0.60
+
+setups:
+  price_discovery:
+    enabled: true
+    atr_mult_stop: 1.0
+    target_R: 2.0
+    arm_window_bars: 4
+    cooldown_bars: 12
+  fade_extreme:
+    enabled: true
+    atr_mult_stop: 0.75
+    scale_weights: [0.4, 0.35, 0.25]
+    scale_offsets_atr: [0.0, 0.25, 0.50]
+    target: vwap
+    cooldown_bars: 12
+  return_to_value:
+    enabled: true
+    atr_mult_stop: 1.0
+    target: vwap
+    arm_window_bars: 6
+    cooldown_bars: 12
+  vwap_bounce:
+    enabled: true
+    atr_mult_stop: 1.25
+    target_R: 2.5
+    arm_window_bars: 6
+    cooldown_bars: 8
+
+risk:
+  max_risk_per_trade: 0.008
+  max_notional_per_trade_pct: 0.15
+  max_concurrent_positions: 3
+  max_daily_risk_open: 0.03
+  consecutive_loss_limit: 3
+  loss_filter_scope: per_symbol
+  circuit_breaker:
+    daily_loss_limit_1: 0.025
+    daily_loss_limit_2: 0.04
+    drawdown_limit: 0.08
+
+filters:
+  opening_blackout_min: 0
+  volume_deficit_pct: 0.30
+
+position_management:
+  max_hold_bars: 24
+  breakeven_at_R: 1.0
+  trail_at_R: 1.5
+  trail_atr: 1.0
+
+asset_classes:
+  equity:
+    timezone: "America/New_York"
+    session_open_local: "09:30"
+    session_close_local: "16:00"
+    slippage_bps: 2
+    commission_per_share: 0.0
+    symbols: []
+  crypto:
+    timezone: "UTC"
+    session_open_local: "00:00"
+    session_close_local: "23:59"
+    slippage_bps: 5
+    commission_bps: 25
+    symbols:
+      - BTC/USD
+      - ETH/USD
+      - SOL/USD
+      - AVAX/USD
+      - LINK/USD
+      - ADA/USD
+      - DOGE/USD
+      - DOT/USD
+      - PEPE/USD
+      - XRP/USD
+
+news_blackouts: []
+
+backtest:
+  start: "2024-01-01"
+  end: "2026-04-30"
+  initial_equity: 100000
+  cache_dir: "runtime/bars_cache"
+
+broker:
+  paper_trading: true
+  handshake_symbol: BTC/USD
+
+logging:
+  level: INFO
+  log_file: logs/vwap_wave_crypto_trader.log
+
+overrides:
+  path: runtime/wfo/active/live_overrides.yaml
+  enabled: true

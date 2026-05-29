@@ -18,13 +18,34 @@ services:
       timeout: 5s
       retries: 5
 
-  trader:
+  trader-vwap-wave-equity:
     build: .
-    command: python main.py
+    command: python main.py --config config/settings_vwap_wave_equity.yaml
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock.file
+      - LOCK_FILE_PATH=/app/runtime/lock_vwap_wave_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-vwap-wave-crypto:
+    build: .
+    command: python main.py --config config/settings_vwap_wave_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_vwap_wave_cr.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -81,13 +102,13 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-ib:
+  trader-ib-equity:
     build: .
-    command: python main.py --config config/settings_ib.yaml
+    command: python main.py --config config/settings_ib_equity.yaml
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_ib.file
+      - LOCK_FILE_PATH=/app/runtime/lock_ib_eq.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader

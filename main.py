@@ -66,7 +66,7 @@ def _handle_shutdown(signum, frame):
     _shutdown = True
 
 
-def load_config(path: str = "config/settings.yaml") -> dict:
+def load_config(path: str) -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
 
@@ -317,17 +317,21 @@ def _collect_snapshot(symbols, contexts, book, ledger, cb,
 
 def main():
     import sys
-    config_path = "config/settings.yaml"
-    if "--config" in sys.argv:
-        idx = sys.argv.index("--config")
-        if idx + 1 < len(sys.argv):
-            config_path = sys.argv[idx + 1]
+    if "--config" not in sys.argv:
+        raise SystemExit(
+            "main.py requires --config <path-to-strategy-yaml>; "
+            "no implicit default after the per-asset-class split."
+        )
+    idx = sys.argv.index("--config")
+    if idx + 1 >= len(sys.argv):
+        raise SystemExit("--config requires a path argument")
+    config_path = sys.argv[idx + 1]
 
     cfg = load_config(config_path)
     overrides_cfg = cfg.get("overrides") or {}
     cfg = apply_overrides(cfg, overrides_cfg.get("path"),
                           enabled=overrides_cfg.get("enabled", True))
-    system_name = cfg.get("system", {}).get("name", "vwap_wave")
+    system_name = cfg["system"]["name"]
     logger = setup_logging(log_file=cfg["logging"]["log_file"], logger_name=system_name)
     logger.info("%s starting up; env=%s", system_name, cfg["system"]["trading_env"])
 

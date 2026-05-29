@@ -136,7 +136,7 @@ def test_finest_timeframe_picks_shortest_period():
 
 
 def test_settings_yaml_overrides_path_points_to_active():
-    cfg = yaml.safe_load(Path("config/settings.yaml").read_text())
+    cfg = yaml.safe_load(Path("config/settings_vwap_wave_equity.yaml").read_text())
     assert cfg["overrides"]["path"] == "runtime/wfo/active/live_overrides.yaml"
     assert cfg["overrides"]["enabled"] is True
 
