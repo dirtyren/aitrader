@@ -24,7 +24,7 @@ def get_unresolved_strikes() -> pd.DataFrame:
     with eng.connect() as conn:
         df = pd.read_sql(
             text("""
-                SELECT r.id, r."key", r.direction, r.symbol,
+                SELECT r.id, r.`key`, r.direction, r.symbol,
                        s.name AS strategy,
                        r.strike_count, r.first_seen_at, r.last_seen_at,
                        r.last_observed_state
