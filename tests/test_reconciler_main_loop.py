@@ -43,6 +43,7 @@ def _cfg(shadow=False):
         qty_eps=1e-6, shadow_mode=shadow,
         state_file_path="/tmp/state.json",
         heartbeat_stale_after_s=300,
+        auto_close_max_notional_usd=190_000.0,
     )
 
 
