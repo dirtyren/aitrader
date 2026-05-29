@@ -225,7 +225,18 @@ class OrderExecutor:
                 client_order_id=exit_coid,
             )
         except Exception as exc:
-            if "insufficient qty" in str(exc).lower() or "not enough" in str(exc).lower() or "qty" in str(exc).lower():
+            msg = str(exc).lower()
+            # "insufficient balance for <ASSET>" — Alpaca crypto returns this
+            # when the trader-book qty exceeds the on-broker qty (fees come
+            # out of the asset side, so book and broker drift over the life
+            # of a position). Treat it as the same qty-mismatch class as the
+            # equity "insufficient qty" / "not enough" wording.
+            if (
+                "insufficient qty" in msg
+                or "not enough" in msg
+                or "qty" in msg
+                or "insufficient balance" in msg
+            ):
                 self.logger.warning("CLOSE_QTY_MISMATCH symbol=%s qty=%s, attempting full position close", symbol, qty)
                 try:
                     positions = self.client.get_positions()

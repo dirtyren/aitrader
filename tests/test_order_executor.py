@@ -335,6 +335,59 @@ def test_close_position_passes_role_exit_coid():
     assert coid.startswith("aitrader__vwap_wave__unknown__BTCUSD__exit__")
 
 
+def test_close_position_insufficient_balance_triggers_qty_reconcile():
+    """Alpaca crypto closes return 'insufficient balance for <asset>' when
+    the trader-book qty exceeds on-broker qty (fees came out of asset side).
+    Must trigger the qty-reconcile fallback, not just log CLOSE_FAILED.
+    """
+    from broker.alpaca_client import InsufficientBuyingPowerError
+
+    client = MagicMock()
+    # First submit (with stale book qty) raises insufficient_balance.
+    # Fallback re-submits at the broker's reported qty — that one succeeds.
+    client.submit_order.side_effect = [
+        InsufficientBuyingPowerError(
+            403, "insufficient balance for SOL "
+                 "(requested: 1233.09915901, available: 1230.318126774)",
+        ),
+        {"id": "close-recovered"},
+    ]
+    client.get_positions.return_value = [
+        {"symbol": "SOLUSD", "qty": "1230.318126774"},
+    ]
+
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_bands",
+                       logger=MagicMock())
+
+    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.09915901)
+
+    assert result == {"id": "close-recovered"}
+    assert client.submit_order.call_count == 2
+    # Second call must use the broker-reported qty.
+    second_call = client.submit_order.call_args_list[1].kwargs
+    assert second_call["qty"] == 1230.318126774
+
+
+def test_close_position_insufficient_balance_no_broker_position_returns_none():
+    """If the broker has no matching position, the fallback bails — caller
+    sees None instead of an exception."""
+    from broker.alpaca_client import InsufficientBuyingPowerError
+
+    client = MagicMock()
+    client.submit_order.side_effect = InsufficientBuyingPowerError(
+        403, "insufficient balance for SOL",
+    )
+    client.get_positions.return_value = []
+
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_bands",
+                       logger=MagicMock())
+
+    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.0)
+    assert result is None
+
+
 def test_empty_strategy_name_raises():
     with pytest.raises(ValueError, match="non-empty strategy_name"):
         OrderExecutor(MagicMock(), PositionBook(), strategy_name="")
