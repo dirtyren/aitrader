@@ -42,6 +42,7 @@ def _cfg(shadow=False):
         interval_s=30, strike_threshold=3, strike_min_gap_s=60,
         qty_eps=1e-6, shadow_mode=shadow,
         state_file_path="/tmp/state.json",
+        heartbeat_stale_after_s=300,
     )
 
 

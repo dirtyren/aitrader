@@ -159,3 +159,37 @@ def send_reconcile_alert(
     except Exception as exc:
         log.warning("RECONCILE_TELEGRAM_FAILED err=%s", exc)
         return False
+
+
+def send_reconcile_heartbeat_stale(
+    last_seen_at: "datetime | None",
+    age_seconds: float,
+    stale_threshold_s: int,
+) -> bool:
+    """Telegram alert: reconciler heartbeat older than the staleness threshold.
+
+    Returns True if sent, False if Telegram is not configured.
+    """
+    token, chat_id = _load_telegram_config()
+    if token is None:
+        log.debug("RECONCILE_TELEGRAM_SKIPPED — TELEGRAM_BOT_TOKEN/CHAT_ID not set")
+        return False
+
+    minutes = int(age_seconds // 60)
+    last_str = last_seen_at.isoformat() if last_seen_at is not None else "never"
+    text = (
+        f"🚨 RECONCILER HEARTBEAT STALE\n"
+        f"age={minutes}m ({int(age_seconds)}s)\n"
+        f"last_seen_at={last_str}\n"
+        f"threshold={stale_threshold_s}s"
+    )
+    try:
+        resp = requests.post(
+            _TELEGRAM_API.format(token=token),
+            json={"chat_id": chat_id, "text": text},
+            timeout=5,
+        )
+        return resp.ok
+    except Exception as exc:
+        log.warning("RECONCILE_TELEGRAM_FAILED err=%s", exc)
+        return False
