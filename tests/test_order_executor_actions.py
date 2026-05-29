@@ -33,13 +33,40 @@ def test_crypto_stop_submits_market_close_long():
     assert kwargs["order_type"] == "market"
 
 
-def test_crypto_target_skips_market_close():
-    """Crypto target exits via limit TP order filling — no market close needed."""
+def test_crypto_target_submits_market_close():
+    """Crypto target is engine-virtual — must issue a market close on the broker.
+
+    Previously this path skipped the broker close on the assumption that a
+    resting limit TP would fill. That submission was rejected by Alpaca as a
+    wash trade, so positions never closed broker-side and ate buying power.
+    Now stop/target/time_stop all market-close uniformly.
+    """
     ex, client = _make_executor()
     ex.handle_actions([_action("target", side="short", symbol="ETH/USD", qty=0.5)],
                       asset_class="crypto", parent_order_id="parent-2")
-    client.submit_order.assert_not_called()
+    client.submit_order.assert_called_once()
+    kwargs = client.submit_order.call_args.kwargs
+    assert kwargs["symbol"] == "ETH/USD"
+    assert kwargs["side"] == "buy"  # closes a short
+    assert kwargs["qty"] == 0.5
+    assert kwargs["order_type"] == "market"
     client.cancel_order.assert_not_called()
+
+
+def test_crypto_target_cancels_legacy_target_order_id_before_close():
+    """Adopted positions from before the wash-trade fix may still carry a
+    target_order_id — cancel it first so the broker side is tidy."""
+    ex, client = _make_executor()
+    ex.book.add(OpenPosition(
+        symbol="BTC/USD", setup="adopted", side="long", qty=0.1,
+        entry_px=50000, stop_px=49000, target_px=52000,
+        opened_at=datetime(2026, 5, 29, 14, 0, tzinfo=timezone.utc),
+        order_id="entry-1", target_order_id="legacy-tp-1",
+    ))
+    ex.handle_actions([_action("target", side="long", symbol="BTC/USD", qty=0.1)],
+                      asset_class="crypto", parent_order_id=None)
+    client.cancel_order.assert_called_once_with("legacy-tp-1")
+    client.submit_order.assert_called_once()  # market close after cancel
 
 
 def test_crypto_time_stop_submits_market_close():
