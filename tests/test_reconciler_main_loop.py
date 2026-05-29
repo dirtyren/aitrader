@@ -175,3 +175,35 @@ def test_cycle_skips_on_alpaca_error(store):
 
     # Cycle skipped — last_orders_check_ts is NOT advanced
     assert advanced_to is None
+
+
+def test_cycle_logs_done_line_with_shape_summary(store, caplog):
+    """Each successful cycle emits a single RECONCILER_CYCLE_DONE log line.
+
+    Without this, a healthy reconciler is invisible in `docker compose logs`
+    after startup — operators repeatedly misdiagnose silence as a hang.
+    """
+    import logging
+
+    alpaca = MagicMock()
+    alpaca.get_positions.return_value = [{
+        "symbol": "AAPL", "qty": "1", "side": "long",
+        "asset_class": "us_equity",
+    }]
+    alpaca.list_orders.return_value = []
+    cfg = _cfg()
+    now = datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc)
+
+    with caplog.at_level(logging.INFO, logger="reconciler"):
+        run_one_cycle(store=store, alpaca=alpaca, cfg=cfg,
+                      last_orders_check_ts=None, now=now)
+
+    done_records = [r for r in caplog.records
+                    if "RECONCILER_CYCLE_DONE" in r.getMessage()]
+    assert len(done_records) == 1
+    msg = done_records[0].getMessage()
+    # Shape summary lets the operator read cycle health at a glance.
+    assert "broker_symbols=1" in msg
+    assert "anomalies=" in msg
+    assert "fills=0" in msg
+    assert "shadow=False" in msg
