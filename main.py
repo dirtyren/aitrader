@@ -456,6 +456,39 @@ def main():
             except Exception as exc:
                 logger.error("MYSQL_REBUILD_FAILED: %s", exc, exc_info=True)
 
+            # Operator kill-switch. When `enabled=False`, sweep any open
+            # positions and skip the rest of the cycle. This is also the
+            # self-healing path for partial dashboard sweeps: the dashboard
+            # leaves state='disabling' on failures and the trader retries
+            # here every cycle until book is empty, then flips to 'disabled'.
+            if not mysql.is_strategy_enabled():
+                if book.count() > 0:
+                    from state.strategy_close_all import close_all_open_positions
+                    result = close_all_open_positions(
+                        alpaca=alpaca, mysql=mysql,
+                        strategy_name=system_name,
+                        reason="trader_disable_sweep",
+                    )
+                    logger.warning(
+                        "STRATEGY_DISABLED_SWEEP closed=%d failed=%d",
+                        len(result.closed), len(result.failed),
+                    )
+                    try:
+                        fresh_book = mysql.load_open_positions()
+                        book.replace_from(fresh_book)
+                    except Exception as exc:
+                        logger.error("MYSQL_REBUILD_FAILED: %s", exc, exc_info=True)
+                if book.count() == 0:
+                    cur_state = mysql.get_strategy_state(mysql.strategy_id)
+                    if cur_state != "disabled":
+                        mysql.set_strategy_state(
+                            strategy_id=mysql.strategy_id,
+                            enabled=False, state="disabled",
+                            reason="trader_disable_sweep_complete",
+                        )
+                        logger.info("STRATEGY_DISABLED state=disabled")
+                continue
+
             fresh_bars: dict[str, list] = {}
             for sym, ac_name in symbols:
                 ctx = contexts[sym]
