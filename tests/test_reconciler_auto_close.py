@@ -336,7 +336,8 @@ def test_three_cycle_progression_auto_closes_on_third(store):
     assert alpaca.submit_order.call_count == 1
     kwargs = alpaca.submit_order.call_args.kwargs
     assert kwargs["symbol"] == "SOL/USD"
-    assert kwargs["qty"] == 1233.0
+    # asset_class="crypto" → fee-drift margin shaves ~1e-6 off the chunk qty.
+    assert kwargs["qty"] == pytest.approx(1233.0 * (1 - 1e-6), rel=1e-12)
     assert kwargs["side"] == "sell"
 
     with Session(store._engine) as session:

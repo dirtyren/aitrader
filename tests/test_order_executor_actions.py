@@ -2,6 +2,8 @@ from unittest.mock import MagicMock
 
 from datetime import datetime, timezone
 
+import pytest
+
 from broker.alpaca_client import OrderRejectedError
 from broker.order_executor import OrderExecutor
 from core.position_manager import PositionAction
@@ -29,7 +31,8 @@ def test_crypto_stop_submits_market_close_long():
     kwargs = client.submit_order.call_args.kwargs
     assert kwargs["symbol"] == "BTC/USD"
     assert kwargs["side"] == "sell"
-    assert kwargs["qty"] == 0.1
+    # Crypto closes shave the fee-drift safety margin off the requested qty.
+    assert kwargs["qty"] == pytest.approx(0.1 * (1 - 1e-6), rel=1e-12)
     assert kwargs["order_type"] == "market"
 
 
@@ -48,7 +51,7 @@ def test_crypto_target_submits_market_close():
     kwargs = client.submit_order.call_args.kwargs
     assert kwargs["symbol"] == "ETH/USD"
     assert kwargs["side"] == "buy"  # closes a short
-    assert kwargs["qty"] == 0.5
+    assert kwargs["qty"] == pytest.approx(0.5 * (1 - 1e-6), rel=1e-12)
     assert kwargs["order_type"] == "market"
     client.cancel_order.assert_not_called()
 

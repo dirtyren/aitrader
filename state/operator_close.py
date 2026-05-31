@@ -30,6 +30,7 @@ from typing import Any
 
 from broker.alpaca_client import AlpacaClient
 from broker.client_order_id import Role, make_client_order_id
+from broker.safe_close import submit_close_with_drift_recovery
 from state.mysql_store import MySQLStore
 
 logger = logging.getLogger(__name__)
@@ -187,17 +188,22 @@ def close_broker_only_strike(
     cancellations = _cancel_orders_for_symbol(alpaca, symbol)
     audit["cancellations"] = cancellations
 
-    # Submit market close.
-    try:
-        order = alpaca.submit_order(
-            symbol=symbol, qty=qty_abs, side=close_side,
-            order_type="market", time_in_force="gtc",
-            client_order_id=coid,
-        )
-    except Exception as exc:
+    # Submit market close. Crypto fees can drain between snapshot and submit;
+    # submit_close_with_drift_recovery shaves a tiny margin and falls back to
+    # broker truth on rejection. asset_class is inferred from the live position.
+    asset_class = "crypto" if live.get("asset_class") == "crypto" else "equity"
+    order = submit_close_with_drift_recovery(
+        client=alpaca,
+        symbol=symbol,
+        qty=qty_abs,
+        side=close_side,
+        client_order_id=coid,
+        asset_class=asset_class,
+    )
+    if order is None:
         # Strike stays unresolved so operator can retry.
         audit["action"] = "operator_close_submit_failed"
-        audit["error"] = str(exc)
+        audit["error"] = "submit_close_with_drift_recovery returned None — see logs"
         path = _write_audit(audit)
         return CloseResult(
             status="submit_failed",
@@ -206,7 +212,7 @@ def close_broker_only_strike(
             coid=coid,
             broker_qty=qty_signed,
             broker_side=broker_side,
-            error=str(exc),
+            error=audit["error"],
             audit_path=path,
         )
 

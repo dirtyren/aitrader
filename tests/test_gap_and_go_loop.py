@@ -317,7 +317,9 @@ def test_force_close_all_closes_only_gap_and_go_positions():
 
     closed = loop.force_close_all(_EOD_UTC)
     assert closed == 1
-    loop.executor.close_position.assert_called_once_with("AAPL", "long", 10)
+    loop.executor.close_position.assert_called_once_with(
+        "AAPL", "long", 10, asset_class="equity",
+    )
 
 
 def test_force_close_all_idempotent_within_day():
