@@ -22,7 +22,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from broker.alpaca_client import AlpacaClient
-from broker.safe_close import DEFAULT_DRIFT_MARGIN
+from broker.client_order_id import Role, make_client_order_id, parse_client_order_id
+from broker.safe_close import DEFAULT_DRIFT_MARGIN, submit_close_with_drift_recovery
 from notifications import send_reconcile_alert, send_reconcile_heartbeat_stale
 from reconciler.config import ReconcilerConfig
 from reconciler.events import emit_event
@@ -30,7 +31,7 @@ from reconciler.fills import apply_tagged_fill
 from reconciler.invariant import check_invariant
 from reconciler.state import load_state, save_state
 from reconciler.strikes import auto_clear_resolved, process_anomaly
-from state.mysql_store import EventRow, MySQLStore, StrikeRow
+from state.mysql_store import EventRow, MySQLStore, PositionRow, StrategyRow, StrikeRow
 
 log = logging.getLogger("reconciler")
 
@@ -368,6 +369,318 @@ def auto_close_broker_only(
     return submitted
 
 
+_EXIT_ROLES = frozenset({"exit", "stop", "target"})
+
+
+def _open_rows_for_symbol(
+    session: Session, store: MySQLStore, symbol: str,
+) -> list[PositionRow]:
+    """All open PositionRow rows for a symbol across every strategy.
+
+    Slash-insensitive (BTC/USD vs BTCUSD) via store._get_symbol_candidates.
+    """
+    candidates = store._get_symbol_candidates(symbol)
+    return session.query(PositionRow).filter(
+        PositionRow.symbol.in_(candidates),
+        PositionRow.status == "open",
+    ).all()
+
+
+def _attribute_qty_drift(
+    session: Session,
+    store: MySQLStore,
+    symbol: str,
+    recent_fills: list[dict],
+) -> PositionRow | None:
+    """Pick the open MySQL row to blame for a qty_drift on `symbol`.
+
+    Trivial case: exactly one open row → that's the row.
+    Multi-strategy: walk this cycle's recent_fills, parse each COID, count
+    exit-role fills (exit/stop/target) whose (strategy, setup) maps to one
+    of the open rows. Return that row only when a single open row gets
+    matched. Anything ambiguous returns None — caller emits an event and
+    leaves the strike for an operator.
+    """
+    rows = _open_rows_for_symbol(session, store, symbol)
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]
+
+    flat = symbol.replace("/", "")
+    matched_row_ids: set[int] = set()
+    for fill in recent_fills:
+        fill_sym = (fill.get("symbol") or "").replace("/", "")
+        if fill_sym != flat:
+            continue
+        parsed = parse_client_order_id(fill.get("client_order_id"))
+        if parsed is None or parsed["role"] not in _EXIT_ROLES:
+            continue
+        strow = session.query(StrategyRow).filter(
+            StrategyRow.name == parsed["strategy"],
+        ).one_or_none()
+        if strow is None:
+            continue
+        for r in rows:
+            if r.strategy_id == strow.id and r.setup_name == parsed["setup"]:
+                matched_row_ids.add(r.id)
+                break
+
+    if len(matched_row_ids) == 1:
+        target_id = next(iter(matched_row_ids))
+        for r in rows:
+            if r.id == target_id:
+                return r
+    return None
+
+
+def auto_resolve_qty_drift(
+    *,
+    alpaca: Any,
+    store: MySQLStore,
+    session: Session,
+    broker_positions: dict[str, dict],
+    anomalies: list,
+    recent_fills: list[dict],
+    cfg: ReconcilerConfig,
+    now: datetime,
+) -> int:
+    """Reconcile qty_drift anomalies whose strike count >= threshold.
+
+    Two cases per drift:
+      - broker < |MySQL|  (book overstated): submit a close for the broker's
+        full qty, then close the attributed MySQL row entirely. The strategy
+        loses its book position; broker is the source of truth.
+      - broker > |MySQL|  (broker surplus): submit a close for the surplus
+        only. MySQL row stays open with its current qty.
+
+    Attribution is COID-driven via _attribute_qty_drift; ambiguous cases emit
+    qty_drift_ambiguous_attribution and leave the strike unresolved.
+
+    Returns the number of broker close orders submitted this cycle.
+    """
+    if cfg.shadow_mode:
+        return 0
+
+    submitted = 0
+    for a in anomalies:
+        if a.direction != "qty_drift":
+            continue
+        existing = session.query(StrikeRow).filter(
+            StrikeRow.key == a.key,
+            StrikeRow.resolved == False,  # noqa: E712 — SQLAlchemy idiom
+        ).one_or_none()
+        if existing is None or existing.strike_count < cfg.strike_threshold:
+            continue
+
+        broker_pos = broker_positions.get(a.symbol)
+        if broker_pos is None:
+            continue
+        try:
+            broker_qty_signed = float(broker_pos.get("qty", 0))
+        except (TypeError, ValueError):
+            log.error("QTY_DRIFT_BAD_QTY symbol=%s p=%s", a.symbol, broker_pos)
+            continue
+        broker_qty = abs(broker_qty_signed)
+
+        target = _attribute_qty_drift(session, store, a.symbol, recent_fills)
+        if target is None:
+            open_rows = _open_rows_for_symbol(session, store, a.symbol)
+            emit_event(
+                session,
+                type="qty_drift_ambiguous_attribution",
+                symbol=a.symbol,
+                payload={
+                    "snapshot": a.snapshot,
+                    "open_rows": [
+                        {"strategy_id": r.strategy_id, "setup": r.setup_name,
+                         "qty": float(r.qty)}
+                        for r in open_rows
+                    ],
+                    "recent_fills_count": len(recent_fills),
+                    "strike_count": existing.strike_count,
+                },
+            )
+            continue
+
+        mysql_qty = float(target.qty)
+        # broker_only is handled elsewhere; here broker_qty > 0 by construction
+        # (qty_drift requires both sides nonzero).
+        full_close = broker_qty <= mysql_qty
+        close_qty = broker_qty if full_close else (broker_qty - mysql_qty)
+
+        broker_symbol = broker_pos.get("symbol") or a.symbol
+        # Side: book is long → close = sell broker qty; book is short → buy.
+        # Attribution row tells us which side we manage. broker_qty_signed sign
+        # matches book side under qty_drift, so use that for direction.
+        side = "sell" if broker_qty_signed > 0 else "buy"
+        asset_class = (
+            "crypto" if broker_pos.get("asset_class") == "crypto" else "equity"
+        )
+
+        price = _broker_price(broker_pos)
+        if price is None:
+            log.error(
+                "QTY_DRIFT_NO_PRICE symbol=%s qty=%s — leaving strike unresolved",
+                broker_symbol, close_qty,
+            )
+            emit_event(
+                session,
+                type="auto_close_qty_drift_failed",
+                strategy_id=target.strategy_id,
+                symbol=a.symbol,
+                payload={
+                    "broker_symbol": broker_symbol,
+                    "setup": target.setup_name,
+                    "side": side, "close_qty": close_qty,
+                    "strike_count": existing.strike_count,
+                    "error": "no usable price field on broker position",
+                },
+            )
+            continue
+
+        notional = close_qty * price
+        if notional < cfg.auto_close_dust_usd:
+            log.warning(
+                "QTY_DRIFT_DUST symbol=%s close_qty=%s notional=%.6f — resolving",
+                broker_symbol, close_qty, notional,
+            )
+            emit_event(
+                session,
+                type="auto_close_dust",
+                strategy_id=target.strategy_id,
+                symbol=a.symbol,
+                payload={
+                    "direction": "qty_drift",
+                    "broker_symbol": broker_symbol,
+                    "close_qty": close_qty, "price": price,
+                    "notional": notional,
+                    "dust_threshold_usd": cfg.auto_close_dust_usd,
+                    "strike_count": existing.strike_count,
+                },
+            )
+            existing.resolved = True
+            existing.resolved_at = now
+            existing.resolved_reason = "auto_close_dust"
+            continue
+
+        # Cancel stale bracket children before close — same reason as
+        # auto_close_broker_only: locked broker qty rejects with "insufficient
+        # qty available for order".
+        cancelled_ids = _cancel_open_orders_for_symbol(alpaca, broker_symbol)
+        if cancelled_ids:
+            log.info(
+                "QTY_DRIFT_CANCELLED_OPEN_ORDERS symbol=%s count=%d",
+                broker_symbol, len(cancelled_ids),
+            )
+
+        max_qty_per_chunk = cfg.auto_close_max_notional_usd / price
+        chunks = _split_qty(close_qty, max_qty_per_chunk)
+        if len(chunks) > _MAX_CHUNKS_PER_POSITION:
+            log.error(
+                "QTY_DRIFT_TOO_MANY_CHUNKS symbol=%s qty=%s chunks=%d",
+                broker_symbol, close_qty, len(chunks),
+            )
+            emit_event(
+                session,
+                type="auto_close_qty_drift_failed",
+                strategy_id=target.strategy_id,
+                symbol=a.symbol,
+                payload={
+                    "broker_symbol": broker_symbol,
+                    "setup": target.setup_name,
+                    "side": side, "close_qty": close_qty, "price": price,
+                    "would_be_chunks": len(chunks),
+                    "max_chunks": _MAX_CHUNKS_PER_POSITION,
+                    "strike_count": existing.strike_count,
+                    "error": "too many chunks — operator review required",
+                },
+            )
+            continue
+
+        all_ok = True
+        order_ids: list[str | None] = []
+        for chunk_qty in chunks:
+            coid = make_client_order_id(
+                "reconciler", "qty_drift", a.symbol, Role.EXIT,
+            )
+            order = submit_close_with_drift_recovery(
+                client=alpaca,
+                symbol=broker_symbol,
+                qty=chunk_qty,
+                side=side,
+                client_order_id=coid,
+                asset_class=asset_class,
+            )
+            if order is None:
+                log.error(
+                    "QTY_DRIFT_SUBMIT_FAILED symbol=%s chunk=%d/%d",
+                    broker_symbol, len(order_ids) + 1, len(chunks),
+                )
+                emit_event(
+                    session,
+                    type="auto_close_qty_drift_failed",
+                    strategy_id=target.strategy_id,
+                    symbol=a.symbol,
+                    payload={
+                        "broker_symbol": broker_symbol,
+                        "setup": target.setup_name,
+                        "side": side, "qty": chunk_qty,
+                        "chunk_index": len(order_ids) + 1,
+                        "total_chunks": len(chunks),
+                        "submitted_so_far": order_ids,
+                        "strike_count": existing.strike_count,
+                        "error": "submit returned None — see safe_close logs",
+                    },
+                )
+                all_ok = False
+                break
+            submitted += 1
+            order_ids.append(order.get("id") if isinstance(order, dict) else None)
+
+        if not all_ok:
+            continue
+
+        # Trim MySQL only on the full-close branch. Surplus closes leave the
+        # row untouched — the broker side now matches book qty.
+        if full_close:
+            exit_coid = make_client_order_id(
+                "reconciler", "qty_drift", a.symbol, Role.EXIT,
+            )
+            store.position_closed(
+                symbol=a.symbol,
+                exit_px=price,
+                close_reason="auto_resolved_qty_drift",
+                setup_name=target.setup_name,
+                exit_client_order_id=exit_coid,
+                strategy_id=target.strategy_id,
+            )
+
+        emit_event(
+            session,
+            type="auto_close_qty_drift",
+            strategy_id=target.strategy_id,
+            symbol=a.symbol,
+            payload={
+                "broker_symbol": broker_symbol,
+                "setup": target.setup_name,
+                "side": side,
+                "mysql_qty": mysql_qty,
+                "broker_qty": broker_qty,
+                "close_qty": close_qty,
+                "full_close": full_close,
+                "chunks": len(chunks),
+                "order_ids": order_ids,
+                "strike_count": existing.strike_count,
+            },
+        )
+        existing.resolved = True
+        existing.resolved_at = now
+        existing.resolved_reason = "auto_resolved_qty_drift"
+
+    return submitted
+
+
 def _split_qty(total_qty: float, max_qty_per_chunk: float) -> list[float]:
     """Split ``total_qty`` into chunks no larger than ``max_qty_per_chunk``.
 
@@ -471,7 +784,6 @@ def run_one_cycle(
                 if outcome.alert_sent:
                     strategy_name = None
                     if a.strategy_id is not None:
-                        from state.mysql_store import StrategyRow
                         strow = session.query(StrategyRow).filter(
                             StrategyRow.id == a.strategy_id,
                         ).one_or_none()
@@ -494,6 +806,16 @@ def run_one_cycle(
             alpaca=alpaca, store=store, session=session,
             broker_positions=broker_positions_by_sym,
             anomalies=anomalies, cfg=cfg, now=now,
+        )
+
+        # 4.6. Auto-resolve qty_drift anomalies. recent_fills carries the
+        # COIDs we use to attribute drift to a specific strategy/setup when
+        # multiple rows hold the symbol.
+        auto_resolve_qty_drift(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions=broker_positions_by_sym,
+            anomalies=anomalies, recent_fills=recent_fills,
+            cfg=cfg, now=now,
         )
 
         # 5. Auto-clear strikes whose anomaly is no longer present.
