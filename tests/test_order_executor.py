@@ -285,7 +285,8 @@ def test_virtual_exit_adopted_crypto_target_submits_close():
     payload = client.submit_order.call_args.kwargs
     assert payload["symbol"] == "BTC/USD"
     assert payload["side"] == "sell"
-    assert payload["qty"] == 0.1
+    # Crypto closes shave the fee-drift margin off the requested qty.
+    assert payload["qty"] == pytest.approx(0.1 * (1 - 1e-6), rel=1e-12)
 
 
 def test_submit_equity_passes_coid_to_bracket_order():
@@ -337,6 +338,10 @@ def test_close_position_passes_role_exit_coid():
     coid = client.submit_order.call_args.kwargs["client_order_id"]
     # Setup constant "_unknown" is sanitized to "unknown" by the COID format helper.
     assert coid.startswith("aitrader__vwap_wave__unknown__BTCUSD__exit__")
+    # close_position is the crypto path; qty is shrunk by the fee-drift margin
+    # (DEFAULT_DRIFT_MARGIN = 1e-6) to stay below broker available.
+    submitted_qty = client.submit_order.call_args.kwargs["qty"]
+    assert submitted_qty == pytest.approx(0.5 * (1 - 1e-6), rel=1e-12)
 
 
 def test_close_position_insufficient_balance_triggers_qty_reconcile():
@@ -347,8 +352,8 @@ def test_close_position_insufficient_balance_triggers_qty_reconcile():
     from broker.alpaca_client import InsufficientBuyingPowerError
 
     client = MagicMock()
-    # First submit (with stale book qty) raises insufficient_balance.
-    # Fallback re-submits at the broker's reported qty — that one succeeds.
+    # First submit (with stale book qty + drift margin) still rejects.
+    # Fallback re-fetches broker truth and re-submits at broker_qty * (1 - margin).
     client.submit_order.side_effect = [
         InsufficientBuyingPowerError(
             403, "insufficient balance for SOL "
@@ -368,9 +373,13 @@ def test_close_position_insufficient_balance_triggers_qty_reconcile():
 
     assert result == {"id": "close-recovered"}
     assert client.submit_order.call_count == 2
-    # Second call must use the broker-reported qty.
+    # Second call must use broker-reported qty shrunk by the drift margin so
+    # any further fee deduction between get_positions() and submit_order()
+    # doesn't trigger another rejection.
     second_call = client.submit_order.call_args_list[1].kwargs
-    assert second_call["qty"] == 1230.318126774
+    assert second_call["qty"] == pytest.approx(
+        1230.318126774 * (1 - 1e-6), rel=1e-12,
+    )
 
 
 def test_close_position_insufficient_balance_no_broker_position_returns_none():
@@ -390,6 +399,29 @@ def test_close_position_insufficient_balance_no_broker_position_returns_none():
 
     result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.0)
     assert result is None
+
+
+def test_close_position_pepe_dust_drift_succeeds_first_try():
+    """The PEPE production failure: requested 25965312924.201588, available
+    25965312924.201586171 — a 1.7e-6 unit drift on a ~26B unit position.
+    With the 1e-6 fee-drift margin applied, the first submit asks for less
+    than available and clears without retry."""
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "close-pepe"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave",
+                       logger=MagicMock())
+
+    requested = 25965312924.201588
+    result = ex.close_position(symbol="PEPEUSD", side="long", qty=requested)
+
+    assert result == {"id": "close-pepe"}
+    assert client.submit_order.call_count == 1
+    # The shrunk qty must be strictly less than broker-available so Alpaca
+    # accepts on the first submit.
+    submitted = client.submit_order.call_args.kwargs["qty"]
+    available = 25965312924.201586171
+    assert submitted < available
 
 
 def test_empty_strategy_name_raises():

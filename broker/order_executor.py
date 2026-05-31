@@ -3,6 +3,7 @@ import logging
 from typing import Optional
 
 from broker.alpaca_client import InsufficientBuyingPowerError, OrderRejectedError
+from broker.safe_close import submit_close_with_drift_recovery
 from core.position_manager import PositionAction
 from state.position_book import OpenPosition, PositionBook
 from strategies.base_setup import SetupSignal
@@ -187,13 +188,20 @@ class OrderExecutor:
                          signal.entry, signal.stop, signal.target, order.get("id"))
         return pos
 
-    def close_position(self, symbol: str, side: str, qty: float) -> dict | None:
+    def close_position(
+        self, symbol: str, side: str, qty: float,
+        asset_class: str = "crypto",
+    ) -> dict | None:
         """Submit a market close order. Used for virtual stops / time stops.
 
         The COID uses setup='_unknown' because this path doesn't know which
         setup owned the position. Plan 3's reconciler service supersedes this
         exit path and will use the real setup. The sanitizer strips the leading
         underscore, so the parsed setup is 'unknown'.
+
+        ``asset_class`` controls the fee-drift safety margin: crypto closes
+        shave ~1e-6 off the requested qty (fees drain from the asset side
+        between snapshot and submit), equity passes through unchanged.
 
         NOTE: The exit COID is sent to Alpaca but is NOT yet persisted to the
         MySQL trades.exit_client_order_id column. The current MySQL close path
@@ -204,44 +212,14 @@ class OrderExecutor:
         exit_coid = make_client_order_id(
             self.strategy_name, "_unknown", symbol, Role.EXIT,
         )
-        try:
-            return self.client.submit_order(
-                symbol=symbol, qty=qty,
-                side="sell" if side == "long" else "buy",
-                order_type="market", time_in_force="gtc",
-                client_order_id=exit_coid,
-            )
-        except Exception as exc:
-            msg = str(exc).lower()
-            # "insufficient balance for <ASSET>" — Alpaca crypto returns this
-            # when the trader-book qty exceeds the on-broker qty (fees come
-            # out of the asset side, so book and broker drift over the life
-            # of a position). Treat it as the same qty-mismatch class as the
-            # equity "insufficient qty" / "not enough" wording.
-            if (
-                "insufficient qty" in msg
-                or "not enough" in msg
-                or "qty" in msg
-                or "insufficient balance" in msg
-            ):
-                self.logger.warning("CLOSE_QTY_MISMATCH symbol=%s qty=%s, attempting full position close", symbol, qty)
-                try:
-                    positions = self.client.get_positions()
-                    broker_pos = next((p for p in positions if p["symbol"].replace("/", "") == symbol.replace("/", "")), None)
-                    if broker_pos:
-                        actual_qty = abs(float(broker_pos["qty"]))
-                        if actual_qty > 0:
-                            return self.client.submit_order(
-                                symbol=symbol, qty=actual_qty,
-                                side="sell" if side == "long" else "buy",
-                                order_type="market", time_in_force="gtc",
-                                client_order_id=exit_coid,
-                            )
-                except Exception as inner_exc:
-                    self.logger.error("CLOSE_FULL_POSITION_FAILED symbol=%s error=%s", symbol, inner_exc)
-
-            self.logger.error("CLOSE_FAILED symbol=%s error=%s", symbol, exc, exc_info=True)
-            return None
+        return submit_close_with_drift_recovery(
+            client=self.client,
+            symbol=symbol,
+            qty=qty,
+            side="sell" if side == "long" else "buy",
+            client_order_id=exit_coid,
+            asset_class=asset_class,
+        )
 
     def handle_actions(self, actions: list[PositionAction],
                        asset_class: str,
@@ -278,7 +256,8 @@ class OrderExecutor:
                         except Exception as exc:
                             self.logger.error("CANCEL_FAILED symbol=%s order_id=%s error=%s",
                                               a.symbol, parent_order_id, exc, exc_info=True)
-                    self.close_position(a.symbol, a.side, a.qty)
+                    self.close_position(a.symbol, a.side, a.qty,
+                                        asset_class="equity")
                     self.logger.info("TIME_STOP symbol=%s side=%s qty=%s",
                                      a.symbol, a.side, a.qty)
                     continue
@@ -296,7 +275,8 @@ class OrderExecutor:
                         except Exception as exc:
                             self.logger.error("CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
                                               a.symbol, pos.target_order_id, exc)
-                    self.close_position(a.symbol, a.side, a.qty)
+                    self.close_position(a.symbol, a.side, a.qty,
+                                        asset_class="crypto")
                     self.logger.info("VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s",
                                      a.symbol, a.kind, a.price, a.qty)
                     continue

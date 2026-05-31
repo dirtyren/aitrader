@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from broker.alpaca_client import AlpacaClient
+from broker.safe_close import DEFAULT_DRIFT_MARGIN
 from notifications import send_reconcile_alert, send_reconcile_heartbeat_stale
 from reconciler.config import ReconcilerConfig
 from reconciler.events import emit_event
@@ -292,12 +293,20 @@ def auto_close_broker_only(
                 broker_symbol, len(cancelled_ids), cancelled_ids,
             )
 
+        # Crypto fees drain from the asset side between snapshot and submit,
+        # so submitting at exact broker_qty races the next fee post and
+        # triggers "insufficient balance for <ASSET>". Shave the fee-drift
+        # margin off every chunk for crypto. Equity has no such drift.
+        is_crypto = broker_pos.get("asset_class") == "crypto"
+        chunk_margin = DEFAULT_DRIFT_MARGIN if is_crypto else 0.0
+
         all_ok = True
         order_ids: list[str | None] = []
         for chunk_qty in chunks:
+            submit_qty = chunk_qty * (1.0 - chunk_margin)
             try:
                 order = alpaca.submit_order(
-                    symbol=broker_symbol, qty=chunk_qty, side=side,
+                    symbol=broker_symbol, qty=submit_qty, side=side,
                     order_type="market", time_in_force="gtc",
                 )
             except Exception as exc:

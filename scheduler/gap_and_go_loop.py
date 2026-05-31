@@ -315,7 +315,8 @@ class GapAndGoLoop:
             if pos.setup != GapAndGoSetup.name:
                 continue
             try:
-                self.executor.close_position(pos.symbol, pos.side, pos.qty)
+                self.executor.close_position(pos.symbol, pos.side, pos.qty,
+                                             asset_class="equity")
                 closed += 1
             except Exception as exc:
                 logger.error("GAPGO_EOD_CLOSE_FAILED symbol=%s error=%s",
