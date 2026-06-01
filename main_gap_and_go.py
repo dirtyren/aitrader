@@ -137,7 +137,8 @@ def _build_loop(cfg: dict, logger: logging.Logger) -> GapAndGoLoop:
     )
 
     # Broker + persistence.
-    alpaca = AlpacaClient()
+    asset_class = next(iter(cfg["asset_classes"].keys()))
+    alpaca = AlpacaClient(asset_class=asset_class)
     data = AlpacaData(alpaca, cache_dir="runtime/bars_cache")
     mysql = MySQLStore(strategy_name=system_name, logger=logger)
     try:
