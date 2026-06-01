@@ -14,7 +14,6 @@ import traceback
 from pathlib import Path
 
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 
 from ui.components.theme import inject_theme
 from ui.logging_setup import setup_logging
@@ -64,14 +63,9 @@ with strategies_t:
     _safe_render("strategies", strategies_tab.render)
 
 with live_t:
-    # Pause autorefresh while a Settings edit is in progress — otherwise the
-    # 5s rerun re-mounts the form widgets and Save toggles disabled/enabled.
-    _settings_editing = (
-        st.session_state.get("settings_edit_equity", False)
-        or st.session_state.get("settings_edit_crypto", False)
-    )
-    if not _settings_editing:
-        st_autorefresh(interval=5_000, key="live_refresh")
+    # Live tab refreshes itself via st.fragment(run_every=...) inside live_tab.render.
+    # No page-level st_autorefresh — that re-mounted Settings form widgets every 5s
+    # and dropped button clicks across the whole dashboard.
     _safe_render("live", live_tab.render)
 
 with recon_t:
