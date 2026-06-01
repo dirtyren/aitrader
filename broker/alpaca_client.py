@@ -73,7 +73,10 @@ class AlpacaClient:
     """
     Thin HTTP wrapper around Alpaca Markets REST API v2.
 
-    Credentials are read from environment variables at construction time:
+    When constructed with `asset_class="equity"` or `asset_class="crypto"`,
+    credentials are resolved via broker.credentials (DB → split env → legacy
+    env). When constructed with no argument, falls back to the legacy
+    env-only path:
         ALPACA_API_KEY    — required
         ALPACA_SECRET_KEY — required
         ALPACA_BASE_URL   — optional, defaults to paper trading endpoint
@@ -81,13 +84,22 @@ class AlpacaClient:
 
     _MAX_RETRIES = 5
 
-    def __init__(self):
+    def __init__(self, asset_class: str | None = None):
         load_dotenv()
-        self.api_key = os.environ["ALPACA_API_KEY"]
-        self.secret_key = os.environ["ALPACA_SECRET_KEY"]
-        self.base_url = os.environ.get(
-            "ALPACA_BASE_URL", "https://paper-api.alpaca.markets"
-        ).rstrip("/")
+        if asset_class is not None:
+            from broker import credentials  # local import to avoid cycles
+            creds = credentials.resolve(asset_class)
+            self.api_key = creds.api_key
+            self.secret_key = creds.secret_key
+            self.base_url = creds.base_url.rstrip("/")
+            self.asset_class = asset_class
+        else:
+            self.api_key = os.environ["ALPACA_API_KEY"]
+            self.secret_key = os.environ["ALPACA_SECRET_KEY"]
+            self.base_url = os.environ.get(
+                "ALPACA_BASE_URL", "https://paper-api.alpaca.markets"
+            ).rstrip("/")
+            self.asset_class = None
         self._session = requests.Session()
         self._session.headers.update(self._get_headers())
 

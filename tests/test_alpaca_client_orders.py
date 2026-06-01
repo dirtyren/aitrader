@@ -325,3 +325,44 @@ def test_attach_oco_forwards_client_order_id():
         )
         body = req.call_args[1]["json"]
         assert body["client_order_id"] == "my-coid"
+
+
+def test_alpaca_client_uses_resolver_when_asset_class_given(monkeypatch):
+    """When asset_class is passed, AlpacaClient pulls creds via the resolver
+    (not directly from os.environ)."""
+    from broker.alpaca_client import AlpacaClient
+    from broker import credentials as creds_mod
+    from broker.credentials import AlpacaCreds
+
+    # Strip env so we'd fail without the resolver path.
+    for k in [
+        "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_BASE_URL",
+        "ALPACA_EQUITY_API_KEY", "ALPACA_EQUITY_SECRET_KEY", "ALPACA_EQUITY_BASE_URL",
+    ]:
+        monkeypatch.delenv(k, raising=False)
+
+    monkeypatch.setattr(creds_mod, "resolve", lambda ac: AlpacaCreds(
+        asset_class="equity", api_key="AK", secret_key="SK",
+        base_url="https://paper-api.alpaca.markets", source="db",
+    ))
+
+    client = AlpacaClient(asset_class="equity")
+    assert client.api_key == "AK"
+    assert client.secret_key == "SK"
+    assert client.base_url == "https://paper-api.alpaca.markets"
+    assert client.asset_class == "equity"
+
+
+def test_alpaca_client_default_construction_still_uses_env(monkeypatch):
+    """Backwards compat: AlpacaClient() with no asset_class reads env directly."""
+    from broker.alpaca_client import AlpacaClient
+
+    monkeypatch.setenv("ALPACA_API_KEY", "AK_ENV")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "SK_ENV")
+    monkeypatch.delenv("ALPACA_BASE_URL", raising=False)
+
+    client = AlpacaClient()
+    assert client.api_key == "AK_ENV"
+    assert client.secret_key == "SK_ENV"
+    assert client.base_url == "https://paper-api.alpaca.markets"
+    assert client.asset_class is None
