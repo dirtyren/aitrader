@@ -84,6 +84,14 @@ def _read_legacy_env() -> tuple[str, str, str] | None:
     return api_key, secret, base_url
 
 
+def _mask_key(key: str) -> str:
+    """Mask an API key for logging: first 4 chars + *** + last 2 chars.
+    Short keys collapse to a single safe placeholder."""
+    if not key or len(key) < 8:
+        return "***"
+    return f"{key[:4]}***{key[-2:]}"
+
+
 def resolve(asset_class: str) -> AlpacaCreds:
     """Look up credentials for the given asset class. See module docstring
     for precedence rules. Raises MissingCredentialsError when nothing is
@@ -92,6 +100,7 @@ def resolve(asset_class: str) -> AlpacaCreds:
 
     ac = _validate(asset_class)
     load_dotenv()
+    creds: AlpacaCreds | None = None
 
     # 1. DB
     store = None
@@ -112,7 +121,7 @@ def resolve(asset_class: str) -> AlpacaCreds:
             )
             row = None
         if row is not None:
-            return AlpacaCreds(
+            creds = AlpacaCreds(
                 asset_class=ac,
                 api_key=row["api_key"],
                 secret_key=row["secret_key"],
@@ -121,48 +130,57 @@ def resolve(asset_class: str) -> AlpacaCreds:
             )
 
     # 2. Split env vars
-    split = _read_split_env(ac)
-    if split is not None:
-        api_key, secret, base_url = split
-        if store is not None:
-            try:
-                store.upsert_broker_credentials(ac, api_key, secret, base_url)
-            except Exception as exc:
-                logger.warning(
-                    "CREDENTIALS_DB_SEED_FAILED asset_class=%s err=%s", ac, exc,
-                )
-        return AlpacaCreds(
-            asset_class=ac,
-            api_key=api_key,
-            secret_key=secret,
-            base_url=base_url,
-            source="env_bootstrap",
-        )
+    if creds is None:
+        split = _read_split_env(ac)
+        if split is not None:
+            api_key, secret, base_url = split
+            if store is not None:
+                try:
+                    store.upsert_broker_credentials(ac, api_key, secret, base_url)
+                except Exception as exc:
+                    logger.warning(
+                        "CREDENTIALS_DB_SEED_FAILED asset_class=%s err=%s", ac, exc,
+                    )
+            creds = AlpacaCreds(
+                asset_class=ac,
+                api_key=api_key,
+                secret_key=secret,
+                base_url=base_url,
+                source="env_bootstrap",
+            )
 
     # 3. Legacy env vars
-    legacy = _read_legacy_env()
-    if legacy is not None:
-        if not _LEGACY_WARN_LOGGED:
-            logger.warning(
-                "Using legacy ALPACA_API_KEY for both asset classes; "
-                "set ALPACA_EQUITY_API_KEY / ALPACA_CRYPTO_API_KEY in .env "
-                "or via dashboard to split."
+    if creds is None:
+        legacy = _read_legacy_env()
+        if legacy is not None:
+            if not _LEGACY_WARN_LOGGED:
+                logger.warning(
+                    "Using legacy ALPACA_API_KEY for both asset classes; "
+                    "set ALPACA_EQUITY_API_KEY / ALPACA_CRYPTO_API_KEY in .env "
+                    "or via dashboard to split."
+                )
+                _LEGACY_WARN_LOGGED = True
+            api_key, secret, base_url = legacy
+            creds = AlpacaCreds(
+                asset_class=ac,
+                api_key=api_key,
+                secret_key=secret,
+                base_url=base_url,
+                source="env_legacy",
             )
-            _LEGACY_WARN_LOGGED = True
-        api_key, secret, base_url = legacy
-        return AlpacaCreds(
-            asset_class=ac,
-            api_key=api_key,
-            secret_key=secret,
-            base_url=base_url,
-            source="env_legacy",
+
+    if creds is None:
+        raise MissingCredentialsError(
+            f"No Alpaca credentials configured for asset_class={ac!r}. "
+            f"Set ALPACA_{ac.upper()}_API_KEY / _SECRET_KEY in .env or "
+            f"configure via the dashboard Settings tab."
         )
 
-    raise MissingCredentialsError(
-        f"No Alpaca credentials configured for asset_class={ac!r}. "
-        f"Set ALPACA_{ac.upper()}_API_KEY / _SECRET_KEY in .env or "
-        f"configure via the dashboard Settings tab."
+    logger.info(
+        "CREDENTIALS_RESOLVED asset_class=%s source=%s key=%s base_url=%s",
+        creds.asset_class, creds.source, _mask_key(creds.api_key), creds.base_url,
     )
+    return creds
 
 
 def upsert(

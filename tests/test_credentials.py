@@ -268,3 +268,25 @@ def test_test_connection_inactive_account_warns(monkeypatch):
     ok, msg = _test_connection_fn(_creds())
     assert ok is True
     assert "INACTIVE" in msg
+
+
+# ---------------------------------------------------------------------------
+# Startup logging
+# ---------------------------------------------------------------------------
+
+def test_resolve_emits_credentials_resolved_info_log(
+    clean_env, patched_store, monkeypatch, caplog,
+):
+    """Each successful resolve logs CREDENTIALS_RESOLVED with masked key."""
+    monkeypatch.setenv("ALPACA_EQUITY_API_KEY", "PKABC1234567890XYZ")
+    monkeypatch.setenv("ALPACA_EQUITY_SECRET_KEY", "SECRET")
+    with caplog.at_level("INFO", logger="broker.credentials"):
+        out = resolve("equity")
+    assert out.api_key == "PKABC1234567890XYZ"
+    rec = next((r for r in caplog.records if "CREDENTIALS_RESOLVED" in r.message), None)
+    assert rec is not None, "CREDENTIALS_RESOLVED log missing"
+    assert "asset_class=equity" in rec.message
+    assert "source=env_bootstrap" in rec.message
+    assert "PKAB***YZ" in rec.message
+    # Secret never appears in logs.
+    assert "SECRET" not in rec.message
