@@ -49,13 +49,18 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 def render() -> None:
     st.subheader("Live Trading — Open Positions")
+    _live_body()
 
+
+@st.fragment(run_every="5s")
+def _live_body() -> None:
+    """Re-runs every 5s in isolation — does NOT trigger a full-page rerun,
+    so Settings forms, Strategy admin buttons, and other tabs stay stable."""
     try:
         df = get_open()
         yaml_strategies = list_yaml_strategy_names()
     except Exception as e:
         st.error(f"MySQL unreachable: {e}")
-        st.stop()
         return
 
     open_strategies = sorted(df["strategy"].unique().tolist()) if not df.empty else []
