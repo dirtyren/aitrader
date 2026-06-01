@@ -1,6 +1,7 @@
 .worktrees/
 .env
 logs/
+mysql/
 runtime/*
 !runtime/.gitkeep
 !runtime/bars_cache/
