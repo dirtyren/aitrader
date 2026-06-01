@@ -383,6 +383,12 @@ def main():
     if initial_equity <= 0:
         logger.error("Account returned non-positive equity; aborting")
         sys.exit(1)
+    _acct_num = str(account.get("account_number") or "")
+    _acct_masked = f"{_acct_num[:4]}***" if len(_acct_num) >= 4 else "***"
+    logger.info(
+        "ALPACA_ACCOUNT_BOUND asset_class=%s account_number=%s equity=%.2f base_url=%s",
+        asset_class, _acct_masked, initial_equity, alpaca.base_url,
+    )
     ledger = DailyLedger(initial_equity=initial_equity)
 
     cb_cfg = cfg["risk"]["circuit_breaker"]
