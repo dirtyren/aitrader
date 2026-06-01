@@ -325,7 +325,8 @@ def main():
                 for sym, ac in symbols}
     setups = {sym: build_setups(cfg, sym) for sym, _ in symbols}
 
-    alpaca = AlpacaClient()
+    asset_class = next(iter(cfg["asset_classes"].keys()))
+    alpaca = AlpacaClient(asset_class=asset_class)
     data = AlpacaData(alpaca, cache_dir=cfg["backtest"]["cache_dir"])
 
     # ── MySQL store (mandatory source of truth for positions/trades) ──

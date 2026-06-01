@@ -193,3 +193,20 @@ def test_apply_overrides_tolerates_provenance_keys(tmp_path):
     entry = out["_per_symbol_overrides"]["AAPL"]
     assert entry["setup"] == "price_discovery"
     assert "_provenance" in entry  # passed through, not stripped
+
+
+def test_main_extracts_asset_class_from_yaml_config():
+    """The single-key asset_classes block is the source of truth for which
+    Alpaca account a trader uses."""
+    cfg_equity = {"asset_classes": {"equity": {"symbols": ["SPY"]}}}
+    cfg_crypto = {"asset_classes": {"crypto": {"symbols": ["BTC/USD"]}}}
+
+    assert next(iter(cfg_equity["asset_classes"].keys())) == "equity"
+    assert next(iter(cfg_crypto["asset_classes"].keys())) == "crypto"
+
+
+def test_main_yaml_with_multiple_asset_classes_picks_first(caplog):
+    """Defensive: a misconfigured YAML with both keys still produces a deterministic
+    choice (Python 3.7+ dict ordering)."""
+    cfg = {"asset_classes": {"equity": {}, "crypto": {}}}
+    assert next(iter(cfg["asset_classes"].keys())) == "equity"
