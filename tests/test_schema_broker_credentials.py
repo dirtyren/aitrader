@@ -1,8 +1,7 @@
 """Schema test for broker_credentials table."""
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -11,7 +10,7 @@ from state.mysql_store import MySQLStore
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
+def store(tmp_path):
     """Build a MySQLStore backed by a temp sqlite DB.
 
     Bypasses MySQLStore.__init__ because it hardcodes MySQL-only
@@ -54,7 +53,6 @@ def test_broker_credentials_has_expected_columns(store):
 
 
 def test_broker_credentials_roundtrip(store):
-    from datetime import datetime
     with store._engine.begin() as conn:
         conn.execute(text(
             "INSERT INTO broker_credentials "
@@ -63,7 +61,7 @@ def test_broker_credentials_roundtrip(store):
         ), {
             "ac": "equity", "k": "AK1", "s": "SK1",
             "u": "https://paper-api.alpaca.markets",
-            "an": "ABC1234", "t": datetime.utcnow(),
+            "an": "ABC1234", "t": datetime.now(timezone.utc),
         })
 
     with store._engine.connect() as conn:

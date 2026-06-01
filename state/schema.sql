@@ -119,6 +119,6 @@ CREATE TABLE IF NOT EXISTS broker_credentials (
     secret_key     VARCHAR(255) NOT NULL,
     base_url       VARCHAR(255) NOT NULL,
     account_number VARCHAR(64) DEFAULT NULL,
-    updated_at     DATETIME NOT NULL,
+    updated_at     TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (asset_class)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
