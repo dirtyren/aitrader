@@ -64,7 +64,14 @@ with strategies_t:
     _safe_render("strategies", strategies_tab.render)
 
 with live_t:
-    st_autorefresh(interval=5_000, key="live_refresh")
+    # Pause autorefresh while a Settings edit is in progress — otherwise the
+    # 5s rerun re-mounts the form widgets and Save toggles disabled/enabled.
+    _settings_editing = (
+        st.session_state.get("settings_edit_equity", False)
+        or st.session_state.get("settings_edit_crypto", False)
+    )
+    if not _settings_editing:
+        st_autorefresh(interval=5_000, key="live_refresh")
     _safe_render("live", live_tab.render)
 
 with recon_t:
