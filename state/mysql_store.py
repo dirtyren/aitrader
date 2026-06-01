@@ -1269,3 +1269,68 @@ class MySQLStore:
                 )
                 .count()
             )
+
+    # ------------------------------------------------------------------
+    # broker_credentials CRUD
+    # ------------------------------------------------------------------
+
+    def get_broker_credentials(self, asset_class: str) -> dict | None:
+        """Return a dict with keys api_key, secret_key, base_url, account_number,
+        updated_at — or None if the row is missing or has empty key/secret."""
+        with Session(self._engine) as sess:
+            row = sess.get(BrokerCredentialsRow, asset_class)
+            if row is None:
+                return None
+            if not row.api_key or not row.secret_key:
+                return None
+            return {
+                "asset_class": row.asset_class,
+                "api_key": row.api_key,
+                "secret_key": row.secret_key,
+                "base_url": row.base_url,
+                "account_number": row.account_number,
+                "updated_at": row.updated_at,
+            }
+
+    def upsert_broker_credentials(
+        self,
+        asset_class: str,
+        api_key: str,
+        secret_key: str,
+        base_url: str,
+    ) -> None:
+        """Insert or update credentials for the asset class. Resets account_number
+        to NULL — caller should re-test the connection and set it via
+        set_broker_credentials_account_number."""
+        now = datetime.now(timezone.utc)
+        with Session(self._engine) as sess:
+            row = sess.get(BrokerCredentialsRow, asset_class)
+            if row is None:
+                row = BrokerCredentialsRow(
+                    asset_class=asset_class,
+                    api_key=api_key,
+                    secret_key=secret_key,
+                    base_url=base_url,
+                    account_number=None,
+                    updated_at=now,
+                )
+                sess.add(row)
+            else:
+                row.api_key = api_key
+                row.secret_key = secret_key
+                row.base_url = base_url
+                row.account_number = None
+                row.updated_at = now
+            sess.commit()
+
+    def set_broker_credentials_account_number(
+        self, asset_class: str, account_number: str,
+    ) -> None:
+        """Cache the Alpaca account number after a successful test_connection."""
+        with Session(self._engine) as sess:
+            row = sess.get(BrokerCredentialsRow, asset_class)
+            if row is None:
+                return
+            row.account_number = account_number
+            row.updated_at = datetime.now(timezone.utc)
+            sess.commit()
