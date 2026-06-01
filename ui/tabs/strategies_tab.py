@@ -14,12 +14,11 @@ from state.strategy_close_all import close_all_open_positions
 from ui.components import period_selector, strategy_card
 from ui.components.kpi_row import format_num, format_pct, render_kpi_row
 from ui.data import stats, strategy_admin, trades_repo
-from ui.data.strategy_configs import list_yaml_strategy_names
 
 
 @st.cache_resource
-def _get_alpaca() -> AlpacaClient:
-    return AlpacaClient()
+def _get_alpaca(asset_class: str) -> AlpacaClient:
+    return AlpacaClient(asset_class=asset_class)
 
 
 @st.cache_resource
@@ -44,37 +43,62 @@ def render() -> None:
     start, end = period_selector.render()
     st.session_state["period"] = (start, end)
 
-    try:
-        all_strategies = list_yaml_strategy_names()
-    except Exception as e:
-        st.error(f"Failed to load strategy configs: {e}")
-        st.stop()
-        return
-
-    if not all_strategies:
-        st.info("No strategies configured yet.")
-        return
-
     selected: str | None = st.session_state.get("selected_strategy")
-
-    if selected is None:
-        _render_landing(all_strategies, start, end)
-    else:
+    if selected is not None:
         if st.button("← Back to all strategies"):
             st.session_state["selected_strategy"] = None
             st.rerun()
         _render_detail(selected, start, end)
+        return
+
+    eq_tab, cr_tab = st.tabs(["Equity", "Crypto"])
+    with eq_tab:
+        _render_asset_class("equity", start, end)
+    with cr_tab:
+        _render_asset_class("crypto", start, end)
 
 
-def _render_landing(strategies: list[str], start: datetime, end: datetime) -> None:
-    st.subheader("Strategies")
-    st.caption(f"Period: {start.date()} → {end.date()}")
+def _mask_account_number(account_number: str | None) -> str:
+    if not account_number:
+        return "—"
+    if len(account_number) <= 4:
+        return f"{account_number}***"
+    return f"{account_number[:4]}***"
 
-    _render_admin_panel(start, end)
+
+def _render_asset_class(asset_class: str, start: datetime, end: datetime) -> None:
+    """Header + admin table + cards, all filtered to one asset class."""
+    from ui.data.strategy_configs import list_by_asset_class
+
+    try:
+        client = _get_alpaca(asset_class)
+        account = client.get_account()
+        acct_str = _mask_account_number(account.get("account_number"))
+        bp = float(account.get("buying_power") or 0)
+        st.caption(
+            f"acct: `{acct_str}`  •  buying power: `${bp:,.0f}`  •  "
+            f"asset class: **{asset_class}**"
+        )
+    except Exception as exc:
+        st.warning(
+            f"Could not load {asset_class} account info: {exc}. "
+            f"Configure credentials in **Settings**."
+        )
+
+    try:
+        names = list_by_asset_class(asset_class)
+    except Exception as exc:
+        st.error(f"Failed to load {asset_class} strategy configs: {exc}")
+        return
+    if not names:
+        st.info(f"No {asset_class} strategies configured yet.")
+        return
+
+    _render_admin_panel(start, end, names)
 
     st.markdown("---")
     cols = st.columns(2)
-    for i, name in enumerate(strategies):
+    for i, name in enumerate(names):
         df = trades_repo.get_closed_trades(name, start, end)
         kpis = stats.compute_kpis(df)
         with cols[i % 2]:
@@ -94,17 +118,20 @@ def _fmt_code(text: str) -> str:
     return text if text == "—" else f"`{text}`"
 
 
-def _render_admin_panel(start: datetime, end: datetime) -> None:
-    """Per-strategy kill-switch table.
+def _render_admin_panel(
+    start: datetime, end: datetime, allow_names: list[str],
+) -> None:
+    """Per-strategy kill-switch table, restricted to `allow_names`.
 
     Disable: confirms with a required operator note (≥3 chars), submits
     market closes for all open positions synchronously. On any failure
     the strategy stays in `disabling` and the trader retries on its loop.
     Re-enable: single click, no modal — re-enabling cannot lose money.
 
-    Period-scoped columns (P&L, Win rate, Sharpe, Max DD, Avg R) honor
-    the page's period selector. Today P&L stays today; Open count is live.
+    P&L cells render via format_pnl_inline so negatives are red, positives green.
     """
+    from ui.components.kpi_row import format_pnl_inline
+
     st.markdown("### Strategy controls")
     try:
         admin_store = _get_admin_store()
@@ -114,6 +141,11 @@ def _render_admin_panel(start: datetime, end: datetime) -> None:
         return
     if df.empty:
         st.info("No strategies registered yet.")
+        return
+
+    df = df[df["name"].isin(allow_names)]
+    if df.empty:
+        st.info("No strategies in this asset class.")
         return
 
     header = st.columns([2, 1, 1, 1, 1, 1, 1, 1, 1, 2])
@@ -140,12 +172,21 @@ def _render_admin_panel(start: datetime, end: datetime) -> None:
         cols[0].markdown(f"**{name}**")
         cols[1].markdown(f"{emoji} {label}")
         cols[2].markdown(f"`{int(row['open_count'])}`")
-        cols[3].markdown(f"`{row['today_pnl']:+.2f}`")
-        cols[4].markdown(f"`{row['period_pnl']:+.2f}`")
+        cols[3].markdown(
+            format_pnl_inline(row["today_pnl"], fmt="{:+.2f}"),
+            unsafe_allow_html=True,
+        )
+        cols[4].markdown(
+            format_pnl_inline(row["period_pnl"], fmt="{:+.2f}"),
+            unsafe_allow_html=True,
+        )
         cols[5].markdown(_fmt_code(format_pct(row["period_win_rate"])))
         cols[6].markdown(_fmt_code(format_num(row["period_sharpe"], fmt="{:.2f}")))
         cols[7].markdown(_fmt_code(format_num(row["period_max_dd"], fmt="{:+.0f}")))
-        cols[8].markdown(_fmt_code(format_num(row["period_avg_r"], fmt="{:+.2f}R")))
+        cols[8].markdown(
+            format_pnl_inline(row["period_avg_r"], fmt="{:+.2f}R"),
+            unsafe_allow_html=True,
+        )
 
         with cols[9]:
             confirming = st.session_state.get(confirm_key, False)
@@ -192,6 +233,19 @@ def _render_admin_panel(start: datetime, end: datetime) -> None:
 def _run_disable(strategy_id: int, strategy_name: str, note: str) -> None:
     """Set state=disabling, sweep positions, transition to disabled on
     clean sweep — otherwise leave at disabling for the trader to retry."""
+    from ui.data.strategy_configs import load_yaml_configs
+
+    try:
+        cfg = load_yaml_configs().get(strategy_name)
+        if cfg is None or not cfg.asset_classes:
+            st.error(f"No YAML config found for {strategy_name}; cannot derive "
+                     "asset class for sweep.")
+            return
+        asset_class = cfg.asset_classes[0].name
+    except Exception as exc:
+        st.error(f"Failed to read config for {strategy_name}: {exc}")
+        return
+
     try:
         admin_store = _get_admin_store()
         strategy_store = _get_store_for(strategy_name)
@@ -207,7 +261,7 @@ def _run_disable(strategy_id: int, strategy_name: str, note: str) -> None:
     try:
         with st.spinner(f"Closing positions for {strategy_name}…"):
             result = close_all_open_positions(
-                alpaca=_get_alpaca(), mysql=strategy_store,
+                alpaca=_get_alpaca(asset_class), mysql=strategy_store,
                 strategy_name=strategy_name, reason="operator_disable",
             )
     except Exception as exc:
