@@ -188,14 +188,14 @@ def test_resolve_treats_db_row_with_empty_key_as_missing(
     clean_env, patched_store, monkeypatch,
 ):
     # Manually insert empty-string row.
-    from datetime import datetime
+    from datetime import datetime, timezone
     from sqlalchemy import text as sql_text
     with patched_store._engine.begin() as conn:
         conn.execute(sql_text(
             "INSERT INTO broker_credentials "
             "(asset_class, api_key, secret_key, base_url, account_number, updated_at) "
             "VALUES ('equity', '', '', 'u', NULL, :t)"
-        ), {"t": datetime.utcnow()})
+        ), {"t": datetime.now(timezone.utc)})
     monkeypatch.setenv("ALPACA_EQUITY_API_KEY", "AK_ENV")
     monkeypatch.setenv("ALPACA_EQUITY_SECRET_KEY", "SK_ENV")
     out = resolve("equity")
