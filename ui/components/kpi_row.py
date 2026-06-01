@@ -31,17 +31,17 @@ def render_kpi_row(kpis) -> None:
     row1[0].metric("Total PnL", _money(kpis.total_pnl))
     row1[1].metric("Trades", str(kpis.trade_count))
     row1[2].metric("Win Rate", format_pct(kpis.win_rate))
-    row1[3].metric("Profit Factor", _num(kpis.profit_factor, fmt="{:.2f}"))
+    row1[3].metric("Profit Factor", format_num(kpis.profit_factor, fmt="{:.2f}"))
 
     row2 = st.columns(4)
     row2[0].metric("Avg Win", _money(kpis.avg_win))
     row2[1].metric("Avg Loss", _money(kpis.avg_loss))
-    row2[2].metric("Expectancy R", _num(kpis.expectancy_R, fmt="{:.2f}"))
+    row2[2].metric("Expectancy R", format_num(kpis.expectancy_R, fmt="{:.2f}"))
     row2[3].metric("Max DD", _money(kpis.max_drawdown))
 
     row3 = st.columns(4)
-    row3[0].metric("Sharpe", _num(kpis.sharpe, fmt="{:.2f}"))
-    row3[1].metric("Avg Bars", _num(kpis.avg_bars_held, fmt="{:.1f}"))
+    row3[0].metric("Sharpe", format_num(kpis.sharpe, fmt="{:.2f}"))
+    row3[1].metric("Avg Bars", format_num(kpis.avg_bars_held, fmt="{:.1f}"))
     row3[2].metric("Best Trade", _money(kpis.best_trade))
     row3[3].metric("Worst Trade", _money(kpis.worst_trade))
 
@@ -53,5 +53,5 @@ def _money(v: Optional[float]) -> str:
     return f"{sign}${abs(v):,.2f}"
 
 
-def _num(v: Optional[float], *, fmt: str) -> str:
+def format_num(v: Optional[float], *, fmt: str) -> str:
     return "—" if v is None else fmt.format(v)

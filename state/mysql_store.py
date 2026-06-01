@@ -51,6 +51,23 @@ class StrategyRow(Base):
     name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     # created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 
+    # Operator kill-switch. enabled is the boolean the trader polls each cycle;
+    # state is the UI-facing tri-state ("enabled" | "disabling" | "disabled").
+    # Both exist because the trader transitions disabling → disabled itself
+    # once its book empties, while the dashboard updates state synchronously
+    # when an operator clicks Disable.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    state: Mapped[str] = mapped_column(
+        Enum("enabled", "disabling", "disabled", name="strategy_state"),
+        default="enabled", nullable=False,
+    )
+    last_change_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_change_reason: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True,
+    )
+
     positions = relationship("PositionRow", back_populates="strategy")
 
 
@@ -235,6 +252,12 @@ class MySQLStore:
             "ALTER TABLE trades ADD COLUMN client_order_id VARCHAR(128) DEFAULT NULL",
             "ALTER TABLE trades ADD COLUMN exit_client_order_id VARCHAR(128) DEFAULT NULL",
             "CREATE INDEX idx_trades_client_order_id ON trades (client_order_id)",
+            # strategies: operator kill-switch + UI-facing tri-state.
+            "ALTER TABLE strategies ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 1",
+            "ALTER TABLE strategies ADD COLUMN state ENUM('enabled','disabling','disabled') "
+            "NOT NULL DEFAULT 'enabled'",
+            "ALTER TABLE strategies ADD COLUMN last_change_at TIMESTAMP NULL",
+            "ALTER TABLE strategies ADD COLUMN last_change_reason VARCHAR(255) NULL",
         ]
         try:
             with self._engine.connect() as conn:
@@ -293,6 +316,115 @@ class MySQLStore:
             self.upsert_strategy()
         assert self._strategy_id is not None
         return self._strategy_id
+
+    # ── Operator kill-switch ────────────────────────────────────────────
+
+    def is_strategy_enabled(self) -> bool:
+        """Return the `enabled` flag for self.strategy_id. True on missing row.
+
+        The trader main loop polls this each cycle. Default-true on lookup
+        failure prevents a transient DB hiccup from silently halting trading.
+        """
+        try:
+            with Session(self._engine) as session:
+                row = session.query(StrategyRow).filter(
+                    StrategyRow.id == self.strategy_id,
+                ).one_or_none()
+                return bool(row.enabled) if row is not None else True
+        except Exception as exc:
+            self._log.error("MYSQL_IS_ENABLED_QUERY_FAILED: %s", exc, exc_info=True)
+            return True
+
+    def get_strategy_state(self, strategy_id: int) -> str | None:
+        """Return the UI tri-state ("enabled"/"disabling"/"disabled") or None."""
+        with Session(self._engine) as session:
+            row = session.query(StrategyRow).filter(
+                StrategyRow.id == strategy_id,
+            ).one_or_none()
+            return row.state if row is not None else None
+
+    def set_strategy_state(
+        self, strategy_id: int, *, enabled: bool, state: str, reason: str,
+    ) -> None:
+        """Atomically update enabled/state/last_change_* + write an audit event.
+
+        `state` must be one of "enabled" | "disabling" | "disabled". The
+        EventRow lets the dashboard reconstruct the operator's intent and
+        any subsequent automated transitions (the trader's self-heal ends a
+        sweep with reason="trader_disable_sweep_complete").
+        """
+        if state not in {"enabled", "disabling", "disabled"}:
+            raise ValueError(f"invalid strategy state: {state!r}")
+        now = datetime.now(timezone.utc)
+        with Session(self._engine) as session:
+            row = session.query(StrategyRow).filter(
+                StrategyRow.id == strategy_id,
+            ).one()
+            prev_state = row.state
+            prev_enabled = bool(row.enabled)
+            row.enabled = enabled
+            row.state = state
+            row.last_change_at = now
+            row.last_change_reason = (reason or "")[:255]
+            session.add(EventRow(
+                type="strategy_state_changed",
+                strategy_id=strategy_id,
+                payload={
+                    "from_state": prev_state, "to_state": state,
+                    "from_enabled": prev_enabled, "to_enabled": enabled,
+                    "reason": reason,
+                },
+                created_at=now,
+            ))
+            session.commit()
+
+    def get_strategies_admin_view(self) -> list[dict]:
+        """Per-strategy snapshot for the dashboard admin table.
+
+        Aggregates: open count from positions, today/total PnL and win rate
+        from trades. One row per known strategy (returns even strategies
+        with no positions or trades, so an operator always sees the kill-
+        switch row).
+        """
+        # SQLite (used by tests) doesn't support TIMESTAMPDIFF/CURDATE the
+        # same way MySQL does; we compute "today" in Python and pass it in.
+        from datetime import time as _time
+        today_start = datetime.combine(
+            datetime.now(timezone.utc).date(), _time.min, tzinfo=timezone.utc,
+        )
+        with Session(self._engine) as session:
+            strategies = session.query(StrategyRow).order_by(StrategyRow.name).all()
+            out: list[dict] = []
+            for s in strategies:
+                open_count = session.query(PositionRow).filter(
+                    PositionRow.strategy_id == s.id,
+                    PositionRow.status == "open",
+                ).count()
+                today_pnl = session.query(TradeRow).filter(
+                    TradeRow.strategy_id == s.id,
+                    TradeRow.closed_at >= today_start,
+                ).all()
+                total = session.query(TradeRow).filter(
+                    TradeRow.strategy_id == s.id,
+                ).all()
+                today_pnl_sum = float(sum(float(t.pnl_usd) for t in today_pnl))
+                total_pnl_sum = float(sum(float(t.pnl_usd) for t in total))
+                wins = sum(1 for t in total if float(t.pnl_usd) > 0)
+                win_rate = (wins / len(total)) if total else 0.0
+                out.append({
+                    "id": s.id,
+                    "name": s.name,
+                    "state": s.state,
+                    "enabled": bool(s.enabled),
+                    "open_count": open_count,
+                    "today_pnl": today_pnl_sum,
+                    "total_pnl": total_pnl_sum,
+                    "win_rate": win_rate,
+                    "trade_count": len(total),
+                    "last_change_at": s.last_change_at,
+                    "last_change_reason": s.last_change_reason,
+                })
+            return out
 
     # ── Position lifecycle ──────────────────────────────────────────────
 
