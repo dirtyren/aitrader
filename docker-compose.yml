@@ -9,7 +9,7 @@ services:
     ports:
       - "127.0.0.1:3306:3306"
     volumes:
-      - db_data:/var/lib/mysql
+      - ./mysql:/var/lib/mysql
       - ./state/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     restart: unless-stopped
     healthcheck:
@@ -311,5 +311,4 @@ services:
       - dashboard
 
 volumes:
-  db_data:
   dashboard_certs:
