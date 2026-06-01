@@ -1,6 +1,6 @@
 """VWAP Wave Dashboard — entry point.
 
-Tabs: Strategies | Live Trading | Logs | WFO
+Tabs: Strategies | Live Trading | Reconciliation | Configuration | Settings | Logs | WFO
 Theme: dark, financial.
 Auth/TLS: handled by the nginx reverse proxy in front of this app
 (see nginx/ for config). This file assumes the request reaches it
@@ -18,7 +18,7 @@ from streamlit_autorefresh import st_autorefresh
 
 from ui.components.theme import inject_theme
 from ui.logging_setup import setup_logging
-from ui.tabs import config_tab, live_tab, reconciliation_tab, strategies_tab
+from ui.tabs import config_tab, live_tab, reconciliation_tab, settings_tab, strategies_tab
 from ui.tabs.logs_panel import render as render_logs
 from ui.wfo import tab as wfo_tab
 
@@ -56,8 +56,8 @@ if _LOGO.exists():
 else:
     st.title("aitrader")
 
-strategies_t, live_t, recon_t, config_t, logs_t, wfo_t = st.tabs([
-    "Strategies", "Live Trading", "Reconciliation", "Configuration", "Logs", "WFO",
+strategies_t, live_t, recon_t, config_t, settings_t, logs_t, wfo_t = st.tabs([
+    "Strategies", "Live Trading", "Reconciliation", "Configuration", "Settings", "Logs", "WFO",
 ])
 
 with strategies_t:
@@ -72,6 +72,9 @@ with recon_t:
 
 with config_t:
     _safe_render("config", config_tab.render)
+
+with settings_t:
+    _safe_render("settings", settings_tab.render)
 
 with logs_t:
     state_files = sorted(glob.glob("runtime/trading_state_*.json"))
