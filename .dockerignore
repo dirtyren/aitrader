@@ -7,6 +7,7 @@ __pycache__
 lock.file
 logs/
 runtime/
+mysql/
 venv/
 *.egg-info
 .pytest_cache
