@@ -1,0 +1,17 @@
+=== Pending Hypotheses ===
+Created: 2026-06-01 (Optimizer Cycle)
+
+1. [APPLIED] Increase max_hold_bars: 12 -> 18
+   Rationale: 66.7% WR RSI reversion in bull regime. Time_stop exits cut 75% WR winners at avg R=0.09 before reaching 1.5R target. 50% more hold time lets winners run to completion.
+
+2. Cross-strategy symbol deconfliction: Remove BTC/USD and ETH/USD from ib_crypto and/or vwap_wave_crypto configs
+   Rationale: 10/18 (56%) of rsi_crypto trades closed as auto_resolved_qty_drift due to cross-strategy overlap on BTC/ETH. All 4 crypto strategies trade these pairs. Deconflicting would eliminate the churn and let rsi_crypto trades run their full duration.
+
+3. Increase RSI threshold: 35 -> 40
+   Rationale: Earlier entries in bull regime would catch reversions earlier, giving more room before max_hold_bars cuts them off. Risk: more noise entries in mixed regime.
+
+4. Switch to 5Min timeframe
+   Rationale: 60 bars of hold time instead of 18 on 1Hour. More granular exit management. Risk: lower signal quality on faster timeframe vs 1Hour.
+
+5. Raise trail_at_R: 1.5 -> 2.0
+   Rationale: If max_hold_bars increase shows trades reaching 1.5R consistently, raising trail_at_R would let them run further in a bull trend.
