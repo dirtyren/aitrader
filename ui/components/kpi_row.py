@@ -17,6 +17,27 @@ def format_pnl(value: Optional[float], *, prefix: str = "$") -> str:
     return f'<span class="{cls}">{sign}{prefix}{value:,.2f}</span>'
 
 
+def format_pnl_inline(value: Optional[float], *, fmt: str = "{:+.2f}") -> str:
+    """Like `format_pnl` but renders the raw formatted number (no $ prefix)
+    inside a colored monospace span. Use inside table cells where you want
+    the value to look like a code-span but with red/green coloring.
+
+    None or NaN renders as a neutral em-dash.
+    Zero is treated as neutral (neither positive nor negative).
+    """
+    import math
+
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return '<span class="pnl-neu" style="font-family:monospace">—</span>'
+    if value > 0:
+        cls = "pnl-pos"
+    elif value < 0:
+        cls = "pnl-neg"
+    else:
+        cls = "pnl-neu"
+    return f'<span class="{cls}" style="font-family:monospace">{fmt.format(value)}</span>'
+
+
 def format_pct(value: Optional[float]) -> str:
     if value is None:
         return "—"
