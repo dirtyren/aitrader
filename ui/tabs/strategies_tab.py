@@ -12,7 +12,7 @@ from broker.alpaca_client import AlpacaClient
 from state.mysql_store import MySQLStore
 from state.strategy_close_all import close_all_open_positions
 from ui.components import period_selector, strategy_card
-from ui.components.kpi_row import render_kpi_row
+from ui.components.kpi_row import format_num, format_pct, render_kpi_row
 from ui.data import stats, strategy_admin, trades_repo
 from ui.data.strategy_configs import list_yaml_strategy_names
 
@@ -90,16 +90,8 @@ _STATE_BADGE = {
 }
 
 
-def _fmt_num(value, fmt: str) -> str:
-    if value is None:
-        return "—"
-    return f"`{fmt.format(float(value))}`"
-
-
-def _fmt_pct(value) -> str:
-    if value is None:
-        return "—"
-    return f"`{float(value) * 100:.1f}%`"
+def _fmt_code(text: str) -> str:
+    return text if text == "—" else f"`{text}`"
 
 
 def _render_admin_panel(start: datetime, end: datetime) -> None:
@@ -150,10 +142,10 @@ def _render_admin_panel(start: datetime, end: datetime) -> None:
         cols[2].markdown(f"`{int(row['open_count'])}`")
         cols[3].markdown(f"`{row['today_pnl']:+.2f}`")
         cols[4].markdown(f"`{row['period_pnl']:+.2f}`")
-        cols[5].markdown(_fmt_pct(row["period_win_rate"]))
-        cols[6].markdown(_fmt_num(row["period_sharpe"], "{:.2f}"))
-        cols[7].markdown(_fmt_num(row["period_max_dd"], "{:+.0f}"))
-        cols[8].markdown(_fmt_num(row["period_avg_r"], "{:+.2f}R"))
+        cols[5].markdown(_fmt_code(format_pct(row["period_win_rate"])))
+        cols[6].markdown(_fmt_code(format_num(row["period_sharpe"], fmt="{:.2f}")))
+        cols[7].markdown(_fmt_code(format_num(row["period_max_dd"], fmt="{:+.0f}")))
+        cols[8].markdown(_fmt_code(format_num(row["period_avg_r"], fmt="{:+.2f}R")))
 
         with cols[9]:
             confirming = st.session_state.get(confirm_key, False)
