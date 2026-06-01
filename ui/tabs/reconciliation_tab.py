@@ -16,6 +16,7 @@ import os
 import streamlit as st
 
 from broker.alpaca_client import AlpacaClient
+from broker.alpaca_router import AlpacaRouter
 from state.mysql_store import MySQLStore
 from state.operator_close import close_broker_only_strike
 from ui.data import reconciliation_repo as repo
@@ -61,8 +62,12 @@ def _resolve_hint(direction: str) -> str:
 
 
 @st.cache_resource
-def _get_alpaca() -> AlpacaClient:
-    return AlpacaClient()
+def _get_alpaca() -> AlpacaRouter:
+    # Reconciliation tab spans both asset classes; the router fans reads
+    # across equity + crypto and routes writes by symbol shape. close_broker_only
+    # only needs submit_order/cancel_order/list_orders/get_positions, all of
+    # which the router proxies with the same shape as AlpacaClient.
+    return AlpacaRouter()
 
 
 @st.cache_resource

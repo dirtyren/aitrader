@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from broker.alpaca_client import AlpacaClient
 from broker.client_order_id import Role, make_client_order_id
 from broker.safe_close import submit_close_with_drift_recovery
 from state.mysql_store import MySQLStore
@@ -83,7 +82,7 @@ def _alpaca_side_to_close(broker_side: str | None, qty: float) -> str:
     return "sell" if qty > 0 else "buy"
 
 
-def _live_broker_position(alpaca: AlpacaClient, symbol: str) -> dict | None:
+def _live_broker_position(alpaca: Any, symbol: str) -> dict | None:
     """Look up a live Alpaca position by symbol. None if not held."""
     positions = alpaca.get_positions()
     for p in positions:
@@ -92,7 +91,7 @@ def _live_broker_position(alpaca: AlpacaClient, symbol: str) -> dict | None:
     return None
 
 
-def _cancel_orders_for_symbol(alpaca: AlpacaClient, symbol: str) -> list[dict]:
+def _cancel_orders_for_symbol(alpaca: Any, symbol: str) -> list[dict]:
     """Cancel all open orders for one symbol. Returns per-order results."""
     try:
         orders = alpaca.list_orders(status="open", symbols=[symbol], nested=False)
@@ -116,7 +115,7 @@ def _cancel_orders_for_symbol(alpaca: AlpacaClient, symbol: str) -> list[dict]:
 def close_broker_only_strike(
     *,
     store: MySQLStore,
-    alpaca: AlpacaClient,
+    alpaca: Any,
     strike_id: int,
     operator_note: str,
 ) -> CloseResult:

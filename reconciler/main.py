@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from broker.alpaca_client import AlpacaClient
+from broker.alpaca_router import AlpacaRouter
 from broker.client_order_id import Role, make_client_order_id, parse_client_order_id
 from broker.safe_close import DEFAULT_DRIFT_MARGIN, submit_close_with_drift_recovery
 from notifications import send_reconcile_alert, send_reconcile_heartbeat_stale
@@ -865,7 +866,10 @@ def main() -> int:
     log.info("RECONCILER_LOADED_STATE last_orders_check_ts=%s",
              state.last_orders_check_ts)
 
-    alpaca = AlpacaClient()
+    # Reconciler needs the full broker truth, so it talks to both per-asset-class
+    # Alpaca accounts via the router. AlpacaClient() (legacy single-account) no
+    # longer matches the .env shape after PR #83.
+    alpaca = AlpacaRouter()
 
     while True:
         now = datetime.now(timezone.utc)
