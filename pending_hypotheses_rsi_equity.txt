@@ -1,0 +1,7 @@
+# Pending hypotheses for rsi_equity_trader
+
+# ✅ APPLIED 2026-06-01 — max_hold_bars: 12 → 24
+# Rationale: 100% WR on signals but all time_stop at tiny R (0.04-0.25R). Let winners run longer.
+
+# Alternative: Increase position_size_r from 0.5 to 1.0
+# Rationale: With 100% WR on strategy signals, sizing up could boost PnL. Only after verifying max_hold_bars=24 improves R multiples.

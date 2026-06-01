@@ -1,0 +1,10 @@
+# Pending hypotheses for orb_equity_trader
+
+# ✅ APPLIED 2026-06-01 — orb_bars: 4 → 6
+# Rationale: 0% WR on 6 trades, all -1.0R stops on 5Min equities. Broader range to filter false breakouts.
+
+# Alternative: Increase atr_mult_stop from 0.75 to 1.0
+# Rationale: If wider range doesn't help, stops may need more breathing room on equities. Try after orb_bars=6 evaluation.
+
+# Alternative: Trim to SPY-only
+# Rationale: SPY/QQQ/NVDA all failing. Maybe equity ORB needs a larger range window entirely.

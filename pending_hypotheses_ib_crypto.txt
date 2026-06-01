@@ -1,0 +1,7 @@
+# Pending hypotheses for ib_crypto_trader
+
+# ✅ REFLECTED 2026-06-01 — No config change needed
+# Strategy performing at 66.7% WR (+$1,862 on signals). qty_drift trades are structural cross-strategy overlap.
+
+# Alternative: Investigate SOL trade #300 (close_reason=target but negative R=-0.28)
+# Rationale: Possible IB fade logic bug. If it recurs, check initial_balance fade fix.

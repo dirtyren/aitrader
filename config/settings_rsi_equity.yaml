@@ -39,7 +39,7 @@ filters:
   opening_blackout_min: 15
   volume_deficit_pct: 0.3
 position_management:
-  max_hold_bars: 12
+  max_hold_bars: 24
   breakeven_at_R: 1.0
   trail_at_R: 1.5
   trail_atr: 1.0

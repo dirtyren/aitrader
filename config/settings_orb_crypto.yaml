@@ -58,7 +58,7 @@ scheduler:
   wake_grace_seconds: 5
 setups:
   orb_vwap:
-    atr_mult_stop: 0.75
+    atr_mult_stop: 1.0
     enabled: true
     orb_bars: 4
     target_R: 2.5

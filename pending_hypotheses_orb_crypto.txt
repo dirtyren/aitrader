@@ -1,0 +1,10 @@
+# Pending hypotheses for orb_crypto_trader
+
+# ✅ APPLIED 2026-06-01 — atr_mult_stop: 0.75 → 1.0
+# Rationale: 23% WR with -1.0R losses within 0-3 bars on 5Min crypto. 0.75x ATR stop too tight for crypto noise.
+
+# Alternative: Trim symbols to BTC-only
+# Rationale: Only BTC shows positive performance (50% WR on 6 trades). ETH(0/2), SOL(0/2), AVAX(0/3) all lose. Wait to see if wider stop helps the other symbols.
+
+# Alternative: Increase orb_bars from 4 to 6
+# Rationale: Wider range window would filter more noise and reduce false breakouts. Try if atr_mult_stop=1.0 doesn't improve WR.

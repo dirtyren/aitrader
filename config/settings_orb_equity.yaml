@@ -61,7 +61,7 @@ setups:
   orb_vwap:
     atr_mult_stop: 0.75
     enabled: true
-    orb_bars: 4
+    orb_bars: 6
     target_R: 3.0
 system:
   name: orb_equity_trader

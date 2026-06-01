@@ -1,0 +1,4 @@
+# Pending hypotheses for vwap_wave_crypto_trader
+
+# ✅ REFLECTED 2026-06-01 — No config change needed
+# 60% WR (+$361). Diverse setups (price_discovery, return_to_value, fade_extreme) spreading risk well. XRP and PEPE hit R=2.0 and R=1.0 targets.
