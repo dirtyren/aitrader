@@ -112,3 +112,13 @@ CREATE TABLE IF NOT EXISTS reconciliation_events (
     INDEX idx_events_time (created_at),
     INDEX idx_events_type (type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS broker_credentials (
+    asset_class    VARCHAR(16) NOT NULL,
+    api_key        VARCHAR(255) NOT NULL,
+    secret_key     VARCHAR(255) NOT NULL,
+    base_url       VARCHAR(255) NOT NULL,
+    account_number VARCHAR(64) DEFAULT NULL,
+    updated_at     DATETIME NOT NULL,
+    PRIMARY KEY (asset_class)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

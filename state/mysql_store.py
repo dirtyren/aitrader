@@ -189,6 +189,17 @@ class EventRow(Base):
     )
 
 
+class BrokerCredentialsRow(Base):
+    __tablename__ = "broker_credentials"
+
+    asset_class:    Mapped[str]      = mapped_column(String(16), primary_key=True)
+    api_key:        Mapped[str]      = mapped_column(String(255), nullable=False)
+    secret_key:     Mapped[str]      = mapped_column(String(255), nullable=False)
+    base_url:       Mapped[str]      = mapped_column(String(255), nullable=False)
+    account_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at:     Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 # ── Store ───────────────────────────────────────────────────────────────────
 
 def _build_url() -> str:
