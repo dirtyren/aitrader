@@ -167,6 +167,30 @@ def list_yaml_strategy_names(config_dir: Path = Path("config")) -> list[str]:
     return sorted(load_yaml_configs(config_dir).keys())
 
 
+def list_by_asset_class(
+    asset_class: str,
+    config_dir: Path = Path("config"),
+) -> list[str]:
+    """Sorted strategy names whose YAML's `asset_classes` block contains the
+    given key. A YAML with both keys appears in both lists with a warning."""
+    if asset_class not in ("equity", "crypto"):
+        raise ValueError(
+            f"Invalid asset_class {asset_class!r}; expected 'equity' or 'crypto'"
+        )
+    out: list[str] = []
+    for name, cfg in load_yaml_configs(config_dir).items():
+        ac_names = {ac.name for ac in cfg.asset_classes}
+        if asset_class in ac_names:
+            if len(ac_names) > 1:
+                logger.warning(
+                    "STRATEGY_MIXED_ASSET_CLASSES name=%s classes=%s — "
+                    "appears in both Equity and Crypto tabs",
+                    name, sorted(ac_names),
+                )
+            out.append(name)
+    return sorted(out)
+
+
 def _db_strategies() -> list[str]:
     from ui.data.trades_repo import list_strategies
     return list(list_strategies())
