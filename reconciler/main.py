@@ -22,7 +22,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from broker.alpaca_client import AlpacaClient
-from broker.alpaca_router import AlpacaRouter
 from broker.client_order_id import Role, make_client_order_id, parse_client_order_id
 from broker.safe_close import DEFAULT_DRIFT_MARGIN, submit_close_with_drift_recovery
 from notifications import send_reconcile_alert, send_reconcile_heartbeat_stale
@@ -147,6 +146,7 @@ def auto_close_broker_only(
     anomalies: list,
     cfg: ReconcilerConfig,
     now: datetime,
+    asset_class: str | None = None,
 ) -> int:
     """Market-close every broker_only anomaly whose strike count >= threshold.
 
@@ -213,6 +213,7 @@ def auto_close_broker_only(
                 session,
                 type="auto_close_broker_only_failed",
                 symbol=a.symbol,
+                asset_class=asset_class,
                 payload={
                     "broker_symbol": broker_symbol,
                     "side": side, "qty": total_qty,
@@ -241,6 +242,7 @@ def auto_close_broker_only(
                 session,
                 type="auto_close_dust",
                 symbol=a.symbol,
+                asset_class=asset_class,
                 payload={
                     "broker_symbol": broker_symbol,
                     "total_qty": total_qty,
@@ -269,6 +271,7 @@ def auto_close_broker_only(
                 session,
                 type="auto_close_broker_only_failed",
                 symbol=a.symbol,
+                asset_class=asset_class,
                 payload={
                     "broker_symbol": broker_symbol,
                     "side": side, "qty": total_qty,
@@ -321,6 +324,7 @@ def auto_close_broker_only(
                     session,
                     type="auto_close_broker_only_failed",
                     symbol=a.symbol,
+                    asset_class=asset_class,
                     payload={
                         "broker_symbol": broker_symbol,
                         "side": side, "qty": chunk_qty,
@@ -445,6 +449,7 @@ def auto_resolve_qty_drift(
     recent_fills: list[dict],
     cfg: ReconcilerConfig,
     now: datetime,
+    asset_class: str | None = None,
 ) -> int:
     """Reconcile qty_drift anomalies whose strike count >= threshold.
 
@@ -491,6 +496,7 @@ def auto_resolve_qty_drift(
                 session,
                 type="qty_drift_ambiguous_attribution",
                 symbol=a.symbol,
+                asset_class=asset_class,
                 payload={
                     "snapshot": a.snapshot,
                     "open_rows": [
@@ -530,6 +536,7 @@ def auto_resolve_qty_drift(
                 type="auto_close_qty_drift_failed",
                 strategy_id=target.strategy_id,
                 symbol=a.symbol,
+                asset_class=asset_class,
                 payload={
                     "broker_symbol": broker_symbol,
                     "setup": target.setup_name,
@@ -551,6 +558,7 @@ def auto_resolve_qty_drift(
                 type="auto_close_dust",
                 strategy_id=target.strategy_id,
                 symbol=a.symbol,
+                asset_class=asset_class,
                 payload={
                     "direction": "qty_drift",
                     "broker_symbol": broker_symbol,
@@ -587,6 +595,7 @@ def auto_resolve_qty_drift(
                 type="auto_close_qty_drift_failed",
                 strategy_id=target.strategy_id,
                 symbol=a.symbol,
+                asset_class=asset_class,
                 payload={
                     "broker_symbol": broker_symbol,
                     "setup": target.setup_name,
@@ -623,6 +632,7 @@ def auto_resolve_qty_drift(
                     type="auto_close_qty_drift_failed",
                     strategy_id=target.strategy_id,
                     symbol=a.symbol,
+                    asset_class=asset_class,
                     payload={
                         "broker_symbol": broker_symbol,
                         "setup": target.setup_name,
@@ -729,13 +739,18 @@ def run_one_cycle(
         return None
 
     broker_norm = _broker_qty_by_symbol(broker_positions)
+    asset_class = getattr(cfg, "asset_class", None)
 
     with Session(store._engine) as session:
         # 1.5. Heartbeat staleness check (before fills, so the alert is the
-        # first artifact written this cycle).
-        last_hb = session.query(EventRow.created_at).filter(
+        # first artifact written this cycle). Scoped to this side's heartbeat
+        # row so equity's stale alert doesn't fire because crypto stopped.
+        hb_q = session.query(EventRow.created_at).filter(
             EventRow.type == "heartbeat",
-        ).order_by(EventRow.created_at.desc()).first()
+        )
+        if asset_class is not None:
+            hb_q = hb_q.filter(EventRow.asset_class == asset_class)
+        last_hb = hb_q.order_by(EventRow.created_at.desc()).first()
         if last_hb is not None:
             last_hb_ts = last_hb[0]
             if last_hb_ts.tzinfo is None:
@@ -745,6 +760,7 @@ def run_one_cycle(
                 emit_event(
                     session,
                     type="reconciler_heartbeat_stale",
+                    asset_class=asset_class,
                     payload={
                         "last_seen_at": last_hb_ts.isoformat(),
                         "age_seconds": age_s,
@@ -764,18 +780,22 @@ def run_one_cycle(
                     session,
                     type="shadow_would_apply_fill",
                     symbol=fill.get("symbol"),
+                    asset_class=asset_class,
                     payload={
                         "alpaca_id": fill.get("id"),
                         "client_order_id": fill.get("client_order_id"),
                     },
                 )
             else:
-                apply_tagged_fill(session, fill, store)
+                apply_tagged_fill(
+                    session, fill, store, cycle_asset_class=asset_class,
+                )
         session.commit()
 
         # 3. Check the invariant against post-fill state.
         anomalies = check_invariant(
-            session, store, broker_norm, qty_eps=cfg.qty_eps,
+            session, store, broker_norm,
+            qty_eps=cfg.qty_eps, asset_class=asset_class,
         )
 
         # 4. Process anomalies through the strike rule.
@@ -807,6 +827,7 @@ def run_one_cycle(
             alpaca=alpaca, store=store, session=session,
             broker_positions=broker_positions_by_sym,
             anomalies=anomalies, cfg=cfg, now=now,
+            asset_class=asset_class,
         )
 
         # 4.6. Auto-resolve qty_drift anomalies. recent_fills carries the
@@ -817,6 +838,7 @@ def run_one_cycle(
             broker_positions=broker_positions_by_sym,
             anomalies=anomalies, recent_fills=recent_fills,
             cfg=cfg, now=now,
+            asset_class=asset_class,
         )
 
         # 5. Auto-clear strikes whose anomaly is no longer present.
@@ -824,24 +846,29 @@ def run_one_cycle(
             session,
             current_anomaly_keys={a.key for a in anomalies},
             now=now,
+            asset_class=asset_class,
         )
 
         # 6. Heartbeat.
         emit_event(
             session,
             type="heartbeat",
+            asset_class=asset_class,
             payload={
                 "broker_symbols": len(broker_norm),
                 "anomalies": len(anomalies),
                 "shadow_mode": cfg.shadow_mode,
+                "asset_class": asset_class,
             },
         )
 
         session.commit()
 
     log.info(
-        "RECONCILER_CYCLE_DONE broker_symbols=%d anomalies=%d fills=%d shadow=%s",
-        len(broker_norm), len(anomalies), len(recent_fills), cfg.shadow_mode,
+        "RECONCILER_CYCLE_DONE asset_class=%s broker_symbols=%d "
+        "anomalies=%d fills=%d shadow=%s",
+        asset_class, len(broker_norm), len(anomalies),
+        len(recent_fills), cfg.shadow_mode,
     )
     return now
 
@@ -854,22 +881,26 @@ def main() -> int:
     )
     cfg = ReconcilerConfig.from_env()
     log.info(
-        "RECONCILER_STARTING interval_s=%d threshold=%d shadow=%s",
-        cfg.interval_s, cfg.strike_threshold, cfg.shadow_mode,
+        "RECONCILER_STARTING asset_class=%s interval_s=%d threshold=%d shadow=%s",
+        cfg.asset_class, cfg.interval_s, cfg.strike_threshold, cfg.shadow_mode,
     )
 
-    store = MySQLStore(strategy_name="reconciler")
+    # Per-asset-class strategy row so each reconciler container has its own
+    # audit trail and the two never collide on upsert.
+    store = MySQLStore(strategy_name=f"reconciler-{cfg.asset_class}")
     store.ensure_schema()
     store.upsert_strategy()
 
     state = load_state(cfg.state_file_path)
-    log.info("RECONCILER_LOADED_STATE last_orders_check_ts=%s",
-             state.last_orders_check_ts)
+    log.info(
+        "RECONCILER_LOADED_STATE asset_class=%s last_orders_check_ts=%s",
+        cfg.asset_class, state.last_orders_check_ts,
+    )
 
-    # Reconciler needs the full broker truth, so it talks to both per-asset-class
-    # Alpaca accounts via the router. AlpacaClient() (legacy single-account) no
-    # longer matches the .env shape after PR #83.
-    alpaca = AlpacaRouter()
+    # One Alpaca account per side (PR #83). Each reconciler talks to its
+    # own broker; an outage on the other side can't short-circuit this
+    # cycle's get_positions / list_orders.
+    alpaca = AlpacaClient(asset_class=cfg.asset_class)
 
     while True:
         now = datetime.now(timezone.utc)

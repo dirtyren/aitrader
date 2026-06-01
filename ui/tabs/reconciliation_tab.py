@@ -16,7 +16,6 @@ import os
 import streamlit as st
 
 from broker.alpaca_client import AlpacaClient
-from broker.alpaca_router import AlpacaRouter
 from state.mysql_store import MySQLStore
 from state.operator_close import close_broker_only_strike
 from ui.data import reconciliation_repo as repo
@@ -62,12 +61,11 @@ def _resolve_hint(direction: str) -> str:
 
 
 @st.cache_resource
-def _get_alpaca() -> AlpacaRouter:
-    # Reconciliation tab spans both asset classes; the router fans reads
-    # across equity + crypto and routes writes by symbol shape. close_broker_only
-    # only needs submit_order/cancel_order/list_orders/get_positions, all of
-    # which the router proxies with the same shape as AlpacaClient.
-    return AlpacaRouter()
+def _get_alpaca(asset_class: str) -> AlpacaClient:
+    """Per-asset-class client. Each Reconciliation subtab only ever closes
+    positions on its own side, so we can use the direct AlpacaClient instead
+    of the router."""
+    return AlpacaClient(asset_class=asset_class)
 
 
 @st.cache_resource
@@ -78,8 +76,14 @@ def _get_store() -> MySQLStore:
     return s
 
 
-def _alpaca_dashboard_url() -> str:
-    base = (os.getenv("ALPACA_BASE_URL") or "").lower()
+def _alpaca_dashboard_url(asset_class: str) -> str:
+    """Pick the Alpaca dashboard URL (paper vs live) for one asset class.
+    Falls back to the legacy global env var if the per-class one is unset."""
+    base = (
+        os.getenv(f"ALPACA_{asset_class.upper()}_BASE_URL")
+        or os.getenv("ALPACA_BASE_URL")
+        or ""
+    ).lower()
     if "paper" in base:
         return "https://app.alpaca.markets/paper/dashboard/overview"
     return "https://app.alpaca.markets/live/dashboard/overview"
@@ -101,14 +105,14 @@ def _broker_qty_from_snapshot(snapshot) -> float | None:
         return None
 
 
-def _render_unmanaged_section(broker_only_df) -> None:
+def _render_unmanaged_section(broker_only_df, asset_class: str) -> None:
     st.subheader("Unmanaged broker positions")
     st.caption(
         "Positions held at Alpaca with no managed MySQL row. Closing here "
         "submits a market order tagged `role=exit` (operator/cleanslate) and "
         "resolves the strike. Audit written to `runtime/operator_close_audit_*.jsonl`."
     )
-    alpaca_link = _alpaca_dashboard_url()
+    alpaca_link = _alpaca_dashboard_url(asset_class)
 
     for _, row in broker_only_df.iterrows():
         strike_id = int(row["id"])
@@ -166,7 +170,7 @@ def _render_unmanaged_section(broker_only_df) -> None:
                     try:
                         result = close_broker_only_strike(
                             store=_get_store(),
-                            alpaca=_get_alpaca(),
+                            alpaca=_get_alpaca(asset_class),
                             strike_id=strike_id,
                             operator_note=note,
                         )
@@ -200,22 +204,35 @@ def _render_unmanaged_section(broker_only_df) -> None:
 
 def render() -> None:
     st.header("Reconciliation")
+    st.caption(
+        "One reconciler runs per asset class — each subtab below shows that "
+        "side's heartbeat, strikes, and events independently."
+    )
 
+    eq_tab, cr_tab = st.tabs(["Equity", "Crypto"])
+    with eq_tab:
+        _render_asset_class("equity")
+    with cr_tab:
+        _render_asset_class("crypto")
+
+
+def _render_asset_class(asset_class: str) -> None:
     # ── Heartbeat banner ──────────────────────────────────────────────
-    hb = repo.get_heartbeat_freshness()
+    hb = repo.get_heartbeat_freshness(asset_class=asset_class)
     color = _heartbeat_color(hb["age_seconds"])
     label = _heartbeat_label(hb["age_seconds"])
     last_at = hb["last_seen_at"].isoformat() if hb["last_seen_at"] else "—"
     st.markdown(
         f"""<div style="padding: 8px 12px; border-radius: 4px;
             background-color: {color}; color: white; font-weight: 600;">
-        Reconciler heartbeat: {label} (last_seen_at={last_at})
+        {asset_class.title()} reconciler heartbeat: {label}
+        (last_seen_at={last_at})
         </div>""",
         unsafe_allow_html=True,
     )
 
     # ── Strikes ───────────────────────────────────────────────────────
-    strikes = repo.get_unresolved_strikes()
+    strikes = repo.get_unresolved_strikes(asset_class=asset_class)
 
     # New: actionable surface for broker_only strikes only.
     broker_only = (
@@ -223,7 +240,7 @@ def render() -> None:
         if not strikes.empty else strikes
     )
     if not broker_only.empty:
-        _render_unmanaged_section(broker_only)
+        _render_unmanaged_section(broker_only, asset_class)
 
     st.subheader("Unresolved strikes")
     if strikes.empty:
@@ -253,13 +270,14 @@ def render() -> None:
 
     # ── Recent events ─────────────────────────────────────────────────
     st.subheader("Recent events")
-    events = repo.get_recent_events(limit=100)
+    events = repo.get_recent_events(limit=100, asset_class=asset_class)
     if events.empty:
         st.info("No events yet.")
         return
     type_options = ["(all)"] + sorted(events["type"].dropna().unique().tolist())
     selected_type = st.selectbox(
-        "Filter by type", type_options, key="reconcile_event_type",
+        "Filter by type", type_options,
+        key=f"reconcile_event_type_{asset_class}",
     )
     df = events if selected_type == "(all)" else events[events["type"] == selected_type]
     st.dataframe(

@@ -13,66 +13,95 @@ from sqlalchemy import text
 from ui.data.db import get_engine
 
 
-def get_unresolved_strikes() -> pd.DataFrame:
+def get_unresolved_strikes(asset_class: str | None = None) -> pd.DataFrame:
     """All unresolved reconciliation_strikes joined to strategy name.
 
-    Columns: id, key, direction, symbol, strategy (str|None), strike_count,
-             first_seen_at, last_seen_at, last_observed_state.
+    ``asset_class`` filters the result to that side. None returns all rows
+    (used by audit tooling and tests).
+
+    Columns: id, key, direction, symbol, strategy (str|None), asset_class,
+             strike_count, first_seen_at, last_seen_at, last_observed_state.
     Ordered: most recently seen first.
     """
     eng = get_engine()
+    where = "WHERE r.resolved = 0"
+    params: dict = {}
+    if asset_class is not None:
+        where += " AND r.asset_class = :asset_class"
+        params["asset_class"] = asset_class
     with eng.connect() as conn:
         df = pd.read_sql(
-            text("""
+            text(f"""
                 SELECT r.id, r.`key`, r.direction, r.symbol,
-                       s.name AS strategy,
+                       s.name AS strategy, r.asset_class,
                        r.strike_count, r.first_seen_at, r.last_seen_at,
                        r.last_observed_state
                 FROM reconciliation_strikes r
                 LEFT JOIN strategies s ON s.id = r.strategy_id
-                WHERE r.resolved = 0
+                {where}
                 ORDER BY r.last_seen_at DESC
             """),
             conn,
+            params=params,
         )
     return df
 
 
-def get_recent_events(limit: int = 50) -> pd.DataFrame:
+def get_recent_events(
+    limit: int = 50,
+    asset_class: str | None = None,
+) -> pd.DataFrame:
     """Most recent reconciliation_events.
 
-    Columns: id, type, strategy (str|None), symbol, payload, created_at.
+    ``asset_class`` scopes to one side; None returns all rows.
+
+    Columns: id, type, strategy (str|None), symbol, asset_class, payload,
+             created_at.
     Ordered: newest first.
     """
     eng = get_engine()
+    where = ""
+    params: dict = {"limit": int(limit)}
+    if asset_class is not None:
+        where = "WHERE e.asset_class = :asset_class"
+        params["asset_class"] = asset_class
     with eng.connect() as conn:
         df = pd.read_sql(
-            text("""
+            text(f"""
                 SELECT e.id, e.type, s.name AS strategy, e.symbol,
-                       e.payload, e.created_at
+                       e.asset_class, e.payload, e.created_at
                 FROM reconciliation_events e
                 LEFT JOIN strategies s ON s.id = e.strategy_id
+                {where}
                 ORDER BY e.created_at DESC
                 LIMIT :limit
             """),
             conn,
-            params={"limit": int(limit)},
+            params=params,
         )
     return df
 
 
-def get_heartbeat_freshness() -> dict:
+def get_heartbeat_freshness(asset_class: str | None = None) -> dict:
     """Last `heartbeat` event timestamp and its age in seconds.
+
+    ``asset_class`` scopes to that reconciler's heartbeat row. None matches
+    any heartbeat (legacy callers).
 
     Returns:
         {"last_seen_at": datetime | None, "age_seconds": float | None}
     """
     eng = get_engine()
+    where = "WHERE type = 'heartbeat'"
+    params: dict = {}
+    if asset_class is not None:
+        where += " AND asset_class = :asset_class"
+        params["asset_class"] = asset_class
     with eng.connect() as conn:
-        result = conn.execute(text("""
+        result = conn.execute(text(f"""
             SELECT MAX(created_at) FROM reconciliation_events
-            WHERE type = 'heartbeat'
-        """)).first()
+            {where}
+        """), params).first()
     last_seen = result[0] if result else None
     if last_seen is None:
         return {"last_seen_at": None, "age_seconds": None}

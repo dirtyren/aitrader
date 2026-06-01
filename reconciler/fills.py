@@ -53,8 +53,17 @@ def apply_tagged_fill(
     session: Session,
     fill: dict[str, Any],
     store: MySQLStore,
+    *,
+    cycle_asset_class: str | None = None,
 ) -> None:
-    """Apply one filled order. The caller is responsible for session.commit()."""
+    """Apply one filled order. The caller is responsible for session.commit().
+
+    ``cycle_asset_class`` is the reconciler instance's asset class, stamped
+    on every emit_event so the dashboard subtabs can scope. The fill itself
+    still carries its own ``asset_class`` (used for INSERT routing on entry
+    recovery), which is normally identical because each per-process
+    reconciler only sees its own broker's fills.
+    """
     coid = fill.get("client_order_id")
     parsed = parse_client_order_id(coid)
     if parsed is None:
@@ -62,6 +71,7 @@ def apply_tagged_fill(
             session,
             type="untagged_fill",
             symbol=fill.get("symbol"),
+            asset_class=cycle_asset_class,
             payload={"alpaca_id": fill.get("id"), "client_order_id": coid},
         )
         return
@@ -72,6 +82,7 @@ def apply_tagged_fill(
             session,
             type="untagged_fill",
             symbol=fill.get("symbol"),
+            asset_class=cycle_asset_class,
             payload={
                 "alpaca_id": fill.get("id"),
                 "client_order_id": coid,
@@ -102,6 +113,7 @@ def apply_tagged_fill(
                 type="untagged_fill",
                 strategy_id=strategy_id,
                 symbol=symbol,
+                asset_class=cycle_asset_class,
                 payload={
                     "alpaca_id": fill.get("id"),
                     "client_order_id": coid,
@@ -130,6 +142,7 @@ def apply_tagged_fill(
             type="tagged_entry_inserted",
             strategy_id=strategy_id,
             symbol=symbol,
+            asset_class=cycle_asset_class,
             payload={"client_order_id": coid, "alpaca_id": fill.get("id")},
         )
         return
@@ -152,6 +165,7 @@ def apply_tagged_fill(
             type="tagged_fill_applied",
             strategy_id=strategy_id,
             symbol=symbol,
+            asset_class=cycle_asset_class,
             payload={
                 "client_order_id": coid,
                 "alpaca_id": fill.get("id"),

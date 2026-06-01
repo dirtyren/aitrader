@@ -23,6 +23,10 @@ class Anomaly:
     symbol: str
     strategy_id: int | None
     snapshot: dict[str, Any]
+    # The reconciler instance's asset_class — stamped onto StrikeRow /
+    # EventRow rows so the dashboard subtabs and parallel reconcilers stay
+    # scoped to their own lane. None on legacy/test paths only.
+    asset_class: str | None = None
 
     @property
     def key(self) -> str:
@@ -41,6 +45,7 @@ def check_invariant(
     broker_qty_by_symbol: dict[str, float],
     *,
     qty_eps: float,
+    asset_class: str | None = None,
 ) -> list[Anomaly]:
     """Compare MySQL open-position state to the broker snapshot.
 
@@ -51,12 +56,17 @@ def check_invariant(
         broker_qty_by_symbol: {symbol → qty} from Alpaca's get_positions, with
             symbols already normalized to broker-flat form.
         qty_eps: tolerance for floating-point comparison.
+        asset_class: when set, scopes the MySQL aggregate AND the per-strategy
+            mysql_only listing to that side. The broker side is already
+            scoped by the caller (each reconciler holds its own per-class
+            AlpacaClient). Stamped on every emitted Anomaly so the strikes
+            layer can persist it.
 
     Returns:
         list of Anomaly records — empty if the invariant holds.
     """
     broker_norm = {_normalize(s): q for s, q in broker_qty_by_symbol.items()}
-    mysql_sums = store.sum_qty_by_symbol()
+    mysql_sums = store.sum_qty_by_symbol(asset_class=asset_class)
 
     anomalies: list[Anomaly] = []
 
@@ -69,15 +79,18 @@ def check_invariant(
                 symbol=symbol,
                 strategy_id=None,
                 snapshot={"mysql_sum": m, "broker_qty": b},
+                asset_class=asset_class,
             ))
 
     # mysql_only: open in MySQL, no broker position for that symbol.
     mysql_only_symbols = set(mysql_sums) - set(broker_norm)
     if mysql_only_symbols:
-        rows = session.query(
+        q = session.query(
             PositionRow.strategy_id, PositionRow.symbol, PositionRow.qty,
-        ).filter(PositionRow.status == "open").all()
-        for strategy_id, raw_symbol, qty in rows:
+        ).filter(PositionRow.status == "open")
+        if asset_class is not None:
+            q = q.filter(PositionRow.asset_class == asset_class)
+        for strategy_id, raw_symbol, qty in q.all():
             sym = _normalize(raw_symbol)
             if sym not in mysql_only_symbols:
                 continue
@@ -86,6 +99,7 @@ def check_invariant(
                 symbol=sym,
                 strategy_id=strategy_id,
                 snapshot={"mysql_qty": float(qty), "broker_qty": 0.0},
+                asset_class=asset_class,
             ))
 
     # broker_only: broker position for a symbol, no open MySQL rows.
@@ -95,6 +109,7 @@ def check_invariant(
             symbol=symbol,
             strategy_id=None,
             snapshot={"mysql_sum": 0.0, "broker_qty": broker_norm[symbol]},
+            asset_class=asset_class,
         ))
 
     return anomalies
