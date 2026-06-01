@@ -70,7 +70,7 @@ def _render_landing(strategies: list[str], start: datetime, end: datetime) -> No
     st.subheader("Strategies")
     st.caption(f"Period: {start.date()} → {end.date()}")
 
-    _render_admin_panel()
+    _render_admin_panel(start, end)
 
     st.markdown("---")
     cols = st.columns(2)
@@ -90,18 +90,33 @@ _STATE_BADGE = {
 }
 
 
-def _render_admin_panel() -> None:
+def _fmt_num(value, fmt: str) -> str:
+    if value is None:
+        return "—"
+    return f"`{fmt.format(float(value))}`"
+
+
+def _fmt_pct(value) -> str:
+    if value is None:
+        return "—"
+    return f"`{float(value) * 100:.1f}%`"
+
+
+def _render_admin_panel(start: datetime, end: datetime) -> None:
     """Per-strategy kill-switch table.
 
     Disable: confirms with a required operator note (≥3 chars), submits
     market closes for all open positions synchronously. On any failure
     the strategy stays in `disabling` and the trader retries on its loop.
     Re-enable: single click, no modal — re-enabling cannot lose money.
+
+    Period-scoped columns (P&L, Win rate, Sharpe, Max DD, Avg R) honor
+    the page's period selector. Today P&L stays today; Open count is live.
     """
     st.markdown("### Strategy controls")
     try:
         admin_store = _get_admin_store()
-        df = strategy_admin.get_admin_view(admin_store)
+        df = strategy_admin.get_admin_view(admin_store, start, end)
     except Exception as exc:
         st.error(f"Could not load strategy admin view: {exc}")
         return
@@ -109,14 +124,17 @@ def _render_admin_panel() -> None:
         st.info("No strategies registered yet.")
         return
 
-    header = st.columns([2, 1, 1, 1, 1, 1, 2])
+    header = st.columns([2, 1, 1, 1, 1, 1, 1, 1, 1, 2])
     header[0].markdown("**Name**")
     header[1].markdown("**State**")
     header[2].markdown("**Open**")
     header[3].markdown("**Today P&L**")
-    header[4].markdown("**Total P&L**")
+    header[4].markdown("**P&L**")
     header[5].markdown("**Win rate**")
-    header[6].markdown("**Action**")
+    header[6].markdown("**Sharpe**")
+    header[7].markdown("**Max DD**")
+    header[8].markdown("**Avg R**")
+    header[9].markdown("**Action**")
 
     for _, row in df.iterrows():
         sid = int(row["id"])
@@ -126,16 +144,18 @@ def _render_admin_panel() -> None:
         confirm_key = f"strat_confirm_{sid}"
         note_key = f"strat_note_{sid}"
 
-        cols = st.columns([2, 1, 1, 1, 1, 1, 2])
+        cols = st.columns([2, 1, 1, 1, 1, 1, 1, 1, 1, 2])
         cols[0].markdown(f"**{name}**")
         cols[1].markdown(f"{emoji} {label}")
         cols[2].markdown(f"`{int(row['open_count'])}`")
         cols[3].markdown(f"`{row['today_pnl']:+.2f}`")
-        cols[4].markdown(f"`{row['total_pnl']:+.2f}`")
-        cols[5].markdown(f"`{row['win_rate']*100:.1f}%`"
-                         if row["trade_count"] else "—")
+        cols[4].markdown(f"`{row['period_pnl']:+.2f}`")
+        cols[5].markdown(_fmt_pct(row["period_win_rate"]))
+        cols[6].markdown(_fmt_num(row["period_sharpe"], "{:.2f}"))
+        cols[7].markdown(_fmt_num(row["period_max_dd"], "{:+.0f}"))
+        cols[8].markdown(_fmt_num(row["period_avg_r"], "{:+.2f}R"))
 
-        with cols[6]:
+        with cols[9]:
             confirming = st.session_state.get(confirm_key, False)
             if state == "enabled":
                 if not confirming:
