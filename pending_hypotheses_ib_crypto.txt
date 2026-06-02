@@ -1,7 +1,17 @@
 # Pending hypotheses for ib_crypto_trader
 
-# ✅ REFLECTED 2026-06-01 — No config change needed
+## ✅ REFLECTED 2026-06-01 — No config change needed
 # Strategy performing at 66.7% WR (+$1,862 on signals). qty_drift trades are structural cross-strategy overlap.
 
-# Alternative: Investigate SOL trade #300 (close_reason=target but negative R=-0.28)
-# Rationale: Possible IB fade logic bug. If it recurs, check initial_balance fade fix.
+## ✅ REFLECTED 2026-06-02 — No config change needed
+# 6 trades all profitable (+$886.69, avg R=0.12) via initial_balance signals, all closed via 
+# auto_resolved_qty_drift or duplicate_consolidation. 100% WR on strategy signals but avg R=0.12 
+# (target=2.0R) because qty drift resolves positions early. This is structural cross-strategy overlap 
+# with vwap_bands_crypto_trader (shares: BTC, ETH, SOL, AVAX, LINK — 5 of 10 ib_crypto pairs).
+# Regime: bull. No parameter change will fix symbol overlap. Marked 6 trades reflected.
+
+## 🔮 PENDING (structural, not parameter tuning):
+# - Symbol deconfliction: remove BTC, ETH, SOL, AVAX, LINK from ib_crypto's list (keep the
+#   non-overlapping 5: ADA, DOGE, DOT, PEPE, XRP). This would eliminate the drift resolution entirely.
+# - Alternative: Remove those 5 from vwap_bands_crypto instead. Would need to verify vwap_bands 
+#   performance on the remaining 0 symbols (none — vwap_bands_crypto only has 5 pairs).

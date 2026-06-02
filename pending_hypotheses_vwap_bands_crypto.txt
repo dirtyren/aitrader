@@ -1,16 +1,19 @@
-# VWAP Bands Crypto Pending Hypotheses — Jun 1 2026
+# VWAP Bands Crypto Pending Hypotheses — Jun 2 2026
 
-## APPLIED (this cycle — 2026-06-01):
-- consecutive_closes: 1 → 2 — In a transitional bull/bear/neutral regime, 1-bar wick spikes beyond the 2.6σ band capture momentary deviations that immediately reverse, hitting the 0.75×ATR stop at -1.0R. Requiring 2 consecutive closes filters out these noise entries while preserving the excellent 3.32R avg win magnitude. Applied: 2026-06-01.
+## ✅ REFLECTED 2026-06-02 — No config change needed
+# 5 trades all profitable (100% WR, avg R=1.76, total +$1,533.15) via vwap_dev_bands signals, all 
+# closed via auto_resolved_qty_drift. Excellent trade quality (1.32R on SOL, 4.54R on AVAX!) but 
+# positions resolved early by cross-strategy qty drift from ib_crypto_trader overlap 
+# (shared: BTC, ETH, SOL, AVAX, LINK). Sigma=2.6 + consecutive_closes=2 is performing well 
+# post-rebuild (Jun 2 01:25 UTC). No parameter change warranted. Marked 5 trades reflected.
 
 ## APPLIED (previous cycles):
-- sigma: 2.5 → 2.6 — May 28 2026. In active bull regimes, crypto assets exhibit high momentum and deep, sharp pullbacks.
-- target_R: 1.5 → 2.0 (PLACEBO — no effect on vwap_dev_bands)
-- sigma: 2.0 → 2.5 — Previous iterations
-- sigma: 1.5 → 2.0 — Previous iterations
-- min_distance_atr: 0.25 → 0.15 — Fixed reconciled_gone fills
+# - consecutive_closes: 1 → 2 — Applied 2026-06-01. Post-rebuild trades confirm this works.
+# - sigma: 2.5 → 2.6 — May 28 2026
+# - sigma: 2.0 → 2.5, 1.5 → 2.0 — Previous iterations
+# - min_distance_atr: 0.25 → 0.15 — Fixed reconciled_gone fills
 
 ## PENDING (for future cycles):
-1. bar_timeframe: 5Min → 15Min — Longer bars give more room for reversion. The sweep showed sigma=2.5 works best on 30Min, suggesting longer timeframes produce more reliable VWAP deviations.
-2. atr_mult_stop: 0.75 → 0.5 — Tighter stop to cap losses further, but only if WR drops after consecutive_closes change.
-3. sigma: 2.6 → 2.8 — If consecutive_closes filter doesn't improve WR, the entry deviation threshold may still not be extreme enough.
+# 1. bar_timeframe: 5Min → 15Min — Longer bars give more room for reversion.
+# 2. atr_mult_stop: 0.75 → 0.5 — Tighter stop, but only if WR drops.
+# 3. sigma: 2.6 → 2.8 — If WR/avg R declines.
