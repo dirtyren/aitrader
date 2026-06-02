@@ -24,6 +24,48 @@ _BENIGN_BREAKEVEN_FRAGMENTS = (
 )
 
 
+def _tick_for(price: float) -> float:
+    """Same tick model as AlpacaClient._round_to_tick — $0.01 at or above
+    $1, $0.0001 below. Used by the bracket-geometry validator only; the
+    actual rounding still happens at the Alpaca layer."""
+    return 0.01 if price >= 1 else 0.0001
+
+
+def _bracket_levels_ok(
+    side: str, entry: float, stop: float, target: float,
+) -> tuple[bool, str]:
+    """Enforce Alpaca's bracket geometry up front so a setup bug fails
+    locally instead of round-tripping as a 422 from the broker.
+
+    Long bracket: stop <= entry-tick AND target >= entry+tick.
+    Short bracket: stop >= entry+tick AND target <= entry-tick.
+    """
+    tick = _tick_for(entry)
+    if side == "long":
+        if stop > entry - tick:
+            return False, (
+                f"long stop must be <= entry-{tick:g}; "
+                f"got entry={entry} stop={stop}"
+            )
+        if target < entry + tick:
+            return False, (
+                f"long target must be >= entry+{tick:g}; "
+                f"got entry={entry} target={target}"
+            )
+    else:  # short
+        if stop < entry + tick:
+            return False, (
+                f"short stop must be >= entry+{tick:g}; "
+                f"got entry={entry} stop={stop}"
+            )
+        if target > entry - tick:
+            return False, (
+                f"short target must be <= entry-{tick:g}; "
+                f"got entry={entry} target={target}"
+            )
+    return True, ""
+
+
 class OrderExecutor:
     """Translates an approved SetupSignal+RiskDecision into broker orders."""
 
@@ -73,6 +115,24 @@ class OrderExecutor:
                              signal.symbol, signal.setup)
             return None
 
+        # Pending or open position from this strategy on the same symbol —
+        # blocks both opposite-side double-entries (which Alpaca rejects
+        # with `cannot open a short sell while a long buy order is open`)
+        # and same-(symbol, setup) duplicates (which book.add would raise
+        # on later). The book gets rebuilt from MySQL each cycle, so a
+        # reconciler-resolved phantom row clears this guard automatically.
+        existing = self.book.get_all(signal.symbol)
+        if existing:
+            existing_setups = ",".join(p.setup for p in existing)
+            existing_sides = sorted({p.side for p in existing})
+            self.logger.info(
+                "ORDER_SKIPPED_OPPOSING_OPEN_ORDER symbol=%s new_setup=%s "
+                "new_side=%s existing_setups=%s existing_sides=%s",
+                signal.symbol, signal.setup, signal.side,
+                existing_setups, existing_sides,
+            )
+            return None
+
         if asset_class == "equity" and self._dtbp_exhausted:
             self.logger.info("ORDER_SKIPPED_DTBP_EXHAUSTED symbol=%s setup=%s",
                              signal.symbol, signal.setup)
@@ -82,6 +142,26 @@ class OrderExecutor:
             self.logger.info("ORDER_SKIPPED_CRYPTO_SHORT symbol=%s setup=%s",
                              signal.symbol, signal.setup)
             return None
+
+        # Bracket geometry: only equity uses Alpaca-side brackets. Crypto
+        # exits are engine-virtual; pre-market extended_hours equity skips
+        # the bracket here and attaches the OCO post-open. So we validate
+        # the regular-session equity path only — that's where Alpaca
+        # would otherwise reject with `take_profit.limit_price must be
+        # <= base_price - 0.01` and similar.
+        extended_hours_signal = bool(signal.notes.get("extended_hours"))
+        if asset_class == "equity" and not extended_hours_signal:
+            ok, reason = _bracket_levels_ok(
+                signal.side, signal.entry, signal.stop, signal.target,
+            )
+            if not ok:
+                self.logger.warning(
+                    "ORDER_SKIPPED_INVALID_LEVELS symbol=%s setup=%s side=%s "
+                    "entry=%.4f stop=%.4f target=%.4f reason=%s",
+                    signal.symbol, signal.setup, signal.side,
+                    signal.entry, signal.stop, signal.target, reason,
+                )
+                return None
 
         alp_side = self._alpaca_side(signal.side)
         entry_coid = make_client_order_id(
