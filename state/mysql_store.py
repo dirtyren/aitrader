@@ -154,6 +154,9 @@ class StrikeRow(Base):
         Integer, ForeignKey("strategies.id"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Nullable so pre-migration rows can coexist; per-asset-class reconcilers
+    # adopt NULLs on their own side (see reconciler/strikes.py).
+    asset_class: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     strike_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -165,6 +168,7 @@ class StrikeRow(Base):
     __table_args__ = (
         Index("idx_strikes_key", "key", "resolved"),
         Index("idx_strikes_unresolved", "resolved", "last_seen_at"),
+        Index("idx_strikes_asset_class", "asset_class", "resolved", "last_seen_at"),
     )
 
 
@@ -177,6 +181,9 @@ class EventRow(Base):
         Integer, ForeignKey("strategies.id"), nullable=True
     )
     symbol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Nullable: events emitted by older reconciler builds carry NULL until
+    # they roll out of the dashboard's lookback window.
+    asset_class: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
@@ -186,6 +193,7 @@ class EventRow(Base):
     __table_args__ = (
         Index("idx_events_time", "created_at"),
         Index("idx_events_type", "type", "created_at"),
+        Index("idx_events_asset_class", "asset_class", "type", "created_at"),
     )
 
 
@@ -269,6 +277,15 @@ class MySQLStore:
             "NOT NULL DEFAULT 'enabled'",
             "ALTER TABLE strategies ADD COLUMN last_change_at TIMESTAMP NULL",
             "ALTER TABLE strategies ADD COLUMN last_change_reason VARCHAR(255) NULL",
+            # reconciliation tables: per-asset-class scoping (see plan
+            # hashed-squishing-rocket). Nullable to keep legacy rows valid;
+            # they get re-stamped on the next reconciler cycle that adopts them.
+            "ALTER TABLE reconciliation_strikes ADD COLUMN asset_class VARCHAR(16) DEFAULT NULL",
+            "CREATE INDEX idx_strikes_asset_class "
+            "ON reconciliation_strikes (asset_class, resolved, last_seen_at)",
+            "ALTER TABLE reconciliation_events ADD COLUMN asset_class VARCHAR(16) DEFAULT NULL",
+            "CREATE INDEX idx_events_asset_class "
+            "ON reconciliation_events (asset_class, type, created_at)",
         ]
         try:
             with self._engine.connect() as conn:
@@ -993,7 +1010,9 @@ class MySQLStore:
             )
             return row.id
 
-    def sum_qty_by_symbol(self) -> dict[str, float]:
+    def sum_qty_by_symbol(
+        self, asset_class: str | None = None,
+    ) -> dict[str, float]:
         """Aggregate open SIGNED qty per symbol across ALL strategies.
 
         Returns positive qty for net-long, negative for net-short. Brokers
@@ -1005,13 +1024,18 @@ class MySQLStore:
         so multi-format storage doesn't double-count. Accumulates as Decimal
         for precision parity with sum_qty_across_strategies, converting to
         float only at the boundary.
+
+        ``asset_class`` filters the aggregation to that side. Default None
+        keeps the legacy global view (used by ad-hoc tooling).
         """
         out: dict[str, Decimal] = {}
         with Session(self._engine) as session:
-            rows = session.query(
+            q = session.query(
                 PositionRow.symbol, PositionRow.side, PositionRow.qty,
-            ).filter(PositionRow.status == "open").all()
-            for symbol, side, qty in rows:
+            ).filter(PositionRow.status == "open")
+            if asset_class is not None:
+                q = q.filter(PositionRow.asset_class == asset_class)
+            for symbol, side, qty in q.all():
                 # Normalize: any "X/Y" form collapses to "XY".
                 key = symbol.replace("/", "")
                 signed_qty = qty if side == "long" else -qty

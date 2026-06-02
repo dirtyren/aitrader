@@ -19,6 +19,9 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in _TRUTHY
 
 
+_VALID_ASSET_CLASSES = frozenset({"equity", "crypto"})
+
+
 @dataclass(frozen=True)
 class ReconcilerConfig:
     interval_s: int
@@ -38,10 +41,23 @@ class ReconcilerConfig:
     # effectively flat: resolve the strike with reason='auto_close_dust' and
     # emit an event for audit.
     auto_close_dust_usd: float
+    # The asset class this reconciler instance owns. Each side runs in its
+    # own container so an Alpaca outage on one account can't short-circuit
+    # the other. Required by from_env (RECONCILER_ASSET_CLASS); optional in
+    # tests so the strike/event scoping path can be exercised without the
+    # full container env. Strikes/events are stamped with this value.
+    asset_class: str | None = None
 
     @classmethod
     def from_env(cls) -> "ReconcilerConfig":
+        asset_class = os.environ.get("RECONCILER_ASSET_CLASS", "").strip().lower()
+        if asset_class not in _VALID_ASSET_CLASSES:
+            raise RuntimeError(
+                f"RECONCILER_ASSET_CLASS must be one of "
+                f"{sorted(_VALID_ASSET_CLASSES)}, got {asset_class!r}"
+            )
         return cls(
+            asset_class=asset_class,
             interval_s=int(os.environ.get("RECONCILE_INTERVAL_S", "30")),
             strike_threshold=int(os.environ.get("RECONCILE_STRIKE_THRESHOLD", "3")),
             strike_min_gap_s=int(os.environ.get("RECONCILE_STRIKE_MIN_GAP_S", "60")),

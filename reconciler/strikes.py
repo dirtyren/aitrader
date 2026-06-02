@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from reconciler.config import ReconcilerConfig
@@ -58,6 +59,7 @@ def process_anomaly(
             direction=anomaly.direction,
             strategy_id=anomaly.strategy_id,
             symbol=anomaly.symbol,
+            asset_class=anomaly.asset_class,
             strike_count=1,
             first_seen_at=now,
             last_seen_at=now,
@@ -66,6 +68,10 @@ def process_anomaly(
         )
         session.add(row)
         return StrikeOutcome(action="logged_strike1", strike_count=1, alert_sent=False)
+
+    # Adopt legacy NULLs by stamping the running side's class on update.
+    if existing.asset_class is None and anomaly.asset_class is not None:
+        existing.asset_class = anomaly.asset_class
 
     # Already at threshold and frozen — treat further observations as noop.
     if existing.strike_count >= cfg.strike_threshold:
@@ -99,6 +105,7 @@ def process_anomaly(
             type=f"{anomaly.direction}_confirmed",
             strategy_id=anomaly.strategy_id,
             symbol=anomaly.symbol,
+            asset_class=anomaly.asset_class,
             payload={
                 "key": anomaly.key,
                 "strike_count": existing.strike_count,
@@ -119,15 +126,29 @@ def auto_clear_resolved(
     *,
     current_anomaly_keys: Iterable[str],
     now: datetime,
+    asset_class: str | None = None,
 ) -> list[str]:
     """Mark unresolved strikes whose anomaly is no longer present as self_healed.
+
+    When ``asset_class`` is set (per-process reconciler), only strikes on
+    that side are considered. Pre-migration rows with NULL ``asset_class``
+    are also adopted so they don't linger forever — the next cycle that
+    sees their anomaly will re-stamp them with the running side's class.
 
     Returns the list of keys that were cleared.
     """
     current_set = set(current_anomaly_keys)
     cleared: list[str] = []
-    rows = session.query(StrikeRow).filter(StrikeRow.resolved == False).all()  # noqa: E712
-    for row in rows:
+    q = session.query(StrikeRow).filter(StrikeRow.resolved == False)  # noqa: E712
+    if asset_class is not None:
+        # `asset_class IS NULL OR = :ac` — adopt legacy rows on whichever
+        # side runs the next cycle; if one side hasn't started, the other
+        # will not orphan them.
+        q = q.filter(or_(
+            StrikeRow.asset_class == asset_class,
+            StrikeRow.asset_class.is_(None),
+        ))
+    for row in q.all():
         if row.key in current_set:
             continue
         row.resolved = True

@@ -22,9 +22,14 @@ def emit_event(
     type: str,
     strategy_id: int | None = None,
     symbol: str | None = None,
+    asset_class: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Insert a reconciliation_events row.
+
+    ``asset_class`` scopes the event to one reconciler's lane so the
+    dashboard subtab can filter cleanly. Optional for legacy callers; the
+    reconciler always passes it through.
 
     The caller owns the session and is responsible for commit().
     """
@@ -32,6 +37,7 @@ def emit_event(
         type=type,
         strategy_id=strategy_id,
         symbol=symbol,
+        asset_class=asset_class,
         payload=payload,
     )
     session.add(row)
