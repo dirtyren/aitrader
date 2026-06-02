@@ -187,10 +187,25 @@ def _build_loop(cfg: dict, logger: logging.Logger) -> GapAndGoLoop:
 
     executor = OrderExecutor(alpaca, book, strategy_name=system_name,
                              logger=logger, mysql_store=mysql)
+    def _order_status_for(pos):
+        if not pos.order_id:
+            return None
+        order = alpaca.get_order(pos.order_id)
+        if not isinstance(order, dict):
+            return None
+        return order.get("status")
+
+    def _on_fill_confirmed(pos):
+        if mysql is None:
+            return
+        mysql.mark_fill_confirmed(mysql.strategy_id, pos.symbol, pos.setup)
+
     pm = PositionManager(
         book,
         max_hold_bars=cfg["position_management"]["max_hold_bars"],
         breakeven_at_R=cfg["position_management"]["breakeven_at_R"],
+        order_status_for=_order_status_for,
+        on_fill_confirmed=_on_fill_confirmed,
     )
 
     return GapAndGoLoop(

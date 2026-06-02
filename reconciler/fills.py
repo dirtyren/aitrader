@@ -30,6 +30,17 @@ log = logging.getLogger(__name__)
 _ENTRY_ROLES = frozenset({"entry", "adopted"})
 _EXIT_ROLES = frozenset({"exit", "stop", "target"})
 
+# Map COID role → close_reason on the MySQL trade row. The COID was
+# stamped at submit time so we know exactly which leg the broker filled
+# without inspecting the order. Using these names (broker_*) keeps the
+# old engine-written 'stop'/'target' values distinguishable from the
+# authoritative broker-fill closes that arrive via this path.
+_ROLE_TO_CLOSE_REASON = {
+    "stop":   "broker_stop",
+    "target": "broker_target",
+    "exit":   "broker_exit",
+}
+
 
 def _resolve_strategy_id(session: Session, strategy_name: str) -> int | None:
     row = session.query(StrategyRow).filter(
@@ -152,10 +163,11 @@ def apply_tagged_fill(
         if open_row is None:
             return  # idempotent noop
         exit_px = float(fill.get("filled_avg_price") or 0)
+        close_reason = _ROLE_TO_CLOSE_REASON.get(role, "broker_fill")
         store.position_closed(
             symbol=symbol,
             exit_px=exit_px,
-            close_reason="broker_fill",
+            close_reason=close_reason,
             setup_name=setup,
             exit_client_order_id=coid,
             strategy_id=strategy_id,

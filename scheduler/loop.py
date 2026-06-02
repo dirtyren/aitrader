@@ -21,6 +21,7 @@ def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
                            actions: list[PositionAction], last_bar: Bar,
                            mysql_store=None,
                            positions_snapshot: dict[str, OpenPosition] | None = None,
+                           asset_class: str | None = None,
                            ) -> list[TradeRecord]:
     """Append a TradeRecord per stop/target/time_stop action and return them.
 
@@ -29,7 +30,15 @@ def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
     the position that triggered it via the *setup* field in PositionAction,
     so we match by setup name when multiple positions exist on the same symbol.
 
-    If mysql_store is provided, position_closed() is called for each action.
+    The intraday DailyLedger always gets a record (so live PnL views update
+    the moment the engine sees a stop touch). MySQL is *not* updated here:
+    every exit kind we handle now resolves at the broker (equity bracket
+    fires the stop/target server-side; time_stop and crypto submit a
+    market close), so the authoritative MySQL close arrives via
+    `reconciler/fills.py:apply_tagged_fill` with the broker's actual fill
+    price and a role-derived close_reason. Writing here would (a) record
+    the wrong exit_px (the stop level vs the real fill) and (b) phantom-
+    close positions whose entry never actually filled.
     """
     recorded: list[TradeRecord] = []
     for a in actions:
@@ -58,20 +67,12 @@ def record_exits_to_ledger(ledger: DailyLedger, symbol: str,
         )
         ledger.record(rec)
         recorded.append(rec)
-        # MySQL: archive completed trade
-        if mysql_store is not None:
-            try:
-                mysql_store.position_closed(
-                    symbol=symbol, setup_name=pos_before.setup,
-                    exit_px=a.price,
-                    close_reason=a.kind, closed_at=last_bar.ts,
-                )
-            except Exception as exc:
-                logger.error("MYSQL_CLOSE_FAILED symbol=%s setup=%s: %s",
-                             symbol, pos_before.setup, exc, exc_info=True)
         update_strategy_performance_file(pos_before.setup, pnl, r_realized)
-        logger.info("POSITION_CLOSED symbol=%s setup=%s reason=%s exit=%.4f r=%.2f pnl=%.2f",
-                    symbol, pos_before.setup, a.kind, a.price, r_realized, pnl)
+        logger.info(
+            "ENGINE_EXIT_DEFERRED_TO_BROKER_FILL symbol=%s setup=%s "
+            "asset_class=%s kind=%s exit_px=%.4f intraday_pnl=%.2f r=%.2f",
+            symbol, pos_before.setup, asset_class, a.kind, a.price, pnl, r_realized,
+        )
     return recorded
 
 
@@ -123,6 +124,7 @@ class VWAPWaveEngine:
                     self._record_exits(
                         symbol, actions, bar,
                         positions_snapshot=positions_before,
+                        asset_class=asset_class,
                     )
                     parent_order_id = (
                         positions_before[actions[0].setup].order_id
@@ -154,10 +156,12 @@ class VWAPWaveEngine:
     def _record_exits(self, symbol: str, actions: list[PositionAction],
                       last_bar: Bar,
                       positions_snapshot: dict[str, OpenPosition] | None = None,
+                      asset_class: str | None = None,
                       ) -> None:
         record_exits_to_ledger(self.ledger, symbol, actions, last_bar,
                               mysql_store=self.mysql_store,
-                              positions_snapshot=positions_snapshot)
+                              positions_snapshot=positions_snapshot,
+                              asset_class=asset_class)
 
 
 def update_strategy_performance_file(setup_name: str, pnl: float, r_realized: float) -> None:

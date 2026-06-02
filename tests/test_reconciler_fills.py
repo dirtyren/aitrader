@@ -148,7 +148,7 @@ def test_tagged_exit_closes_matching_position(store):
         pos_row = session.query(PositionRow).one()
         assert pos_row.status == "closed"
         assert pos_row.exit_client_order_id == exit_coid
-        assert pos_row.close_reason == "broker_fill"
+        assert pos_row.close_reason == "broker_exit"
         trade = session.query(TradeRow).one()
         assert trade.exit_px == pytest.approx(102.50)
         assert trade.exit_client_order_id == exit_coid
@@ -189,7 +189,7 @@ def test_tagged_target_role_closes_position_same_as_exit(store):
     with Session(store._engine) as session:
         pos_row = session.query(PositionRow).one()
         assert pos_row.status == "closed"
-        assert pos_row.close_reason == "broker_fill"
+        assert pos_row.close_reason == "broker_target"
 
 
 # ── unknown strategy ──────────────────────────────────────────────────
@@ -246,7 +246,7 @@ def test_tagged_stop_role_closes_position(store):
         pos_row = session.query(PositionRow).one()
         assert pos_row.status == "closed"
         assert pos_row.exit_client_order_id == stop_coid
-        assert pos_row.close_reason == "broker_fill"
+        assert pos_row.close_reason == "broker_stop"
 
 
 def test_tagged_entry_with_zero_qty_writes_untagged_event_no_row(store):

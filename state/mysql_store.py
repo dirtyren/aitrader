@@ -93,6 +93,10 @@ class PositionRow(Base):
     breakeven_moved: Mapped[bool] = mapped_column(Boolean, default=False)
     bars_held: Mapped[int] = mapped_column(Integer, default=0)
     adopted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # See OpenPosition.fill_confirmed — once True the engine can act on
+    # virtual stop/target checks; while False, on_bar defers and will
+    # poll Alpaca once before re-checking.
+    fill_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(Enum("open", "closed"), default="open")
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -286,6 +290,13 @@ class MySQLStore:
             "ALTER TABLE reconciliation_events ADD COLUMN asset_class VARCHAR(16) DEFAULT NULL",
             "CREATE INDEX idx_events_asset_class "
             "ON reconciliation_events (asset_class, type, created_at)",
+            # positions.fill_confirmed: gates engine virtual exits until the
+            # broker actually filled the entry. Default 1 for existing rows
+            # so the migration doesn't accidentally freeze in-flight
+            # positions across the upgrade boundary; new inserts default 0
+            # via the SQLAlchemy column default.
+            "ALTER TABLE positions ADD COLUMN fill_confirmed TINYINT(1) "
+            "NOT NULL DEFAULT 1",
         ]
         try:
             with self._engine.connect() as conn:
@@ -476,6 +487,7 @@ class MySQLStore:
             "breakeven_moved": pos.breakeven_moved,
             "bars_held": pos.bars_held,
             "adopted": pos.adopted,
+            "fill_confirmed": pos.fill_confirmed,
             "status": "open",
             "opened_at": pos.opened_at,
         }
@@ -498,7 +510,30 @@ class MySQLStore:
             breakeven_moved=row.breakeven_moved,
             bars_held=row.bars_held,
             adopted=row.adopted,
+            fill_confirmed=row.fill_confirmed,
         )
+
+    def mark_fill_confirmed(
+        self, strategy_id: int, symbol: str, setup_name: str,
+    ) -> bool:
+        """Flip an open position's fill_confirmed flag to True.
+
+        Called by PositionManager once it has independently verified the
+        broker filled the entry order, so a restart doesn't re-poll.
+        Returns True if the row was found and updated.
+        """
+        with Session(self._engine) as session:
+            row = session.query(PositionRow).filter(
+                PositionRow.strategy_id == strategy_id,
+                PositionRow.symbol.in_(self._get_symbol_candidates(symbol)),
+                PositionRow.setup_name == setup_name,
+                PositionRow.status == "open",
+            ).one_or_none()
+            if row is None:
+                return False
+            row.fill_confirmed = True
+            session.commit()
+            return True
 
     def position_opened(self, pos: OpenPosition, asset_class: str) -> None:
         """Persist a newly opened position."""
@@ -848,6 +883,10 @@ class MySQLStore:
                 initial_stop_px=(None if entry.get("initial_stop_px") is None
                                  else float(entry["initial_stop_px"])),
                 adopted=bool(entry.get("adopted", False)),
+                # Legacy state-file rows pre-date the fill_confirmed flag —
+                # treat them as confirmed so the engine doesn't freeze on
+                # them after the migration (mirrors the schema default).
+                fill_confirmed=True,
             )
             try:
                 self.position_opened(pos, ac)
@@ -998,6 +1037,10 @@ class MySQLStore:
                 breakeven_moved=False,
                 bars_held=0,
                 adopted=False,
+                # The fill is already on the broker — that's why we're
+                # inserting this row. Stamp confirmed so the engine acts
+                # immediately on virtual exit checks.
+                fill_confirmed=True,
                 status="open",
                 opened_at=opened_at,
             )
@@ -1165,6 +1208,10 @@ class MySQLStore:
                 breakeven_moved=False,
                 bars_held=0,
                 adopted=True,
+                # Adopted from a real broker_only orphan — the broker
+                # actually holds it. Engine should manage virtual exits
+                # immediately.
+                fill_confirmed=True,
                 status="open",
                 opened_at=opened_at,
             )

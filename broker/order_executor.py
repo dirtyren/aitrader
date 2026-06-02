@@ -151,6 +151,15 @@ class OrderExecutor:
         # keeps the crypto path consistent and removes both failure modes.
         target_order_id = None
 
+        # Crypto market orders fill synchronously — when Alpaca returns
+        # status='filled' in the submit response, the broker already owns
+        # the qty and we can let the engine act on virtual exits right
+        # away. Equity bracket parents come back 'accepted' and only
+        # actually fill if/when the limit price prints — flag stays False
+        # until PositionManager polls and confirms.
+        order_status = (order or {}).get("status") if isinstance(order, dict) else None
+        fill_confirmed = order_status in ("filled", "partially_filled")
+
         pos = OpenPosition(
             symbol=signal.symbol, setup=signal.setup, side=signal.side,
             qty=decision.qty, entry_px=signal.entry, stop_px=signal.stop,
@@ -161,6 +170,7 @@ class OrderExecutor:
             initial_stop_px=signal.stop,
             client_order_id=entry_coid,
             pending_oco_attach=extended_hours,
+            fill_confirmed=fill_confirmed,
         )
         self.book.add(pos)
         # Persist to MySQL so position metadata survives container restarts
