@@ -692,6 +692,260 @@ def auto_resolve_qty_drift(
     return submitted
 
 
+_UNFILLED_ORDER_STATUSES = frozenset({
+    "new", "accepted", "held", "pending_new", "accepted_for_bidding",
+})
+
+
+def auto_resolve_mysql_only_entry_never_filled(
+    *,
+    alpaca: Any,
+    store: MySQLStore,
+    session: Session,
+    anomalies: list,
+    recent_fills: list[dict],
+    cfg: ReconcilerConfig,
+    now: datetime,
+    asset_class: str | None = None,
+) -> int:
+    """Resolve mysql_only strikes whose entry order is still unfilled.
+
+    Why this exists: order_executor.py writes the MySQL position row at
+    submit time (optimistic insert), so a limit-bracket whose parent
+    never fills leaves a phantom open row in MySQL. The reconciler
+    correctly raises mysql_only on it; without an auto-resolve path the
+    operator has to run scripts/reconcile_resolve.py force-zero every
+    time. This path closes only the safe sub-case — entry order still
+    sitting at the broker in new/accepted/held with zero filled qty —
+    and bails on any sign of an actual fill.
+
+    Returns the number of strikes auto-resolved this cycle.
+    """
+    if cfg.shadow_mode:
+        return 0
+
+    fills_by_coid = {
+        f.get("client_order_id"): f
+        for f in (recent_fills or [])
+        if f.get("client_order_id")
+    }
+
+    resolved_count = 0
+    for a in anomalies:
+        if a.direction != "mysql_only":
+            continue
+        existing = session.query(StrikeRow).filter(
+            StrikeRow.key == a.key,
+            StrikeRow.resolved == False,  # noqa: E712 — SQLAlchemy idiom
+        ).one_or_none()
+        if existing is None or existing.strike_count < cfg.strike_threshold:
+            continue
+
+        # 1. Pull the open MySQL row(s) for this (strategy, symbol).
+        candidates = store._get_symbol_candidates(a.symbol)
+        rows = session.query(PositionRow).filter(
+            PositionRow.strategy_id == a.strategy_id,
+            PositionRow.symbol.in_(candidates),
+            PositionRow.status == "open",
+        ).all()
+        if not rows:
+            # Race: row already closed between invariant check and now.
+            # Let auto_clear_resolved pick up the strike next cycle.
+            continue
+        if len(rows) > 1:
+            emit_event(
+                session,
+                type="mysql_only_ambiguous_setup",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                payload={
+                    "open_rows": [
+                        {"setup": r.setup_name, "qty": float(r.qty),
+                         "client_order_id": r.client_order_id}
+                        for r in rows
+                    ],
+                    "strike_count": existing.strike_count,
+                },
+            )
+            continue
+
+        row = rows[0]
+        entry_coid = row.client_order_id
+        setup = row.setup_name
+        if not entry_coid:
+            # Pre-COID legacy row — operator must reconcile.
+            emit_event(
+                session,
+                type="mysql_only_no_entry_coid",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                payload={"setup": setup, "qty": float(row.qty),
+                         "strike_count": existing.strike_count},
+            )
+            continue
+
+        # 2. If a fill on this COID is in the same cycle's recent_fills,
+        # apply_tagged_fill will close the row in this same transaction —
+        # do nothing.
+        if entry_coid in fills_by_coid:
+            continue
+
+        # 3. Look up the entry order at the broker.
+        try:
+            open_orders = alpaca.list_orders(
+                status="open", symbols=[a.symbol], nested=False,
+            )
+        except Exception as exc:
+            log.error(
+                "MYSQL_ONLY_LIST_ORDERS_FAILED symbol=%s error=%s",
+                a.symbol, exc, exc_info=True,
+            )
+            continue
+
+        entry_order = next(
+            (o for o in open_orders or []
+             if o.get("client_order_id") == entry_coid),
+            None,
+        )
+        if entry_order is None:
+            # Not in open orders. Check closed orders for the same COID
+            # in case Alpaca actually filled it but our last cycle's
+            # `after` window missed the timestamp.
+            try:
+                closed_orders = alpaca.list_orders(
+                    status="closed", symbols=[a.symbol], nested=False,
+                )
+            except Exception as exc:
+                log.error(
+                    "MYSQL_ONLY_CLOSED_LOOKUP_FAILED symbol=%s error=%s",
+                    a.symbol, exc, exc_info=True,
+                )
+                continue
+            closed_match = next(
+                (o for o in closed_orders or []
+                 if o.get("client_order_id") == entry_coid),
+                None,
+            )
+            if closed_match is None:
+                emit_event(
+                    session,
+                    type="mysql_only_entry_coid_missing",
+                    strategy_id=a.strategy_id,
+                    symbol=a.symbol,
+                    asset_class=asset_class,
+                    payload={"entry_coid": entry_coid, "setup": setup,
+                             "qty": float(row.qty),
+                             "strike_count": existing.strike_count},
+                )
+            else:
+                emit_event(
+                    session,
+                    type="mysql_only_filled_at_broker",
+                    strategy_id=a.strategy_id,
+                    symbol=a.symbol,
+                    asset_class=asset_class,
+                    payload={
+                        "entry_coid": entry_coid, "setup": setup,
+                        "alpaca_status": closed_match.get("status"),
+                        "filled_qty": closed_match.get("filled_qty"),
+                        "strike_count": existing.strike_count,
+                    },
+                )
+            continue
+
+        # 4. Defensive: never auto-cancel an order that has any filled qty.
+        try:
+            filled_qty = float(entry_order.get("filled_qty") or 0)
+        except (TypeError, ValueError):
+            filled_qty = 0.0
+        order_status = entry_order.get("status", "")
+        if filled_qty > 0 or order_status not in _UNFILLED_ORDER_STATUSES:
+            emit_event(
+                session,
+                type="mysql_only_partially_filled",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                payload={
+                    "entry_coid": entry_coid, "setup": setup,
+                    "alpaca_status": order_status,
+                    "filled_qty": filled_qty,
+                    "strike_count": existing.strike_count,
+                },
+            )
+            continue
+
+        # 5. Cancel the entry. Bracket children cascade automatically.
+        entry_order_id = entry_order.get("id")
+        try:
+            alpaca.cancel_order(entry_order_id)
+        except Exception as exc:
+            # Most likely the order flipped to filled between step 4 and
+            # the cancel. Leave the strike unresolved; next cycle's
+            # invariant + apply_tagged_fill will resolve it the right way.
+            log.warning(
+                "MYSQL_ONLY_CANCEL_FAILED symbol=%s order_id=%s error=%s",
+                a.symbol, entry_order_id, exc,
+            )
+            emit_event(
+                session,
+                type="mysql_only_cancel_failed",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                payload={
+                    "entry_coid": entry_coid, "entry_order_id": entry_order_id,
+                    "error": str(exc),
+                    "strike_count": existing.strike_count,
+                },
+            )
+            continue
+
+        # 6. Close the MySQL row at entry price (zero PnL — the position
+        # never actually existed at the broker). Archives a TradeRow with
+        # close_reason='entry_never_filled' for audit.
+        entry_px = float(row.entry_px)
+        store.position_closed(
+            symbol=a.symbol,
+            exit_px=entry_px,
+            close_reason="entry_never_filled",
+            setup_name=setup,
+            strategy_id=a.strategy_id,
+            closed_at=now,
+        )
+
+        # 7. Emit audit event + resolve the strike.
+        emit_event(
+            session,
+            type="auto_close_entry_never_filled",
+            strategy_id=a.strategy_id,
+            symbol=a.symbol,
+            asset_class=asset_class,
+            payload={
+                "setup": setup,
+                "entry_coid": entry_coid,
+                "entry_order_id": entry_order_id,
+                "entry_px": entry_px,
+                "qty": float(row.qty),
+                "strike_count": existing.strike_count,
+            },
+        )
+        existing.resolved = True
+        existing.resolved_at = now
+        existing.resolved_reason = "auto_close_entry_never_filled"
+        resolved_count += 1
+        log.warning(
+            "AUTO_CLOSE_ENTRY_NEVER_FILLED symbol=%s setup=%s "
+            "entry_coid=%s order_id=%s strike_count=%d",
+            a.symbol, setup, entry_coid, entry_order_id,
+            existing.strike_count,
+        )
+
+    return resolved_count
+
+
 def _split_qty(total_qty: float, max_qty_per_chunk: float) -> list[float]:
     """Split ``total_qty`` into chunks no larger than ``max_qty_per_chunk``.
 
@@ -839,6 +1093,15 @@ def run_one_cycle(
             anomalies=anomalies, recent_fills=recent_fills,
             cfg=cfg, now=now,
             asset_class=asset_class,
+        )
+
+        # 4.7. Auto-resolve mysql_only anomalies whose entry order is still
+        # sitting unfilled at the broker. Self-heals the optimistic-insert
+        # case (limit-bracket parent never hit during the session).
+        auto_resolve_mysql_only_entry_never_filled(
+            alpaca=alpaca, store=store, session=session,
+            anomalies=anomalies, recent_fills=recent_fills,
+            cfg=cfg, now=now, asset_class=asset_class,
         )
 
         # 5. Auto-clear strikes whose anomaly is no longer present.
