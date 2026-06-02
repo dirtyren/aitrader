@@ -335,6 +335,78 @@ class MySQLStore:
         except Exception as exc:
             self._log.warning("MYSQL_LEGACY_BACKFILL_FAILED: %s", exc)
 
+        # One-shot duplicate-symbol-form cleanup. Two open rows that share
+        # (strategy_id, setup_name) but differ only in slash form (DOGE/USD
+        # vs DOGEUSD) are a write-time race artifact between the engine's
+        # optimistic insert and the reconciler's entry-recovery insert.
+        # The newer row is most likely the broker-confirmed one (the
+        # reconciler only inserts on observed fills); close the older one
+        # at exit_px=entry_px so the audit trail remains and the strategy
+        # can boot. Idempotent — re-runs find nothing.
+        self._consolidate_duplicate_open_positions()
+
+    def _consolidate_duplicate_open_positions(self) -> None:
+        try:
+            with Session(self._engine) as session:
+                # `pairs` rows: (older_id, newer_id, symbol, setup_name, strategy_id)
+                pairs = session.execute(text(
+                    "SELECT a.id AS older_id, b.id AS newer_id, "
+                    "       a.symbol AS older_symbol, b.symbol AS newer_symbol, "
+                    "       a.setup_name, a.strategy_id "
+                    "FROM positions a "
+                    "JOIN positions b "
+                    "  ON a.strategy_id = b.strategy_id "
+                    "  AND a.setup_name = b.setup_name "
+                    "  AND REPLACE(a.symbol, '/', '') = REPLACE(b.symbol, '/', '') "
+                    "  AND a.id < b.id "
+                    "WHERE a.status = 'open' AND b.status = 'open'"
+                )).all()
+                if not pairs:
+                    return
+                now = datetime.now(timezone.utc)
+                closed = 0
+                for older_id, newer_id, older_sym, newer_sym, setup, sid in pairs:
+                    older = session.get(PositionRow, older_id)
+                    if older is None or older.status != "open":
+                        continue
+                    older.status = "closed"
+                    older.exit_px = older.entry_px
+                    older.close_reason = "duplicate_consolidation"
+                    older.closed_at = now
+                    older.pnl_usd = Decimal("0")
+                    older.R_realized = Decimal("0")
+                    session.add(TradeRow(
+                        strategy_id=older.strategy_id,
+                        symbol=older.symbol,
+                        asset_class=older.asset_class,
+                        setup_name=older.setup_name,
+                        side=older.side,
+                        qty=older.qty,
+                        entry_px=older.entry_px,
+                        exit_px=older.entry_px,
+                        stop_px=older.stop_px,
+                        target_px=older.target_px,
+                        initial_stop_px=older.initial_stop_px,
+                        client_order_id=older.client_order_id,
+                        exit_client_order_id=None,
+                        pnl_usd=Decimal("0"),
+                        R_realized=Decimal("0"),
+                        close_reason="duplicate_consolidation",
+                        opened_at=older.opened_at,
+                        closed_at=now,
+                        bars_held=older.bars_held,
+                    ))
+                    closed += 1
+                    self._log.warning(
+                        "MYSQL_DUP_CLEANUP closed_id=%s kept_id=%s "
+                        "older_symbol=%s newer_symbol=%s setup=%s strategy_id=%s",
+                        older_id, newer_id, older_sym, newer_sym, setup, sid,
+                    )
+                session.commit()
+                self._log.warning("MYSQL_DUP_CLEANUP closed=%d", closed)
+        except Exception as exc:
+            self._log.warning("MYSQL_DUP_CLEANUP_FAILED: %s", exc)
+
     def upsert_strategy(self) -> int:
         """INSERT (or get) the strategy row, return its id."""
         with Session(self._engine) as session:
@@ -468,11 +540,19 @@ class MySQLStore:
     # ── Position lifecycle ──────────────────────────────────────────────
 
     @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        """Persist the broker-flat form so DOGE/USD and DOGEUSD never
+        coexist as two open rows for the same (strategy, setup). Reads
+        stay slash-aware via _get_symbol_candidates so legacy rows still
+        match — only writes change."""
+        return symbol.replace("/", "")
+
+    @staticmethod
     def _pos_to_dict(pos: OpenPosition, asset_class: str,
                      strategy_id: int) -> dict:
         return {
             "strategy_id": strategy_id,
-            "symbol": pos.symbol,
+            "symbol": MySQLStore._normalize_symbol(pos.symbol),
             "asset_class": asset_class,
             "side": pos.side,
             "qty": Decimal(str(pos.qty)),
@@ -590,71 +670,98 @@ class MySQLStore:
             )
             if setup_name:
                 q = q.filter(PositionRow.setup_name == setup_name)
-            row = q.one_or_none()
+            # all() instead of one_or_none() so a historical duplicate
+            # (DOGEUSD + DOGE/USD with the same setup) is consolidated
+            # at close time instead of raising MultipleResultsFound.
+            rows = q.all()
 
-            if row is None:
+            if not rows:
                 self._log.warning(
                     "MYSQL_CLOSE_NOT_FOUND symbol=%s strategy=%s strategy_id=%d",
                     symbol, self.strategy_name, target_strategy_id,
                 )
                 return None
 
-            # Calculate PnL
+            if len(rows) > 1:
+                self._log.warning(
+                    "MYSQL_CLOSE_CONSOLIDATING_DUPLICATES symbol=%s "
+                    "setup=%s count=%d row_ids=%s",
+                    symbol, setup_name, len(rows), [r.id for r in rows],
+                )
+
+            # Calculate PnL once on the first row (used as the return value).
+            # Each row archives its own TradeRow with its own qty/entry_px so
+            # the audit trail stays per-row.
             exit_dec = Decimal(str(exit_px))
-            side_mult = Decimal("1") if row.side == "long" else Decimal("-1")
-            pnl_usd = (exit_dec - row.entry_px) * side_mult * row.qty
-
-            # R-realized
-            stop_ref = row.initial_stop_px if row.initial_stop_px is not None else row.stop_px
-            if stop_ref is not None:
-                risk_per_share = abs(row.entry_px - stop_ref)
-                R_realized = (exit_dec - row.entry_px) * side_mult / risk_per_share if risk_per_share > 0 else Decimal("0")
+            primary = rows[0]
+            primary_side_mult = Decimal("1") if primary.side == "long" else Decimal("-1")
+            primary_pnl = (exit_dec - primary.entry_px) * primary_side_mult * primary.qty
+            primary_stop_ref = (primary.initial_stop_px
+                                if primary.initial_stop_px is not None
+                                else primary.stop_px)
+            if primary_stop_ref is not None:
+                rps = abs(primary.entry_px - primary_stop_ref)
+                primary_R = ((exit_dec - primary.entry_px) * primary_side_mult / rps
+                             if rps > 0 else Decimal("0"))
             else:
-                R_realized = Decimal("0")
+                primary_R = Decimal("0")
 
-            # Update position row
-            row.status = "closed"
-            row.exit_px = exit_dec
-            row.close_reason = close_reason
-            row.closed_at = closed_at
-            row.pnl_usd = pnl_usd
-            row.R_realized = R_realized
-            row.bars_held = row.bars_held  # keep last known
-            row.exit_client_order_id = exit_client_order_id
+            for row in rows:
+                side_mult = Decimal("1") if row.side == "long" else Decimal("-1")
+                pnl_usd = (exit_dec - row.entry_px) * side_mult * row.qty
+                stop_ref = row.initial_stop_px if row.initial_stop_px is not None else row.stop_px
+                if stop_ref is not None:
+                    rps = abs(row.entry_px - stop_ref)
+                    R_realized = ((exit_dec - row.entry_px) * side_mult / rps
+                                  if rps > 0 else Decimal("0"))
+                else:
+                    R_realized = Decimal("0")
 
-            # Archive to trades table
-            trade = TradeRow(
-                strategy_id=target_strategy_id,
-                symbol=row.symbol,
-                asset_class=row.asset_class,
-                setup_name=row.setup_name,
-                side=row.side,
-                qty=row.qty,
-                entry_px=row.entry_px,
-                exit_px=exit_dec,
-                stop_px=row.stop_px,
-                target_px=row.target_px,
-                initial_stop_px=row.initial_stop_px,
-                client_order_id=row.client_order_id,
-                exit_client_order_id=exit_client_order_id,
-                pnl_usd=pnl_usd,
-                R_realized=R_realized,
-                close_reason=close_reason,
-                opened_at=row.opened_at,
-                closed_at=closed_at,
-                bars_held=row.bars_held,
-            )
-            session.add(trade)
+                # Update position row
+                row.status = "closed"
+                row.exit_px = exit_dec
+                row.close_reason = close_reason
+                row.closed_at = closed_at
+                row.pnl_usd = pnl_usd
+                row.R_realized = R_realized
+                row.exit_client_order_id = exit_client_order_id
+
+                # Archive to trades table
+                trade = TradeRow(
+                    strategy_id=target_strategy_id,
+                    symbol=row.symbol,
+                    asset_class=row.asset_class,
+                    setup_name=row.setup_name,
+                    side=row.side,
+                    qty=row.qty,
+                    entry_px=row.entry_px,
+                    exit_px=exit_dec,
+                    stop_px=row.stop_px,
+                    target_px=row.target_px,
+                    initial_stop_px=row.initial_stop_px,
+                    client_order_id=row.client_order_id,
+                    exit_client_order_id=exit_client_order_id,
+                    pnl_usd=pnl_usd,
+                    R_realized=R_realized,
+                    close_reason=close_reason,
+                    opened_at=row.opened_at,
+                    closed_at=closed_at,
+                    bars_held=row.bars_held,
+                )
+                session.add(trade)
+
             session.commit()
 
             self._log.info(
-                "MYSQL_POSITION_CLOSED symbol=%s reason=%s exit=%.4f pnl=%.4f R=%.2f",
-                symbol, close_reason, exit_px, float(pnl_usd), float(R_realized),
+                "MYSQL_POSITION_CLOSED symbol=%s reason=%s exit=%.4f "
+                "pnl=%.4f R=%.2f rows=%d",
+                symbol, close_reason, exit_px,
+                float(primary_pnl), float(primary_R), len(rows),
             )
             return {
                 "symbol": symbol,
-                "pnl_usd": float(pnl_usd),
-                "R_realized": float(R_realized),
+                "pnl_usd": float(primary_pnl),
+                "R_realized": float(primary_R),
                 "close_reason": close_reason,
             }
 
@@ -662,8 +769,18 @@ class MySQLStore:
         """Load all open positions for this strategy from MySQL.
 
         Returns a PositionBook suitable for feeding to the reconciler.
+
+        Resilient against historical duplicates: PositionBook.add raises
+        on (normalized_symbol, setup) collisions, but a malformed DB
+        (e.g. one row stored as DOGE/USD and another as DOGEUSD for the
+        same setup) used to crash the strategy at startup. The cleanup
+        in ensure_schema flattens these on boot, but the defensive
+        try/except here means a freshly-introduced duplicate during a
+        running cycle can't take the container down — the next close
+        consolidates them.
         """
         book = PositionBook()
+        skipped: list[int] = []
         with Session(self._engine) as session:
             rows = session.query(PositionRow).filter(
                 PositionRow.strategy_id == self.strategy_id,
@@ -671,10 +788,20 @@ class MySQLStore:
             ).all()
             for row in rows:
                 pos = self._dict_to_pos(row)
-                book.add(pos)
+                try:
+                    book.add(pos)
+                except ValueError:
+                    skipped.append(row.id)
+                    self._log.error(
+                        "MYSQL_DUPLICATE_OPEN_ROW strategy=%s symbol=%s "
+                        "setup=%s row_id=%s — keeping the first seen row, "
+                        "the duplicate will collapse on the next close",
+                        self.strategy_name, row.symbol, row.setup_name,
+                        row.id,
+                    )
             self._log.info(
-                "MYSQL_LOADED_OPEN_POSITIONS strategy=%s count=%d",
-                self.strategy_name, book.count(),
+                "MYSQL_LOADED_OPEN_POSITIONS strategy=%s count=%d skipped_duplicates=%d",
+                self.strategy_name, book.count(), len(skipped),
             )
         return book
 
@@ -1022,7 +1149,7 @@ class MySQLStore:
         with Session(self._engine) as session:
             row = PositionRow(
                 strategy_id=strategy_id,
-                symbol=symbol,
+                symbol=self._normalize_symbol(symbol),
                 asset_class=asset_class,
                 side=side,
                 qty=Decimal(str(qty)),
@@ -1193,7 +1320,7 @@ class MySQLStore:
         with Session(self._engine) as session:
             row = PositionRow(
                 strategy_id=strategy_id,
-                symbol=symbol,
+                symbol=self._normalize_symbol(symbol),
                 asset_class=asset_class,
                 side=side,
                 qty=Decimal(str(qty)),
