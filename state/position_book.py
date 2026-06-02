@@ -35,6 +35,12 @@ class OpenPosition:
     adopted: bool = False                 # True for positions reconciled from broker
     client_order_id: str | None = None     # COID stamped at order submit (Plan 2)
     pending_oco_attach: bool = False       # extended-hours fill awaiting 09:30 OCO attach
+    # True once the broker has confirmed an actual fill (qty hit the account).
+    # Default False because the entry-submit path can't guarantee a fill.
+    # PositionManager.on_bar gates virtual exit checks on this flag — without
+    # it, an unfilled limit-bracket whose stop_px got grazed by a low bar
+    # would write a phantom -PnL trade to MySQL.
+    fill_confirmed: bool = False
 
     @property
     def initial_risk_per_share(self) -> float:

@@ -208,14 +208,40 @@ def _build_setups_from_override(symbol: str, override: dict):
     return [factory(symbol, override["setup_params"])]
 
 
-def position_manager_for(symbol: str, cfg: dict, book) -> PositionManager:
+def position_manager_for(
+    symbol: str, cfg: dict, book,
+    *,
+    alpaca=None,
+    mysql=None,
+    strategy_id: int | None = None,
+) -> PositionManager:
     overrides = cfg.get("_per_symbol_overrides") or {}
     pm_cfg = (overrides.get(symbol, {}).get("position_management")
               if symbol in overrides else cfg["position_management"])
+
+    def _order_status_for(pos):
+        # Lookup the broker order's status. Errors propagate so the
+        # PositionManager can log and treat as 'unknown' (no exit).
+        if alpaca is None or not pos.order_id:
+            return None
+        order = alpaca.get_order(pos.order_id)
+        if not isinstance(order, dict):
+            return None
+        return order.get("status")
+
+    def _on_fill_confirmed(pos):
+        # Persist the flip so a restart doesn't re-poll. mysql may be None
+        # in unit tests / dry-run modes.
+        if mysql is None or strategy_id is None:
+            return
+        mysql.mark_fill_confirmed(strategy_id, pos.symbol, pos.setup)
+
     return PositionManager(
         book,
         max_hold_bars=pm_cfg["max_hold_bars"],
         breakeven_at_R=pm_cfg["breakeven_at_R"],
+        order_status_for=_order_status_for,
+        on_fill_confirmed=_on_fill_confirmed,
     )
 
 
@@ -424,14 +450,24 @@ def main():
     # engine still receives a single PM; we wire a dispatcher that routes
     # on_bar(symbol, bar) to the right per-symbol PM.
     overrides = cfg.get("_per_symbol_overrides") or {}
+    pm_kwargs = dict(
+        alpaca=alpaca,
+        mysql=mysql,
+        strategy_id=mysql.strategy_id if mysql is not None else None,
+    )
     if overrides:
-        per_symbol_pms = {sym: position_manager_for(sym, cfg, book)
-                          for sym, _ in symbols}
-        pm = _PerSymbolPositionManager(per_symbol_pms,
-                                       fallback=position_manager_for("__default__",
-                                                                     cfg, book))
+        per_symbol_pms = {
+            sym: position_manager_for(sym, cfg, book, **pm_kwargs)
+            for sym, _ in symbols
+        }
+        pm = _PerSymbolPositionManager(
+            per_symbol_pms,
+            fallback=position_manager_for(
+                "__default__", cfg, book, **pm_kwargs,
+            ),
+        )
     else:
-        pm = position_manager_for("__default__", cfg, book)
+        pm = position_manager_for("__default__", cfg, book, **pm_kwargs)
 
     engine = VWAPWaveEngine(
         symbols=symbols, contexts=contexts, setups=setups,

@@ -14,7 +14,7 @@ def _open_pos(side="long", entry=100, stop=99, target=102):
     return OpenPosition(symbol="AAPL", setup="price_discovery", side=side,
                         qty=10, entry_px=entry, stop_px=stop, target_px=target,
                         opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
-                        order_id="x")
+                        order_id="x", fill_confirmed=True)
 
 
 def test_stop_hit_long():
@@ -57,7 +57,7 @@ def _adopted_pos(side="long", entry=100.0, stop=99.0, target=102.0):
     return OpenPosition(symbol="AAPL", setup="adopted", side=side,
                         qty=10, entry_px=entry, stop_px=stop, target_px=target,
                         opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
-                        order_id="", adopted=True)
+                        order_id="", adopted=True, fill_confirmed=True)
 
 
 def test_adopted_position_triggers_stop_action():
@@ -120,7 +120,7 @@ def test_adopted_position_with_none_stop_does_not_raise():
     p = OpenPosition(symbol="BTC/USD", setup="adopted", side="long",
                      qty=1, entry_px=50_000.0, stop_px=None, target_px=None,
                      opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
-                     order_id="", adopted=True)
+                     order_id="", adopted=True, fill_confirmed=True)
     book.add(p)
     pm = PositionManager(book, max_hold_bars=12, breakeven_at_R=1.0)
     actions = pm.on_bar("BTC/USD",
