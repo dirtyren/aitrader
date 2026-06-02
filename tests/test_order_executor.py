@@ -484,3 +484,178 @@ def test_submit_regular_equity_does_not_set_pending_oco_attach():
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos.pending_oco_attach is False
+
+
+# ---------------------------------------------------------------------------
+# Pre-submit guards — bracket geometry + opposing-position
+# ---------------------------------------------------------------------------
+
+
+def _bad_signal(symbol="AAPL", *, side="long",
+                entry=100.0, stop=99.0, target=102.0):
+    return SetupSignal(
+        setup="price_discovery", symbol=symbol, side=side,
+        entry=entry, stop=stop, target=target, atr=1.0, level=entry,
+        ts=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+    )
+
+
+@pytest.mark.parametrize(
+    "side,entry,stop,target,fragment",
+    [
+        # Long: target at-or-below entry → must be >= entry+0.01
+        ("long", 100.0, 99.0, 100.0, "long target must be >="),
+        ("long", 100.0, 99.0, 99.50, "long target must be >="),
+        # Long: target only $0.005 above entry (less than tick) → reject
+        ("long", 100.0, 99.0, 100.005, "long target must be >="),
+        # Long: stop at-or-above entry → must be <= entry-0.01
+        ("long", 100.0, 100.0, 102.0, "long stop must be <="),
+        ("long", 100.0, 100.005, 102.0, "long stop must be <="),
+        # Short: target at-or-above entry → must be <= entry-0.01
+        ("short", 100.0, 101.0, 100.0, "short target must be <="),
+        ("short", 100.0, 101.0, 100.005, "short target must be <="),
+        # Short: stop at-or-below entry → must be >= entry+0.01
+        ("short", 100.0, 100.0, 99.0, "short stop must be >="),
+        ("short", 100.0, 99.995, 99.0, "short stop must be >="),
+    ],
+)
+def test_submit_rejects_invalid_equity_bracket_geometry(
+    side, entry, stop, target, fragment,
+):
+    """Setup bug → reject locally before any Alpaca call. Replaces the
+    422 stack trace operators were seeing with a clear log line."""
+    client = MagicMock()
+    book = PositionBook()
+    log = MagicMock()
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=log)
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+    sig = _bad_signal(side=side, entry=entry, stop=stop, target=target)
+
+    pos = ex.submit(sig, decision, asset_class="equity")
+
+    assert pos is None
+    client.submit_bracket_order.assert_not_called()
+    client.submit_order.assert_not_called()
+    # Surface the reject reason via the warning log so operators see it.
+    assert log.warning.called
+    args = log.warning.call_args.args
+    msg = args[0] % args[1:]
+    assert "ORDER_SKIPPED_INVALID_LEVELS" in msg
+    assert fragment in msg
+
+
+def test_submit_accepts_subdollar_tick_geometry():
+    """Sub-$1 prices use a $0.0001 tick. A target $0.0001 above a $0.50
+    entry must pass; a target $0.00005 above must fail."""
+    client = MagicMock()
+    client.submit_bracket_order.return_value = {"id": "sub-1"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=100, notional=50)
+
+    ok_sig = _bad_signal(side="long", entry=0.50, stop=0.4999, target=0.5001)
+    pos = ex.submit(ok_sig, decision, asset_class="equity")
+    assert pos is not None
+
+    # Reset between calls — book.add already inserted the first one.
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
+    bad_sig = _bad_signal(side="long", entry=0.50, stop=0.4999, target=0.50005)
+    pos = ex.submit(bad_sig, decision, asset_class="equity")
+    assert pos is None
+
+
+def test_submit_skips_when_book_already_has_opposing_position():
+    """Phantom long limit lingers in the book until the reconciler resolves
+    it. A new short signal must not be submitted to the broker, which
+    would 403 with `cannot open a short sell while a long buy order is
+    open`."""
+    client = MagicMock()
+    book = PositionBook()
+
+    from state.position_book import OpenPosition
+    book.add(OpenPosition(
+        symbol="UBER", setup="rsi_reversion", side="long", qty=2,
+        entry_px=73.87, stop_px=72.39, target_px=76.09,
+        opened_at=datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc),
+        order_id="alp-uber-pending",
+    ))
+
+    log = MagicMock()
+    ex = OrderExecutor(client, book, strategy_name="rsi_equity", logger=log)
+    decision = RiskDecision(approved=True, qty=2, notional=147)
+    sig = _bad_signal(symbol="UBER", side="short",
+                      entry=73.87, stop=74.50, target=72.50)
+
+    pos = ex.submit(sig, decision, asset_class="equity")
+
+    assert pos is None
+    client.submit_bracket_order.assert_not_called()
+    msg = log.info.call_args.args[0] % log.info.call_args.args[1:]
+    assert "ORDER_SKIPPED_OPPOSING_OPEN_ORDER" in msg
+
+
+def test_submit_skips_when_book_has_same_side_same_setup():
+    """Double-entry on the same (symbol, setup) should never reach
+    book.add (which raises) — the new guard catches it as a clean log."""
+    client = MagicMock()
+    book = PositionBook()
+
+    from state.position_book import OpenPosition
+    book.add(OpenPosition(
+        symbol="AAPL", setup="price_discovery", side="long", qty=10,
+        entry_px=100.0, stop_px=99.0, target_px=102.0,
+        opened_at=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+        order_id="o-existing",
+    ))
+
+    ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=1000)
+    pos = ex.submit(_signal(), decision, asset_class="equity")
+
+    assert pos is None
+    client.submit_bracket_order.assert_not_called()
+
+
+def test_submit_crypto_skips_geometry_check():
+    """The validator only fires for equity bracket entries. Crypto market
+    entries don't go through Alpaca's bracket validator."""
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "crypto-1"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="ib_crypto", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=0.1, notional=5000)
+    # Target equals entry — would fail the equity validator, must NOT
+    # block a crypto submit (engine-virtual exits handle this).
+    sig = _bad_signal(symbol="BTC/USD", side="long",
+                      entry=50000.0, stop=49500.0, target=50000.0)
+
+    pos = ex.submit(sig, decision, asset_class="crypto")
+
+    assert pos is not None
+    client.submit_order.assert_called_once()
+
+
+def test_submit_extended_hours_equity_skips_geometry_check():
+    """Pre-market limit entries don't carry the bracket — OCO is attached
+    after the open. Geometry validation must therefore NOT block an
+    extended_hours signal even if its declared target/stop are degenerate
+    relative to entry (post_open_attach reads its own levels off the
+    OpenPosition later)."""
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "eh-1"}
+    book = PositionBook()
+    ex = OrderExecutor(client, book, strategy_name="gap_and_go", logger=MagicMock())
+    decision = RiskDecision(approved=True, qty=10, notional=2000)
+    sig = SetupSignal(
+        setup="gap_and_go", symbol="UBER", side="long",
+        entry=200.0, stop=199.0, target=200.0,  # would fail equity bracket validator
+        atr=1.0, level=200.0,
+        ts=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+        notes={"extended_hours": True},
+    )
+
+    pos = ex.submit(sig, decision, asset_class="equity")
+    assert pos is not None
+    client.submit_order.assert_called_once()
+    client.submit_bracket_order.assert_not_called()
