@@ -316,6 +316,7 @@ class GapAndGoLoop:
                 continue
             try:
                 self.executor.close_position(pos.symbol, pos.side, pos.qty,
+                                             setup=pos.setup,
                                              asset_class="equity")
                 closed += 1
             except Exception as exc:

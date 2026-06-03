@@ -280,27 +280,25 @@ class OrderExecutor:
 
     def close_position(
         self, symbol: str, side: str, qty: float,
+        *,
+        setup: str,
         asset_class: str = "crypto",
     ) -> dict | None:
-        """Submit a market close order. Used for virtual stops / time stops.
+        """Submit a market close order. Used for virtual / time stops.
 
-        The COID uses setup='_unknown' because this path doesn't know which
-        setup owned the position. Plan 3's reconciler service supersedes this
-        exit path and will use the real setup. The sanitizer strips the leading
-        underscore, so the parsed setup is 'unknown'.
+        ``setup`` is required so the exit COID parses back to the
+        (strategy, setup, symbol) triple at reconciler/fills.py
+        :apply_tagged_fill — without it, the reconciler can't match the
+        close fill to the open row and the row stays open indefinitely.
+        See incident 2026-06-02 (COIN: 22 stacked broker positions vs 1
+        open MySQL row) and design doc 2026-06-02-engine-exit-idempotency.
 
         ``asset_class`` controls the fee-drift safety margin: crypto closes
         shave ~1e-6 off the requested qty (fees drain from the asset side
         between snapshot and submit), equity passes through unchanged.
-
-        NOTE: The exit COID is sent to Alpaca but is NOT yet persisted to the
-        MySQL trades.exit_client_order_id column. The current MySQL close path
-        in scheduler/loop.py omits this kwarg. Plan 3's reconciler service will
-        back-fill exit_client_order_id by matching Alpaca filled orders to MySQL
-        rows via the COID, so this asymmetry is acceptable during rollout.
         """
         exit_coid = make_client_order_id(
-            self.strategy_name, "_unknown", symbol, Role.EXIT,
+            self.strategy_name, setup, symbol, Role.EXIT,
         )
         return submit_close_with_drift_recovery(
             client=self.client,
@@ -347,6 +345,7 @@ class OrderExecutor:
                             self.logger.error("CANCEL_FAILED symbol=%s order_id=%s error=%s",
                                               a.symbol, parent_order_id, exc, exc_info=True)
                     self.close_position(a.symbol, a.side, a.qty,
+                                        setup=a.setup,
                                         asset_class="equity")
                     self.logger.info("TIME_STOP symbol=%s side=%s qty=%s",
                                      a.symbol, a.side, a.qty)
@@ -366,6 +365,7 @@ class OrderExecutor:
                             self.logger.error("CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
                                               a.symbol, pos.target_order_id, exc)
                     self.close_position(a.symbol, a.side, a.qty,
+                                        setup=a.setup,
                                         asset_class="crypto")
                     self.logger.info("VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s",
                                      a.symbol, a.kind, a.price, a.qty)
