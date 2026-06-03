@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 CREATE TABLE IF NOT EXISTS reconciliation_strikes (
     id                   BIGINT AUTO_INCREMENT PRIMARY KEY,
     `key`                VARCHAR(128) NOT NULL,
-    direction            ENUM('qty_drift','mysql_only','broker_only') NOT NULL,
+    direction            ENUM('qty_drift','mysql_only','broker_only','manual_close') NOT NULL,
     strategy_id          INT DEFAULT NULL,
     symbol               VARCHAR(32) NOT NULL,
     strike_count         INT NOT NULL DEFAULT 0,
@@ -111,6 +111,25 @@ CREATE TABLE IF NOT EXISTS reconciliation_events (
     FOREIGN KEY (strategy_id) REFERENCES strategies(id),
     INDEX idx_events_time (created_at),
     INDEX idx_events_type (type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS manual_close_cooldowns (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    strategy_id         INT NOT NULL,
+    symbol              VARCHAR(32) NOT NULL,        -- normalized (broker-flat) form
+    asset_class         VARCHAR(16) NOT NULL,        -- 'equity' | 'crypto'
+    started_at          TIMESTAMP(3) NOT NULL,
+    cooldown_until      TIMESTAMP(3) NOT NULL,
+    cleared_at          TIMESTAMP(3) DEFAULT NULL,
+    cleared_by          VARCHAR(64) DEFAULT NULL,    -- 'operator' | 'expired' | 'auto_cleanup'
+    reconciler_event_id BIGINT DEFAULT NULL,         -- link to reconciliation_events row that triggered this
+    last_broker_qty     DECIMAL(20,8) DEFAULT NULL,
+    last_mysql_qty      DECIMAL(20,8) DEFAULT NULL,
+    closed_position_id  BIGINT DEFAULT NULL,          -- link to positions.id at time of close
+    FOREIGN KEY (strategy_id) REFERENCES strategies(id),
+    FOREIGN KEY (reconciler_event_id) REFERENCES reconciliation_events(id),
+    INDEX idx_cooldown_active (strategy_id, symbol, cleared_at, cooldown_until),
+    INDEX idx_cooldown_until (cooldown_until)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS broker_credentials (

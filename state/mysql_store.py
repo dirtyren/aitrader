@@ -157,7 +157,8 @@ class StrikeRow(Base):
     # 'key' collides with SQL keyword in some dialects; SQLAlchemy quotes it.
     key: Mapped[str] = mapped_column("key", String(128), nullable=False)
     direction: Mapped[str] = mapped_column(
-        Enum("qty_drift", "mysql_only", "broker_only"), nullable=False
+        Enum("qty_drift", "mysql_only", "broker_only", "manual_close"),
+        nullable=False,
     )
     strategy_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("strategies.id"), nullable=True
@@ -203,6 +204,49 @@ class EventRow(Base):
         Index("idx_events_time", "created_at"),
         Index("idx_events_type", "type", "created_at"),
         Index("idx_events_asset_class", "asset_class", "type", "created_at"),
+    )
+
+
+class ManualCloseCooldownRow(Base):
+    __tablename__ = "manual_close_cooldowns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("strategies.id"), nullable=False,
+    )
+    # Stored in normalized broker-flat form (e.g. BTCUSD, COIN); the filter
+    # checks both slash and flat variants of the signal symbol.
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    asset_class: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    cooldown_until: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    cleared_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    cleared_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    reconciler_event_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("reconciliation_events.id"), nullable=True,
+    )
+    last_broker_qty: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(20, 8), nullable=True,
+    )
+    last_mysql_qty: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(20, 8), nullable=True,
+    )
+    closed_position_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True,
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_cooldown_active",
+            "strategy_id", "symbol", "cleared_at", "cooldown_until",
+        ),
+        Index("idx_cooldown_until", "cooldown_until"),
     )
 
 
@@ -310,6 +354,13 @@ class MySQLStore:
             # reconciler will match the resulting close fill.
             "ALTER TABLE positions ADD COLUMN exit_submitted TINYINT(1) "
             "NOT NULL DEFAULT 0",
+            # reconciliation_strikes.direction: extend ENUM with 'manual_close'
+            # for the cooldown-confirmation counter (see specs/manual-close-cooldown.md).
+            # MySQL accepts the column-redefine form; SQLite (used in tests) ignores
+            # ENUM constraints, so create_all already covers it.
+            "ALTER TABLE reconciliation_strikes "
+            "MODIFY direction ENUM('qty_drift','mysql_only','broker_only',"
+            "'manual_close') NOT NULL",
         ]
         try:
             with self._engine.connect() as conn:
@@ -1575,3 +1626,125 @@ class MySQLStore:
             row.account_number = account_number
             row.updated_at = datetime.now(timezone.utc)
             sess.commit()
+
+    # ── Manual-close cooldowns ──────────────────────────────────────────────
+
+    def insert_manual_close_cooldown(
+        self,
+        *,
+        strategy_id: int,
+        symbol: str,
+        asset_class: str,
+        started_at: datetime,
+        cooldown_until: datetime,
+        last_broker_qty: float | None = None,
+        last_mysql_qty: float | None = None,
+        closed_position_id: int | None = None,
+        reconciler_event_id: int | None = None,
+    ) -> int:
+        """Insert a cooldown row; return its id. Symbol stored normalized (flat)."""
+        flat_symbol = symbol.replace("/", "")
+        with Session(self._engine) as session:
+            row = ManualCloseCooldownRow(
+                strategy_id=strategy_id,
+                symbol=flat_symbol,
+                asset_class=asset_class,
+                started_at=started_at,
+                cooldown_until=cooldown_until,
+                last_broker_qty=(Decimal(str(last_broker_qty))
+                                 if last_broker_qty is not None else None),
+                last_mysql_qty=(Decimal(str(last_mysql_qty))
+                                if last_mysql_qty is not None else None),
+                closed_position_id=closed_position_id,
+                reconciler_event_id=reconciler_event_id,
+            )
+            session.add(row)
+            session.commit()
+            return row.id
+
+    def get_active_cooldowns(
+        self,
+        *,
+        strategy_id: int | None = None,
+        symbol: str | None = None,
+        now: datetime | None = None,
+    ) -> list[dict]:
+        """List cooldowns where cleared_at IS NULL and cooldown_until > now.
+
+        Returns plain dicts (detached from the session) so callers can use the
+        results outside a Session context. Symbol filter accepts either
+        slash or flat form; matching is on the stored flat form.
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+        with Session(self._engine) as session:
+            q = session.query(ManualCloseCooldownRow).filter(
+                ManualCloseCooldownRow.cleared_at.is_(None),
+                ManualCloseCooldownRow.cooldown_until > now,
+            )
+            if strategy_id is not None:
+                q = q.filter(ManualCloseCooldownRow.strategy_id == strategy_id)
+            if symbol is not None:
+                flat = symbol.replace("/", "")
+                q = q.filter(ManualCloseCooldownRow.symbol == flat)
+            return [
+                {
+                    "id": r.id,
+                    "strategy_id": r.strategy_id,
+                    "symbol": r.symbol,
+                    "asset_class": r.asset_class,
+                    "started_at": r.started_at,
+                    "cooldown_until": r.cooldown_until,
+                    "last_broker_qty": (float(r.last_broker_qty)
+                                        if r.last_broker_qty is not None else None),
+                    "last_mysql_qty": (float(r.last_mysql_qty)
+                                       if r.last_mysql_qty is not None else None),
+                    "closed_position_id": r.closed_position_id,
+                    "reconciler_event_id": r.reconciler_event_id,
+                }
+                for r in q.all()
+            ]
+
+    def clear_cooldown(
+        self,
+        cooldown_id: int,
+        *,
+        cleared_by: str,
+        now: datetime | None = None,
+    ) -> bool:
+        """Mark a cooldown row cleared. Returns True if a row was updated."""
+        if now is None:
+            now = datetime.now(timezone.utc)
+        with Session(self._engine) as session:
+            row = session.get(ManualCloseCooldownRow, cooldown_id)
+            if row is None or row.cleared_at is not None:
+                return False
+            row.cleared_at = now
+            row.cleared_by = cleared_by
+            session.commit()
+            return True
+
+    def cleanup_expired_cooldowns(
+        self,
+        *,
+        older_than_days: int = 7,
+        now: datetime | None = None,
+    ) -> int:
+        """Delete cooldowns whose window ended more than ``older_than_days`` ago.
+
+        Active rows (cooldown_until > now) and recently expired rows are kept
+        for dashboard visibility. Returns the number of rows deleted.
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+        from datetime import timedelta
+        cutoff = now - timedelta(days=older_than_days)
+        with Session(self._engine) as session:
+            rows = session.query(ManualCloseCooldownRow).filter(
+                ManualCloseCooldownRow.cooldown_until < cutoff,
+            ).all()
+            count = len(rows)
+            for r in rows:
+                session.delete(r)
+            session.commit()
+            return count
