@@ -126,8 +126,12 @@ CREATE TABLE IF NOT EXISTS manual_close_cooldowns (
     last_broker_qty     DECIMAL(20,8) DEFAULT NULL,
     last_mysql_qty      DECIMAL(20,8) DEFAULT NULL,
     closed_position_id  BIGINT DEFAULT NULL,          -- link to positions.id at time of close
+    -- reconciler_event_id and closed_position_id are loose informational
+    -- pointers; no FOREIGN KEY constraints because (a) those tables can be
+    -- pruned independently and (b) the SQLAlchemy ORM declares INT-width
+    -- ids on legacy tables which would conflict with BIGINT FKs at ALTER
+    -- time on existing DBs.
     FOREIGN KEY (strategy_id) REFERENCES strategies(id),
-    FOREIGN KEY (reconciler_event_id) REFERENCES reconciliation_events(id),
     INDEX idx_cooldown_active (strategy_id, symbol, cleared_at, cooldown_until),
     INDEX idx_cooldown_until (cooldown_until)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

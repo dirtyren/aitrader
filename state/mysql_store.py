@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from sqlalchemy import (
-    Column, Integer, String, Numeric, DateTime, Boolean, Enum, Index,
-    ForeignKey, Date, JSON, create_engine, text,
+    BigInteger, Column, Integer, String, Numeric, DateTime, Boolean, Enum,
+    Index, ForeignKey, Date, JSON, create_engine, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 from urllib.parse import quote_plus as urlquote
@@ -210,7 +210,14 @@ class EventRow(Base):
 class ManualCloseCooldownRow(Base):
     __tablename__ = "manual_close_cooldowns"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # BIGINT on MySQL to match schema.sql and to keep the FK to
+    # reconciliation_events.id (also BIGINT) type-compatible. SQLite has no
+    # native BIGINT autoincrement, so use the with_variant trick to keep
+    # tests on in-memory SQLite working with regular INTEGER autoincrement.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True, autoincrement=True,
+    )
     strategy_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("strategies.id"), nullable=False,
     )
@@ -229,7 +236,7 @@ class ManualCloseCooldownRow(Base):
     )
     cleared_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     reconciler_event_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("reconciliation_events.id"), nullable=True,
+        BigInteger, nullable=True,
     )
     last_broker_qty: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(20, 8), nullable=True,
