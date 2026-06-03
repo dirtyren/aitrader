@@ -1,6 +1,7 @@
 services:
   mysql:
     image: mysql:8.0
+    user: "${UID:-1000}:${GID:-1000}"
     environment:
       - MYSQL_ROOT_PASSWORD=rootpass
       - MYSQL_DATABASE=aitrader
