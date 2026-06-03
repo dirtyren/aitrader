@@ -59,7 +59,8 @@ from core.asset_class import AssetClassConfig
 from core.position_manager import PositionManager
 from risk.circuit_breakers import CircuitBreaker
 from risk.filters import (
-    ConcurrentPositionFilter, ConsecutiveLossFilter, FilterPipeline,
+    BrokerPositionFilter, ConcurrentPositionFilter,
+    ConsecutiveLossFilter, FilterPipeline,
     NewsBlackoutFilter, RiskBudgetFilter, SystemHaltedFilter,
 )
 from risk.manager import RiskManager
@@ -87,15 +88,23 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def _build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:
-    return FilterPipeline([
+def _build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None) -> FilterPipeline:
+    filters = [
         SystemHaltedFilter(circuit_breaker=cb, lock_file_path=_LOCK_FILE_PATH),
         NewsBlackoutFilter(windows=[], pad_min=5),
         ConsecutiveLossFilter(limit=cfg["risk"]["consecutive_loss_limit"],
                               scope=cfg["risk"]["loss_filter_scope"]),
         ConcurrentPositionFilter(max_concurrent=cfg["risk"]["max_concurrent_positions"]),
+    ]
+    if alpaca is not None:
+        filters.append(BrokerPositionFilter(
+            broker=alpaca,
+            cache_ttl_s=float(os.environ.get("BROKER_POSITION_FILTER_TTL_S", "30")),
+        ))
+    filters.append(
         RiskBudgetFilter(daily_open_risk_cap_pct=cfg["risk"]["max_daily_risk_open"]),
-    ])
+    )
+    return FilterPipeline(filters)
 
 
 def _build_loop(cfg: dict, logger: logging.Logger) -> GapAndGoLoop:
@@ -181,7 +190,7 @@ def _build_loop(cfg: dict, logger: logging.Logger) -> GapAndGoLoop:
         daily_loss_limit_2=cb_cfg["daily_loss_limit_2"],
         drawdown_limit=cb_cfg["drawdown_limit"],
     )
-    pipeline = _build_pipeline(cfg, cb)
+    pipeline = _build_pipeline(cfg, cb, alpaca=alpaca)
 
     sizing = SizingConfig(
         max_risk_per_trade=cfg["risk"]["max_risk_per_trade"],

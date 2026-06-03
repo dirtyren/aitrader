@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from state.daily_ledger import DailyLedger, TradeRecord
 from state.position_book import PositionBook, OpenPosition
 from risk.filters import (
+    BrokerPositionFilter,
     FilterPipeline, FilterResult,
     SystemHaltedFilter, SessionWindowFilter, NewsBlackoutFilter,
     ConsecutiveLossFilter, ConcurrentPositionFilter,
@@ -56,6 +57,66 @@ def test_news_blackout_filter():
                        duration_min=10, label="CPI")
     f = NewsBlackoutFilter(windows=[win], pad_min=5, now_fn=lambda: now)
     assert not f.check(_signal(), ctx=None, ledger=None, book=None).passed
+
+
+class _FakeBroker:
+    def __init__(self, positions):
+        self._positions = positions
+        self.calls = 0
+
+    def get_positions(self):
+        self.calls += 1
+        return self._positions
+
+
+def test_broker_position_filter_rejects_when_broker_holds_inventory():
+    broker = _FakeBroker([{"symbol": "COIN", "qty": "22"}])
+    f = BrokerPositionFilter(broker=broker, cache_ttl_s=30.0)
+    res = f.check(_signal("COIN"), ctx=None, ledger=None, book=None)
+    assert not res.passed
+    assert "broker" in res.reason.lower()
+
+
+def test_broker_position_filter_allows_when_broker_flat():
+    broker = _FakeBroker([{"symbol": "AAPL", "qty": "10"}])
+    f = BrokerPositionFilter(broker=broker, cache_ttl_s=30.0)
+    assert f.check(_signal("COIN"), ctx=None, ledger=None, book=None).passed
+
+
+def test_broker_position_filter_zero_qty_treated_as_flat():
+    broker = _FakeBroker([{"symbol": "COIN", "qty": "0"}])
+    f = BrokerPositionFilter(broker=broker, cache_ttl_s=30.0)
+    assert f.check(_signal("COIN"), ctx=None, ledger=None, book=None).passed
+
+
+def test_broker_position_filter_matches_slash_and_flat_form():
+    broker = _FakeBroker([{"symbol": "BTC/USD", "qty": "0.5"}])
+    f = BrokerPositionFilter(broker=broker, cache_ttl_s=30.0)
+    assert not f.check(_signal("BTCUSD"), ctx=None, ledger=None, book=None).passed
+    assert not f.check(_signal("BTC/USD"), ctx=None, ledger=None, book=None).passed
+
+
+def test_broker_position_filter_caches_within_ttl():
+    broker = _FakeBroker([])
+    base = datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc)
+    clock = [base]
+    f = BrokerPositionFilter(broker=broker, cache_ttl_s=30.0,
+                             now_fn=lambda: clock[0])
+    f.check(_signal("AAPL"), ctx=None, ledger=None, book=None)
+    clock[0] = base + timedelta(seconds=10)
+    f.check(_signal("AAPL"), ctx=None, ledger=None, book=None)
+    assert broker.calls == 1
+    clock[0] = base + timedelta(seconds=45)
+    f.check(_signal("AAPL"), ctx=None, ledger=None, book=None)
+    assert broker.calls == 2
+
+
+def test_broker_position_filter_fails_open_on_broker_error():
+    class _ErrBroker:
+        def get_positions(self):
+            raise RuntimeError("boom")
+    f = BrokerPositionFilter(broker=_ErrBroker(), cache_ttl_s=30.0)
+    assert f.check(_signal("COIN"), ctx=None, ledger=None, book=None).passed
 
 
 def test_pipeline_short_circuits_on_first_reject():

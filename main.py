@@ -48,7 +48,8 @@ from core.position_manager import PositionManager
 from core.session import SessionContext
 from risk.circuit_breakers import CircuitBreaker
 from risk.filters import (
-    ConcurrentPositionFilter, ConsecutiveLossFilter, FilterPipeline,
+    BrokerPositionFilter, ConcurrentPositionFilter,
+    ConsecutiveLossFilter, FilterPipeline,
     NewsBlackout, NewsBlackoutFilter, RiskBudgetFilter,
     SessionWindowFilter, SetupCooldownFilter, SystemHaltedFilter,
     VolumeDeficitFilter,
@@ -279,13 +280,13 @@ class _PerSymbolPositionManager:
         return pm.on_bar(symbol, bar)
 
 
-def build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:
+def build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None) -> FilterPipeline:
     news_windows = [
         NewsBlackout(start=datetime.fromisoformat(w["start"]),
                      duration_min=w["duration_min"], label=w["label"])
         for w in cfg.get("news_blackouts") or []
     ]
-    return FilterPipeline([
+    filters = [
         SystemHaltedFilter(circuit_breaker=cb, lock_file_path=_LOCK_FILE_PATH),
         SessionWindowFilter(opening_blackout_min=cfg["filters"]["opening_blackout_min"]),
         NewsBlackoutFilter(windows=news_windows, pad_min=5),
@@ -293,9 +294,21 @@ def build_pipeline(cfg: dict, cb: CircuitBreaker) -> FilterPipeline:
         ConsecutiveLossFilter(limit=cfg["risk"]["consecutive_loss_limit"],
                               scope=cfg["risk"]["loss_filter_scope"]),
         ConcurrentPositionFilter(max_concurrent=cfg["risk"]["max_concurrent_positions"]),
+    ]
+    if alpaca is not None:
+        # Cross-strategy / reconciler-drift safety net: refuse new entries
+        # whenever the broker already holds inventory on the symbol, even if
+        # this strategy's book is empty. Cache TTL keeps it cheap; defaults
+        # to 30s, override via BROKER_POSITION_FILTER_TTL_S env.
+        filters.append(BrokerPositionFilter(
+            broker=alpaca,
+            cache_ttl_s=float(os.environ.get("BROKER_POSITION_FILTER_TTL_S", "30")),
+        ))
+    filters.extend([
         SetupCooldownFilter(cooldown_bars=cfg.get("setups", {}).get("price_discovery", {}).get("cooldown_bars", 12)),
         RiskBudgetFilter(daily_open_risk_cap_pct=cfg["risk"]["max_daily_risk_open"]),
     ])
+    return FilterPipeline(filters)
 
 
 def _collect_snapshot(symbols, contexts, book, ledger, cb,
@@ -434,7 +447,7 @@ def main():
         drawdown_limit=cb_cfg["drawdown_limit"],
     )
 
-    pipeline = build_pipeline(cfg, cb)
+    pipeline = build_pipeline(cfg, cb, alpaca=alpaca)
 
     sizing_eq = SizingConfig(
         max_risk_per_trade=cfg["risk"]["max_risk_per_trade"],

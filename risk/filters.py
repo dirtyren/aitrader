@@ -148,6 +148,71 @@ class ConcurrentPositionFilter(EntryFilter):
         return FilterResult.ok()
 
 
+class BrokerPositionFilter(EntryFilter):
+    """Reject entries when the broker already holds inventory on the symbol,
+    even if this strategy's PositionBook is empty.
+
+    Catches cross-strategy duplicates (multiple strategies share a symbol;
+    one already entered) and reconciler-grade drift (broker has shares the
+    book never recorded). Without this guard, every flat strategy on the
+    same ticker fires its own entry on the next signal — exactly how COIN
+    grew to 22 shares behind a single short MySQL row.
+
+    Calls broker.get_positions() at most once per `cache_ttl_s` and matches
+    on either slash-form (BTC/USD) or flat-form (BTCUSD) symbols.
+    """
+    name = "broker_position"
+
+    def __init__(self, broker, cache_ttl_s: float = 30.0,
+                 now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
+        self._broker = broker
+        self._cache_ttl_s = cache_ttl_s
+        self._now_fn = now_fn
+        self._cached: frozenset[str] = frozenset()
+        self._cached_at: Optional[datetime] = None
+
+    @staticmethod
+    def _symbol_keys(symbol: str) -> tuple[str, str]:
+        flat = symbol.replace("/", "")
+        return symbol, flat
+
+    def _refresh(self) -> None:
+        try:
+            positions = self._broker.get_positions() or []
+        except Exception:
+            # Don't block trading on a transient broker read error — fail
+            # open. The ConcurrentPositionFilter still guards same-strategy
+            # duplicates; the reconciler's strike pipeline still flags drift.
+            return
+        held: set[str] = set()
+        for p in positions:
+            try:
+                qty = float(p.get("qty", 0))
+            except (TypeError, ValueError):
+                continue
+            if qty == 0:
+                continue
+            sym = p.get("symbol")
+            if not sym:
+                continue
+            held.add(sym)
+            held.add(sym.replace("/", ""))
+        self._cached = frozenset(held)
+        self._cached_at = self._now_fn()
+
+    def check(self, signal, ctx, ledger, book) -> FilterResult:
+        now = self._now_fn()
+        if (self._cached_at is None
+                or (now - self._cached_at).total_seconds() >= self._cache_ttl_s):
+            self._refresh()
+        sym, flat = self._symbol_keys(signal.symbol)
+        if sym in self._cached or flat in self._cached:
+            return FilterResult.reject(
+                f"broker already holds inventory on {signal.symbol}"
+            )
+        return FilterResult.ok()
+
+
 class SetupCooldownFilter(EntryFilter):
     name = "setup_cooldown"
 
