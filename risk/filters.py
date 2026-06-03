@@ -213,6 +213,72 @@ class BrokerPositionFilter(EntryFilter):
         return FilterResult.ok()
 
 
+class ManualCloseCooldownFilter(EntryFilter):
+    """Reject entries while a manual-close cooldown is active for
+    (strategy_id, normalized_symbol).
+
+    A cooldown row is inserted by the reconciler's ``detect_manual_close``
+    pass when it observes a position disappearing from the broker without
+    a matching aitrader-issued exit fill (i.e. the operator manually
+    closed it at Alpaca). This filter blocks re-entries on that pair until
+    the cooldown window expires or an operator clears it from the
+    dashboard.
+
+    The cooldown lookup is cached for ``cache_ttl_s`` seconds (default 30s)
+    to keep per-cycle MySQL load bounded — same TTL as
+    ``BrokerPositionFilter``. Failure to read MySQL fails open: the filter
+    returns ok() rather than blocking trading on infrastructure errors.
+    """
+    name = "manual_close_cooldown"
+
+    def __init__(
+        self,
+        store,
+        strategy_id: int,
+        cache_ttl_s: float = 30.0,
+        now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ):
+        self._store = store
+        self._strategy_id = strategy_id
+        self._cache_ttl_s = cache_ttl_s
+        self._now_fn = now_fn
+        # Cache holds {flat_symbol: cooldown_until} for active rows belonging
+        # to this strategy_id. A miss means "no active cooldown".
+        self._cached: dict[str, datetime] = {}
+        self._cached_at: Optional[datetime] = None
+
+    def _refresh(self) -> None:
+        try:
+            rows = self._store.get_active_cooldowns(
+                strategy_id=self._strategy_id, now=self._now_fn(),
+            )
+        except Exception:
+            # Don't block trading on MySQL errors — same fail-open posture
+            # as BrokerPositionFilter. The next refresh attempt will retry.
+            return
+        self._cached = {r["symbol"]: r["cooldown_until"] for r in rows}
+        self._cached_at = self._now_fn()
+
+    def check(self, signal, ctx, ledger, book) -> FilterResult:
+        now = self._now_fn()
+        if (self._cached_at is None
+                or (now - self._cached_at).total_seconds() >= self._cache_ttl_s):
+            self._refresh()
+        flat = signal.symbol.replace("/", "")
+        until = self._cached.get(flat) or self._cached.get(signal.symbol)
+        if until is None:
+            return FilterResult.ok()
+        # Defensive: if the cache is stale and the row has actually expired,
+        # treat as ok() rather than rejecting on a phantom cooldown.
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        if until <= now:
+            return FilterResult.ok()
+        return FilterResult.reject(
+            f"manual close cooldown active until {until.isoformat()}"
+        )
+
+
 class SetupCooldownFilter(EntryFilter):
     name = "setup_cooldown"
 

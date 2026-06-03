@@ -50,6 +50,7 @@ from risk.circuit_breakers import CircuitBreaker
 from risk.filters import (
     BrokerPositionFilter, ConcurrentPositionFilter,
     ConsecutiveLossFilter, FilterPipeline,
+    ManualCloseCooldownFilter,
     NewsBlackout, NewsBlackoutFilter, RiskBudgetFilter,
     SessionWindowFilter, SetupCooldownFilter, SystemHaltedFilter,
     VolumeDeficitFilter,
@@ -280,7 +281,8 @@ class _PerSymbolPositionManager:
         return pm.on_bar(symbol, bar)
 
 
-def build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None) -> FilterPipeline:
+def build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None,
+                   mysql=None, strategy_id: int | None = None) -> FilterPipeline:
     news_windows = [
         NewsBlackout(start=datetime.fromisoformat(w["start"]),
                      duration_min=w["duration_min"], label=w["label"])
@@ -303,6 +305,15 @@ def build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None) -> FilterPipeline
         filters.append(BrokerPositionFilter(
             broker=alpaca,
             cache_ttl_s=float(os.environ.get("BROKER_POSITION_FILTER_TTL_S", "30")),
+        ))
+    if mysql is not None and strategy_id is not None:
+        # Honour reconciler-detected manual closes: when the operator (or an
+        # external risk system) flattens a position at the broker without
+        # going through aitrader, the reconciler inserts a cooldown row and
+        # this filter blocks re-entry for the configured window.
+        filters.append(ManualCloseCooldownFilter(
+            store=mysql, strategy_id=strategy_id,
+            cache_ttl_s=float(os.environ.get("MANUAL_CLOSE_CACHE_TTL_S", "30")),
         ))
     filters.extend([
         SetupCooldownFilter(cooldown_bars=cfg.get("setups", {}).get("price_discovery", {}).get("cooldown_bars", 12)),
@@ -447,7 +458,10 @@ def main():
         drawdown_limit=cb_cfg["drawdown_limit"],
     )
 
-    pipeline = build_pipeline(cfg, cb, alpaca=alpaca)
+    pipeline = build_pipeline(
+        cfg, cb, alpaca=alpaca, mysql=mysql,
+        strategy_id=mysql.strategy_id if mysql is not None else None,
+    )
 
     sizing_eq = SizingConfig(
         max_risk_per_trade=cfg["risk"]["max_risk_per_trade"],
