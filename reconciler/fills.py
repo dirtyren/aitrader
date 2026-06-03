@@ -11,7 +11,8 @@ Decision tree:
     - role in ('exit', 'stop', 'target'),
         matching open row in MySQL            → close row + write trade row.
     - role in ('exit', 'stop', 'target'),
-        no matching open row                  → idempotent noop (no event).
+        no matching open row                  → reconciler_close_fill_unmatched
+                                                event, no mutation.
 """
 from __future__ import annotations
 
