@@ -1054,6 +1054,7 @@ class MySQLStore:
                 # treat them as confirmed so the engine doesn't freeze on
                 # them after the migration (mirrors the schema default).
                 fill_confirmed=True,
+                exit_submitted=False,
             )
             try:
                 self.position_opened(pos, ac)
@@ -1208,6 +1209,7 @@ class MySQLStore:
                 # inserting this row. Stamp confirmed so the engine acts
                 # immediately on virtual exit checks.
                 fill_confirmed=True,
+                exit_submitted=False,
                 status="open",
                 opened_at=opened_at,
             )
@@ -1379,6 +1381,7 @@ class MySQLStore:
                 # actually holds it. Engine should manage virtual exits
                 # immediately.
                 fill_confirmed=True,
+                exit_submitted=False,
                 status="open",
                 opened_at=opened_at,
             )
