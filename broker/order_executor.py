@@ -377,10 +377,12 @@ class OrderExecutor:
                                 "CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
                                 a.symbol, pos.target_order_id, exc,
                             )
-                    self.close_position(a.symbol, a.side, a.qty,
-                                        setup=a.setup,
-                                        asset_class="crypto")
-                    self._mark_exit_submitted(a.symbol, a.setup)
+                    close_result = self.close_position(
+                        a.symbol, a.side, a.qty,
+                        setup=a.setup, asset_class="crypto",
+                    )
+                    if close_result is not None:
+                        self._mark_exit_submitted(a.symbol, a.setup)
                     self.logger.info(
                         "VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s setup=%s",
                         a.symbol, a.kind, a.price, a.qty, a.setup,

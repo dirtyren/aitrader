@@ -159,3 +159,44 @@ def test_crypto_time_stop_flips_flag():
     mysql.mark_exit_submitted.assert_called_once_with(
         strategy_id=99, symbol="BTC/USD", setup_name="vwap_bands",
     )
+
+
+def test_crypto_close_submission_failure_does_not_flip_flag():
+    """Symmetric to the equity test: a None return from close_position
+    (the actual failure mode of submit_close_with_drift_recovery) must
+    leave exit_submitted=False so the next cycle retries.
+    Without this guard, a transient Alpaca failure on a crypto stop would
+    silently lock out the position forever.
+
+    submit_close_with_drift_recovery returns None (rather than raising)
+    when submit_order raises a non-qty-rejection error — "alpaca 500"
+    does not match "insufficient balance" / "insufficient qty" / "not enough",
+    so the first attempt logs SAFE_CLOSE_FAILED and returns None.
+    """
+    client = MagicMock()
+    client.submit_order.side_effect = Exception("alpaca 500")
+    book = PositionBook()
+    pos = OpenPosition(
+        symbol="BTC/USD", setup="vwap_bands", side="long",
+        qty=0.05, entry_px=70000.0, stop_px=69000.0, target_px=71500.0,
+        opened_at=datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc),
+        order_id="parent-2", fill_confirmed=True,
+    )
+    book.add(pos)
+    mysql = MagicMock()
+    mysql.strategy_id = 99
+    ex = OrderExecutor(client, book, strategy_name="vwap_bands_crypto",
+                       logger=MagicMock(), mysql_store=mysql)
+
+    action = PositionAction(
+        symbol="BTC/USD", setup="vwap_bands", side="long",
+        qty=0.05, kind="time_stop", price=69500.0,
+    )
+    try:
+        ex.handle_actions([action], asset_class="crypto",
+                          parent_order_id=None)
+    except Exception:
+        pass
+
+    assert book.get("BTC/USD", "vwap_bands").exit_submitted is False
+    mysql.mark_exit_submitted.assert_not_called()
