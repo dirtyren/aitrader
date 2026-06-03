@@ -27,6 +27,15 @@ if _TRADING_ENV != "test" and os.path.exists(_LOCK_FILE_PATH):
     print("=" * 60)
     print("SYSTEM HALTED: Emergency lock file detected.")
     print(f"Lock file: {os.path.abspath(_LOCK_FILE_PATH)}")
+    try:
+        with open(_LOCK_FILE_PATH) as _fh:
+            _contents = _fh.read().strip()
+        if _contents:
+            print("-" * 60)
+            print(_contents)
+            print("-" * 60)
+    except OSError as _exc:
+        print(f"(could not read lock file contents: {_exc})")
     print("Resolve incident and remove lock.file before restarting.")
     print("=" * 60)
     sys.exit(1)
