@@ -227,34 +227,32 @@ def main() -> int:
     combos = _expand_grid(grid_spec)
     log.info("GRID %d combos: %s", len(combos), grid_spec)
 
-    # Pre-load bars once per symbol (immutable across combos).
-    bars_by_sym: dict[str, tuple[list[Bar], list[Bar]]] = {}
+    # Stream one symbol at a time to keep peak memory bounded by a single
+    # symbol's bar list. With 5Min bars × 32 months × 448 symbols, holding
+    # everything in RAM at once is ~5 GB — this loop layout keeps it under
+    # ~50 MB at any moment instead. Per-symbol cost: re-instantiate the
+    # combo cfg dicts once before the inner loop so we don't deepcopy per
+    # combo for every symbol.
+    rows: list[dict] = []
     missing: list[str] = []
-    for sym in syms:
+    n_total = len(combos) * len(syms)
+    n_done = 0
+    n_loaded = 0
+
+    for si, sym in enumerate(syms):
         bars = _read_cached_bars(sym, timeframe, start, end, cache_dir)
         if not bars:
             missing.append(sym)
             continue
-        bars_by_sym[sym] = _split_is_oos(bars, is_frac=0.7)
-    log.info("BARS_LOADED %d (missing=%d)", len(bars_by_sym), len(missing))
-    if not bars_by_sym:
-        log.error("No symbols had cached bars — run scripts/cache_bars_universe.py first")
-        return 1
+        n_loaded += 1
+        is_bars, oos_bars = _split_is_oos(bars, is_frac=0.7)
+        # Free the full bar list immediately — IS+OOS slices are independent
+        # views and the original is no longer needed.
+        del bars
 
-    rows: list[dict] = []
-    n_total = len(combos) * len(bars_by_sym)
-    n_done = 0
-    for ci, combo in enumerate(combos):
-        cfg = _patch_cfg(base_cfg, combo)
-        # Force-disable per-symbol overrides for the sweep so combo params apply uniformly.
-        cfg.pop("_per_symbol_overrides", None)
-        # Replace asset_class symbol list to keep build_asset_class_configs happy
-        # (only one symbol replayed at a time).
-        for ac in cfg.get("asset_classes", {}).values():
-            ac["symbols"] = []  # IntradayReplay receives the symbol list directly
-
-        for sym, (is_bars, oos_bars) in bars_by_sym.items():
-            cfg_for_sym = deepcopy(cfg)
+        for ci, combo in enumerate(combos):
+            cfg_for_sym = _patch_cfg(base_cfg, combo)
+            cfg_for_sym.pop("_per_symbol_overrides", None)
             cfg_for_sym["asset_classes"]["equity"]["symbols"] = [sym]
             try:
                 is_m = _replay_on_bars(cfg_for_sym, sym, args.asset_class, is_bars)
@@ -274,9 +272,13 @@ def main() -> int:
                 row[f"param.{k}"] = v
             rows.append(row)
             n_done += 1
-            if n_done % 200 == 0:
-                log.info("PROGRESS %d/%d combos=%d/%d",
-                         n_done, n_total, ci + 1, len(combos))
+            if n_done % 500 == 0:
+                log.info("PROGRESS %d/%d sym=%d/%d (%s) loaded=%d missing=%d",
+                         n_done, n_total, si + 1, len(syms), sym,
+                         n_loaded, len(missing))
+        # Drop slices for this symbol before moving to the next.
+        del is_bars, oos_bars
+    log.info("BARS_LOADED %d (missing=%d)", n_loaded, len(missing))
 
     if not rows:
         log.error("No replay rows produced — check the grid and cache.")
@@ -327,7 +329,7 @@ def main() -> int:
     # ── Markdown report ─────────────────────────────────────────────────
     report = []
     report.append(f"# {args.strategy}_equity sweep — {datetime.now(timezone.utc).isoformat()}\n")
-    report.append(f"- Universe: `{args.universe}` ({len(bars_by_sym)} symbols loaded, "
+    report.append(f"- Universe: `{args.universe}` ({n_loaded} symbols loaded, "
                   f"{len(missing)} missing from cache)")
     report.append(f"- Timeframe: `{timeframe}`  Window: `{start.date()} → {end.date()}`")
     report.append(f"- IS/OOS split: 70/30 by bar count")
