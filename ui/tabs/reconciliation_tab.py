@@ -202,6 +202,53 @@ def _render_unmanaged_section(broker_only_df, asset_class: str) -> None:
                     st.rerun()
 
 
+def _render_cooldowns_section(asset_class: str) -> None:
+    """List active manual-close cooldowns and let an operator clear them.
+
+    The reconciler inserts a cooldown row when it observes a position closed
+    externally; the entry filter blocks re-entry on (strategy_id, symbol)
+    until the row's cooldown_until elapses or this button is pressed.
+    Clearing sets cleared_at + cleared_by but never deletes the row.
+    """
+    from datetime import datetime, timezone
+    cooldowns = repo.get_active_cooldowns(asset_class=asset_class)
+    st.subheader("Manual-close cooldowns")
+    if cooldowns.empty:
+        st.success("No active cooldowns.")
+        return
+    st.caption(
+        "These (strategy, symbol) pairs are blocked from re-entry until the "
+        "cooldown expires. Click Clear to override (e.g. you actually want "
+        "the strategy back online before the window ends)."
+    )
+    now = datetime.now(timezone.utc)
+    for _, row in cooldowns.iterrows():
+        until = row["cooldown_until"]
+        if isinstance(until, str):
+            until = datetime.fromisoformat(until)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        remaining_min = max(0, int((until - now).total_seconds() // 60))
+        cols = st.columns([2, 2, 2, 2, 1])
+        cols[0].markdown(f"**{row['strategy'] or row['strategy_id']}**")
+        cols[1].markdown(f"`{row['symbol']}`")
+        cols[2].markdown(f"until **{until.isoformat()}**")
+        cols[3].markdown(f"~{remaining_min} min remaining")
+        if cols[4].button("Clear", key=f"clear_cooldown_{row['id']}"):
+            store = _get_store()
+            ok = store.clear_cooldown(int(row["id"]), cleared_by="operator")
+            if ok:
+                st.success(
+                    f"Cooldown for {row['strategy']}/{row['symbol']} cleared."
+                )
+                st.rerun()
+            else:
+                st.warning(
+                    "Cooldown was already cleared or expired. Refresh to see "
+                    "current state."
+                )
+
+
 def render() -> None:
     st.header("Reconciliation")
     st.caption(
@@ -267,6 +314,9 @@ def _render_asset_class(asset_class: str) -> None:
             for direction in ("mysql_only", "broker_only", "qty_drift"):
                 st.markdown(f"**`{direction}`:**")
                 st.code(_resolve_hint(direction), language="bash")
+
+    # ── Manual-close cooldowns ────────────────────────────────────────
+    _render_cooldowns_section(asset_class)
 
     # ── Recent events ─────────────────────────────────────────────────
     st.subheader("Recent events")

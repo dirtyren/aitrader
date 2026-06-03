@@ -82,6 +82,43 @@ def get_recent_events(
     return df
 
 
+def get_active_cooldowns(asset_class: str | None = None) -> pd.DataFrame:
+    """Active manual_close_cooldowns rows (cleared_at NULL, cooldown_until > now).
+
+    ``asset_class`` filters to that side. None returns all rows.
+
+    Columns: id, strategy_id, strategy, symbol, asset_class, started_at,
+             cooldown_until, last_broker_qty, last_mysql_qty,
+             reconciler_event_id, closed_position_id.
+    Ordered: most-recently-started first.
+    """
+    eng = get_engine()
+    where = (
+        "WHERE c.cleared_at IS NULL "
+        "AND c.cooldown_until > CURRENT_TIMESTAMP"
+    )
+    params: dict = {}
+    if asset_class is not None:
+        where += " AND c.asset_class = :asset_class"
+        params["asset_class"] = asset_class
+    with eng.connect() as conn:
+        df = pd.read_sql(
+            text(f"""
+                SELECT c.id, c.strategy_id, s.name AS strategy, c.symbol,
+                       c.asset_class, c.started_at, c.cooldown_until,
+                       c.last_broker_qty, c.last_mysql_qty,
+                       c.reconciler_event_id, c.closed_position_id
+                FROM manual_close_cooldowns c
+                LEFT JOIN strategies s ON s.id = c.strategy_id
+                {where}
+                ORDER BY c.started_at DESC
+            """),
+            conn,
+            params=params,
+        )
+    return df
+
+
 def get_heartbeat_freshness(asset_class: str | None = None) -> dict:
     """Last `heartbeat` event timestamp and its age in seconds.
 
