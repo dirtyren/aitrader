@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -31,7 +32,10 @@ from reconciler.fills import apply_tagged_fill
 from reconciler.invariant import check_invariant
 from reconciler.state import load_state, save_state
 from reconciler.strikes import auto_clear_resolved, process_anomaly
-from state.mysql_store import EventRow, MySQLStore, PositionRow, StrategyRow, StrikeRow
+from state.mysql_store import (
+    EventRow, ManualCloseCooldownRow, MySQLStore, PositionRow, StrategyRow,
+    StrikeRow,
+)
 
 log = logging.getLogger("reconciler")
 
@@ -1148,6 +1152,328 @@ def auto_resolve_mysql_only_entry_never_filled(
     return resolved_count
 
 
+def detect_manual_close(
+    *,
+    alpaca: Any,
+    store: MySQLStore,
+    session: Session,
+    anomalies: list,
+    recent_fills: list[dict],
+    cfg: ReconcilerConfig,
+    now: datetime,
+    asset_class: str | None = None,
+) -> int:
+    """Detect manual closes among mysql_only anomalies.
+
+    A candidate is an mysql_only anomaly whose entry COID has filled at the
+    broker (closed_orders shows it) AND whose recent_fills window contains
+    no exit/stop/target COID for any open MySQL row on that symbol. This
+    means the position once existed at the broker, the broker now reports
+    zero, and we have no record of an aitrader-issued exit fill — i.e.
+    something or someone else closed it.
+
+    Confirmation gate: requires cfg.manual_close_confirm_cycles consecutive
+    cycles of candidacy under strike key ``manual_close:{strategy_id}:{symbol}``.
+    On confirmation, closes the MySQL row(s) with close_reason='manual_close'
+    at the row's entry price (zero PnL — we have no broker-side close fill
+    to price it from), inserts a manual_close_cooldowns row, emits a
+    ``manual_close`` audit event, and resolves the strike with
+    resolved_reason='manual_close_confirmed'.
+
+    Per spec Decision 5, default cooldown is 60 minutes; if
+    ``manual_close_cooldown_min`` is 0 the row is inserted with
+    cooldown_until == started_at (audit-only mode — events emit but the
+    filter never blocks).
+
+    Returns the number of manual closes confirmed this cycle.
+    """
+    if cfg.shadow_mode:
+        # Shadow mode runs detection but suppresses side effects. Emit a
+        # single audit event per cycle that lists the candidates so the
+        # operator can see what would have happened.
+        for a in anomalies:
+            if a.direction != "mysql_only":
+                continue
+            if not _is_manual_close_candidate(
+                alpaca=alpaca, store=store, session=session, a=a,
+                recent_fills=recent_fills,
+            ):
+                continue
+            emit_event(
+                session,
+                type="manual_close_shadow",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                payload={
+                    "mysql_qty": a.snapshot.get("mysql_qty"),
+                    "broker_qty": a.snapshot.get("broker_qty"),
+                },
+            )
+        return 0
+
+    confirmed = 0
+    confirm_threshold = max(1, cfg.manual_close_confirm_cycles)
+    cooldown_minutes = max(0, cfg.manual_close_cooldown_min)
+
+    for a in anomalies:
+        if a.direction != "mysql_only":
+            continue
+        if not _is_manual_close_candidate(
+            alpaca=alpaca, store=store, session=session, a=a,
+            recent_fills=recent_fills,
+        ):
+            continue
+
+        strike_key = f"manual_close:{a.strategy_id}:{a.symbol}"
+        strike = session.query(StrikeRow).filter(
+            StrikeRow.key == strike_key,
+            StrikeRow.resolved == False,  # noqa: E712
+        ).one_or_none()
+
+        if strike is None:
+            strike = StrikeRow(
+                key=strike_key,
+                direction="manual_close",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                strike_count=1,
+                first_seen_at=now,
+                last_seen_at=now,
+                last_observed_state=a.snapshot,
+                resolved=False,
+            )
+            session.add(strike)
+        else:
+            # Min-gap rate-limit identical to reconciler/strikes.process_anomaly.
+            last_seen = strike.last_seen_at
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            if (now - last_seen).total_seconds() < cfg.strike_min_gap_s:
+                continue
+            strike.strike_count += 1
+            strike.last_seen_at = now
+            strike.last_observed_state = a.snapshot
+            if strike.asset_class is None and asset_class is not None:
+                strike.asset_class = asset_class
+
+        if strike.strike_count < confirm_threshold:
+            emit_event(
+                session,
+                type="manual_close_candidate",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                payload={
+                    "mysql_qty": a.snapshot.get("mysql_qty"),
+                    "broker_qty": a.snapshot.get("broker_qty"),
+                    "strike_count": strike.strike_count,
+                    "recent_fills_count": len(recent_fills),
+                },
+            )
+            continue
+
+        # Confirmation reached. Idempotency: if an active cooldown already
+        # exists for (strategy, symbol), emit redetected and resolve the
+        # strike without re-closing or re-inserting.
+        flat_symbol = a.symbol.replace("/", "")
+        existing_cooldown = session.query(ManualCloseCooldownRow).filter(
+            ManualCloseCooldownRow.strategy_id == a.strategy_id,
+            ManualCloseCooldownRow.symbol == flat_symbol,
+            ManualCloseCooldownRow.cleared_at.is_(None),
+            ManualCloseCooldownRow.cooldown_until > now,
+        ).one_or_none()
+        if existing_cooldown is not None:
+            emit_event(
+                session,
+                type="manual_close_redetected",
+                strategy_id=a.strategy_id,
+                symbol=a.symbol,
+                asset_class=asset_class,
+                payload={
+                    "existing_cooldown_id": existing_cooldown.id,
+                    "current_until": existing_cooldown.cooldown_until.isoformat(),
+                },
+            )
+            strike.resolved = True
+            strike.resolved_at = now
+            strike.resolved_reason = "manual_close_redetected"
+            continue
+
+        # Close the MySQL row. Multiple rows may exist (cross-strategy or
+        # duplicate-form historical artifact); position_closed handles the
+        # multi-row case by archiving each. Use entry_px for zero PnL —
+        # we have no broker-side fill to price the close from.
+        rows = _open_rows_for_symbol(session, store, a.symbol)
+        rows_for_strategy = [r for r in rows if r.strategy_id == a.strategy_id]
+        if not rows_for_strategy:
+            # Race: row already closed between candidacy check and now.
+            # auto_clear_resolved will pick the strike up next cycle.
+            continue
+
+        primary = rows_for_strategy[0]
+        setup = primary.setup_name
+        closed_position_id = primary.id
+        try:
+            store.position_closed(
+                symbol=a.symbol,
+                exit_px=float(primary.entry_px),
+                close_reason="manual_close",
+                setup_name=setup,
+                strategy_id=a.strategy_id,
+                closed_at=now,
+            )
+        except Exception as exc:
+            log.error(
+                "MANUAL_CLOSE_DB_FAILED symbol=%s strategy_id=%s err=%s",
+                a.symbol, a.strategy_id, exc, exc_info=True,
+            )
+            continue
+
+        from datetime import timedelta
+        cooldown_until = now + timedelta(minutes=cooldown_minutes)
+
+        ev_id = emit_event(
+            session,
+            type="manual_close",
+            strategy_id=a.strategy_id,
+            symbol=a.symbol,
+            asset_class=asset_class,
+            payload={
+                "mysql_qty": a.snapshot.get("mysql_qty"),
+                "broker_qty": a.snapshot.get("broker_qty"),
+                "cooldown_until": cooldown_until.isoformat(),
+                "closed_position_id": closed_position_id,
+                "setup": setup,
+                "strike_count": strike.strike_count,
+            },
+        )
+
+        # emit_event may or may not return the row id; flush so we can read
+        # back the id of the just-added row when it doesn't.
+        if not isinstance(ev_id, int):
+            session.flush()
+            last_event = session.query(EventRow).filter(
+                EventRow.type == "manual_close",
+                EventRow.strategy_id == a.strategy_id,
+                EventRow.symbol == a.symbol,
+            ).order_by(EventRow.id.desc()).first()
+            ev_id = last_event.id if last_event is not None else None
+
+        cooldown_row = ManualCloseCooldownRow(
+            strategy_id=a.strategy_id,
+            symbol=flat_symbol,
+            asset_class=asset_class or primary.asset_class,
+            started_at=now,
+            cooldown_until=cooldown_until,
+            last_broker_qty=Decimal("0"),
+            last_mysql_qty=Decimal(str(a.snapshot.get("mysql_qty", 0.0))),
+            closed_position_id=closed_position_id,
+            reconciler_event_id=ev_id if isinstance(ev_id, int) else None,
+        )
+        session.add(cooldown_row)
+
+        strike.resolved = True
+        strike.resolved_at = now
+        strike.resolved_reason = "manual_close_confirmed"
+        confirmed += 1
+        log.warning(
+            "MANUAL_CLOSE_CONFIRMED strategy_id=%s symbol=%s "
+            "cooldown_until=%s strike_count=%d",
+            a.strategy_id, a.symbol, cooldown_until.isoformat(),
+            strike.strike_count,
+        )
+
+    return confirmed
+
+
+def _is_manual_close_candidate(
+    *,
+    alpaca: Any,
+    store: MySQLStore,
+    session: Session,
+    a,
+    recent_fills: list[dict],
+) -> bool:
+    """A candidate is an mysql_only anomaly where:
+
+    1. There is exactly one open MySQL row owned by a.strategy_id on a.symbol
+       (multi-row cases route to entry_never_filled or qty_drift instead).
+    2. The row's entry_coid is non-empty and that COID is filled at the broker
+       (looked up via list_orders status='closed').
+    3. No fill in recent_fills carries an exit/stop/target COID matching this
+       row's (strategy_name, setup_name, symbol).
+
+    Returns True if the candidate qualifies for confirmation counting.
+    """
+    if a.strategy_id is None:
+        return False
+    candidates = store._get_symbol_candidates(a.symbol)
+    rows = session.query(PositionRow).filter(
+        PositionRow.strategy_id == a.strategy_id,
+        PositionRow.symbol.in_(candidates),
+        PositionRow.status == "open",
+    ).all()
+    if len(rows) != 1:
+        return False
+    row = rows[0]
+    entry_coid = row.client_order_id
+    if not entry_coid:
+        # Pre-COID legacy row — operator must reconcile manually.
+        return False
+
+    # Entry COID must show as a filled order at the broker. If it's still
+    # in any 'open' status, this is the entry_never_filled case (handled
+    # by auto_resolve_mysql_only_entry_never_filled, not us).
+    try:
+        closed_orders = alpaca.list_orders(
+            status="closed", symbols=[a.symbol], nested=False,
+        ) or []
+    except Exception as exc:
+        log.warning(
+            "MANUAL_CLOSE_LIST_ORDERS_FAILED symbol=%s err=%s",
+            a.symbol, exc,
+        )
+        return False
+    entry_filled = any(
+        o.get("client_order_id") == entry_coid
+        and (o.get("status") == "filled"
+             or float(o.get("filled_qty") or 0) > 0)
+        for o in closed_orders
+    )
+    if not entry_filled:
+        return False
+
+    # No exit COID in recent_fills means we have no record of an
+    # aitrader-issued close. Match by (strategy, setup, symbol) regardless
+    # of role — any exit/stop/target whose COID points at this row's
+    # (strategy_name, setup) suppresses detection.
+    parsed_strategy = None
+    if a.strategy_id is not None:
+        strow = session.query(StrategyRow).filter(
+            StrategyRow.id == a.strategy_id,
+        ).one_or_none()
+        if strow is not None:
+            parsed_strategy = strow.name
+    if parsed_strategy is None:
+        return False
+
+    flat = a.symbol.replace("/", "")
+    setup = row.setup_name
+    for fill in recent_fills or []:
+        fill_sym = (fill.get("symbol") or "").replace("/", "")
+        if fill_sym != flat:
+            continue
+        parsed = parse_client_order_id(fill.get("client_order_id"))
+        if parsed is None or parsed["role"] not in _EXIT_ROLES:
+            continue
+        if parsed["strategy"] == parsed_strategy and parsed["setup"] == setup:
+            return False
+
+    return True
+
+
 def _split_qty(total_qty: float, max_qty_per_chunk: float) -> list[float]:
     """Split ``total_qty`` into chunks no larger than ``max_qty_per_chunk``.
 
@@ -1301,6 +1627,18 @@ def run_one_cycle(
         # sitting unfilled at the broker. Self-heals the optimistic-insert
         # case (limit-bracket parent never hit during the session).
         auto_resolve_mysql_only_entry_never_filled(
+            alpaca=alpaca, store=store, session=session,
+            anomalies=anomalies, recent_fills=recent_fills,
+            cfg=cfg, now=now, asset_class=asset_class,
+        )
+
+        # 4.8. Detect manual closes (operator or external risk system closed
+        # a position at the broker). When an mysql_only anomaly's entry COID
+        # is filled at the broker but no exit COID for it appears in this
+        # cycle's recent_fills, the position was closed externally — close
+        # the MySQL row and start a cooldown so the strategy doesn't re-enter
+        # on the next signal. See specs/manual-close-cooldown.md.
+        detect_manual_close(
             alpaca=alpaca, store=store, session=session,
             anomalies=anomalies, recent_fills=recent_fills,
             cfg=cfg, now=now, asset_class=asset_class,

@@ -47,6 +47,14 @@ class ReconcilerConfig:
     # tests so the strike/event scoping path can be exercised without the
     # full container env. Strikes/events are stamped with this value.
     asset_class: str | None = None
+    # Manual-close detection (specs/manual-close-cooldown.md).
+    # confirm_cycles: how many consecutive cycles a candidate must persist
+    # before the cooldown row is created (defaults to 2 — gives engine-issued
+    # exits time to propagate without misclassifying them).
+    # cooldown_min: cooldown window in minutes (0 = audit-only — events emit
+    # but the filter never blocks; the cooldown_until equals started_at).
+    manual_close_confirm_cycles: int = 2
+    manual_close_cooldown_min: int = 60
 
     @classmethod
     def from_env(cls) -> "ReconcilerConfig":
@@ -74,5 +82,11 @@ class ReconcilerConfig:
             )),
             auto_close_dust_usd=float(os.environ.get(
                 "RECONCILE_AUTO_CLOSE_DUST_USD", "1.0"
+            )),
+            manual_close_confirm_cycles=int(os.environ.get(
+                "MANUAL_CLOSE_CONFIRM_CYCLES", "2"
+            )),
+            manual_close_cooldown_min=int(os.environ.get(
+                "MANUAL_CLOSE_COOLDOWN_MIN", "60"
             )),
         )
