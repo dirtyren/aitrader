@@ -331,13 +331,14 @@ def test_close_position_passes_role_exit_coid():
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
 
-    result = ex.close_position(symbol="BTCUSD", side="long", qty=0.5)
+    result = ex.close_position(symbol="BTCUSD", side="long", qty=0.5,
+                                setup="test_setup")
 
     assert result == {"id": "close-1"}
     client.submit_order.assert_called_once()
     coid = client.submit_order.call_args.kwargs["client_order_id"]
-    # Setup constant "_unknown" is sanitized to "unknown" by the COID format helper.
-    assert coid.startswith("aitrader__vwap_wave__unknown__BTCUSD__exit__")
+    # The real setup name is now stamped into the COID.
+    assert coid.startswith("aitrader__vwap_wave__test_setup__BTCUSD__exit__")
     # close_position is the crypto path; qty is shrunk by the fee-drift margin
     # (DEFAULT_DRIFT_MARGIN = 1e-6) to stay below broker available.
     submitted_qty = client.submit_order.call_args.kwargs["qty"]
@@ -369,7 +370,8 @@ def test_close_position_insufficient_balance_triggers_qty_reconcile():
     ex = OrderExecutor(client, book, strategy_name="vwap_bands",
                        logger=MagicMock())
 
-    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.09915901)
+    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.09915901,
+                               setup="test_setup")
 
     assert result == {"id": "close-recovered"}
     assert client.submit_order.call_count == 2
@@ -397,7 +399,8 @@ def test_close_position_insufficient_balance_no_broker_position_returns_none():
     ex = OrderExecutor(client, book, strategy_name="vwap_bands",
                        logger=MagicMock())
 
-    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.0)
+    result = ex.close_position(symbol="SOLUSD", side="long", qty=1233.0,
+                               setup="test_setup")
     assert result is None
 
 
@@ -413,7 +416,8 @@ def test_close_position_pepe_dust_drift_succeeds_first_try():
                        logger=MagicMock())
 
     requested = 25965312924.201588
-    result = ex.close_position(symbol="PEPEUSD", side="long", qty=requested)
+    result = ex.close_position(symbol="PEPEUSD", side="long", qty=requested,
+                               setup="test_setup")
 
     assert result == {"id": "close-pepe"}
     assert client.submit_order.call_count == 1

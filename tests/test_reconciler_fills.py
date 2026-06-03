@@ -156,15 +156,17 @@ def test_tagged_exit_closes_matching_position(store):
 
 
 def test_tagged_exit_with_no_matching_open_row_is_idempotent(store):
-    """Exit fill arrives but position is already closed (re-applied across cycles)."""
+    """Exit fill arrives but position is already closed (re-applied across cycles).
+    No trade row is inserted; a reconciler_close_fill_unmatched event is emitted
+    for observability."""
     fill = _filled_order(coid=_coid(role="exit"), side="sell")
     with Session(store._engine) as session:
         apply_tagged_fill(session, fill, store)
         session.commit()
     with Session(store._engine) as session:
         assert session.query(TradeRow).count() == 0
-        # No event — true noop
-        assert _events(session) == []
+        # Emits an unmatched event for observability (Task 7), but no mutation.
+        assert _events(session) == ["reconciler_close_fill_unmatched"]
 
 
 def test_tagged_target_role_closes_position_same_as_exit(store):
@@ -278,3 +280,34 @@ def test_tagged_entry_with_missing_avg_price_writes_untagged_event_no_row(store)
         events = session.query(EventRow).all()
         assert len(events) == 1
         assert events[0].payload.get("reason") == "missing_fill_data"
+
+
+def test_apply_tagged_fill_exit_no_open_row_emits_unmatched_event(store):
+    """Exit-role fill with no matching open MySQL row emits a
+    reconciler_close_fill_unmatched event AND remains idempotent (no
+    insertion, no mutation). Without this event the failure mode driving
+    the 2026-06-02 COIN incident (close COID using setup='unknown') would
+    silently noop forever."""
+    coid = _coid(strategy="vwap_wave", setup="price_discovery",
+                 symbol="COIN", role="exit", uuid="deadbeef")
+    fill = _filled_order(
+        coid, side="buy", qty="1", filled_avg_price="175.10",
+        symbol="COIN", asset_class="us_equity",
+    )
+    fill["id"] = "alpaca-close-1"
+
+    with Session(store._engine) as session:
+        apply_tagged_fill(session, fill, store, cycle_asset_class="equity")
+        session.commit()
+
+        events = session.query(EventRow).filter(
+            EventRow.type == "reconciler_close_fill_unmatched"
+        ).all()
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.symbol == "COIN"
+        payload = ev.payload
+        assert payload["client_order_id"] == coid
+        assert payload["setup"] == "price_discovery"
+        assert payload["role"] in ("X", "exit")
+        assert payload["alpaca_id"] == "alpaca-close-1"

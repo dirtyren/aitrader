@@ -41,6 +41,13 @@ class OpenPosition:
     # it, an unfilled limit-bracket whose stop_px got grazed by a low bar
     # would write a phantom -PnL trade to MySQL.
     fill_confirmed: bool = False
+    # True once OrderExecutor has submitted (or registered an in-flight
+    # bracket OCO firing for) a broker close for this position. Gates
+    # PositionManager.on_bar so the engine cannot re-emit time_stop /
+    # virtual exits on a position whose close is already in flight.
+    # Cleared only by the position leaving the book — i.e. the reconciler
+    # closing the MySQL row from the broker's actual close fill.
+    exit_submitted: bool = False
 
     @property
     def initial_risk_per_share(self) -> float:

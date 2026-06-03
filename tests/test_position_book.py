@@ -141,3 +141,24 @@ def test_open_position_client_order_id_can_be_set():
     )
     assert pos.client_order_id == "aitrader__vwap_wave__vwap_bounce__AAPL__entry__abcd1234"
 
+
+def test_open_position_exit_submitted_default_false():
+    pos = OpenPosition(
+        symbol="COIN", setup="price_discovery", side="short",
+        qty=1.0, entry_px=174.07, stop_px=175.31, target_px=171.60,
+        opened_at=datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc),
+        order_id="abc",
+    )
+    assert pos.exit_submitted is False
+
+
+def test_open_position_exit_submitted_settable():
+    pos = OpenPosition(
+        symbol="COIN", setup="price_discovery", side="short",
+        qty=1.0, entry_px=174.07, stop_px=175.31, target_px=171.60,
+        opened_at=datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc),
+        order_id="abc",
+        exit_submitted=True,
+    )
+    assert pos.exit_submitted is True
+

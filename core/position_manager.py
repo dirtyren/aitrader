@@ -72,6 +72,13 @@ class PositionManager:
                 # NOT incremented either, so time_stop doesn't fire on a
                 # never-existed position.
                 continue
+            if pos.exit_submitted:
+                # Engine has already submitted (or registered as in-flight)
+                # a broker close for this position. Defer everything until
+                # the reconciler closes the MySQL row from the broker fill
+                # and the next cycle's book reload drops it. bars_held is
+                # NOT incremented — same shape as the fill gate.
+                continue
             actions = self._check_position(pos, bar)
             all_actions.extend(actions)
         return all_actions

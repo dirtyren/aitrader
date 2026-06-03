@@ -197,3 +197,57 @@ def test_breakeven_unexpected_exception_still_logs_error():
     ex.handle_actions([_action("breakeven", price=100.0)],
                       asset_class="equity", parent_order_id="parent-1")
     assert any("BREAKEVEN_REPLACE_FAILED" in s for s in _last_error_calls(ex.logger))
+
+
+# ---- breakeven idempotency: flip breakeven_moved on success and benign reject
+
+def test_breakeven_replace_success_sets_breakeven_moved():
+    """After a successful replace_order, breakeven_moved must be True so
+    PositionManager._check_position doesn't re-emit the breakeven action
+    on the next bar."""
+    ex, client = _make_executor()
+    _seed_open_position(ex.book, stop_order_id="sl-1")
+    pos_before = ex.book.get("AAPL", "adopted")
+    assert pos_before.breakeven_moved is False  # sanity
+
+    ex.handle_actions([_action("breakeven", price=100.0)],
+                      asset_class="equity", parent_order_id="parent-1")
+
+    pos_after = ex.book.get("AAPL", "adopted")
+    assert pos_after.breakeven_moved is True
+
+
+def test_breakeven_already_replaced_sets_breakeven_moved():
+    """Today's COIN log: BREAKEVEN_REPLACE_FAILED ... order already replaced
+    looped every cycle because breakeven_moved didn't flip on the benign
+    rejection path. Fix: any benign-fragment rejection (broker has already
+    moved the leg, or stop is too close, or order is closed) marks the
+    move as done so the engine stops retrying."""
+    ex, client = _make_executor()
+    _seed_open_position(ex.book, stop_order_id="sl-1")
+    client.replace_order.side_effect = OrderRejectedError(
+        "order already replaced"
+    )
+
+    ex.handle_actions([_action("breakeven", price=100.0)],
+                      asset_class="equity", parent_order_id="parent-1")
+
+    pos_after = ex.book.get("AAPL", "adopted")
+    assert pos_after.breakeven_moved is True
+    # Confirm we logged BREAKEVEN_SKIPPED, not BREAKEVEN_REPLACED
+    assert any("BREAKEVEN_SKIPPED" in s for s in _last_warning_calls(ex.logger))
+
+
+def test_breakeven_unexpected_exception_does_not_set_breakeven_moved():
+    """If replace_order fails with a non-benign exception, leave
+    breakeven_moved=False so the next cycle retries (matches existing
+    BREAKEVEN_REPLACE_FAILED error semantics)."""
+    ex, client = _make_executor()
+    _seed_open_position(ex.book, stop_order_id="sl-1")
+    client.replace_order.side_effect = RuntimeError("network exploded")
+
+    ex.handle_actions([_action("breakeven", price=100.0)],
+                      asset_class="equity", parent_order_id="parent-1")
+
+    pos_after = ex.book.get("AAPL", "adopted")
+    assert pos_after.breakeven_moved is False

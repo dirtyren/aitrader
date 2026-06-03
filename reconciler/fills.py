@@ -11,7 +11,8 @@ Decision tree:
     - role in ('exit', 'stop', 'target'),
         matching open row in MySQL            → close row + write trade row.
     - role in ('exit', 'stop', 'target'),
-        no matching open row                  → idempotent noop (no event).
+        no matching open row                  → reconciler_close_fill_unmatched
+                                                event, no mutation.
 """
 from __future__ import annotations
 
@@ -161,7 +162,20 @@ def apply_tagged_fill(
     if role in _EXIT_ROLES:
         open_row = store.find_open_position_by_setup(strategy_id, symbol, setup)
         if open_row is None:
-            return  # idempotent noop
+            emit_event(
+                session,
+                type="reconciler_close_fill_unmatched",
+                strategy_id=strategy_id,
+                symbol=symbol,
+                asset_class=cycle_asset_class,
+                payload={
+                    "alpaca_id": fill.get("id"),
+                    "client_order_id": coid,
+                    "setup": setup,
+                    "role": role,
+                },
+            )
+            return  # idempotent noop preserved
         exit_px = float(fill.get("filled_avg_price") or 0)
         close_reason = _ROLE_TO_CLOSE_REASON.get(role, "broker_fill")
         store.position_closed(

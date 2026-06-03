@@ -17,10 +17,13 @@ logger = logging.getLogger(__name__)
 #  - "must be (>=|<=) base_price ± 0.01": stop drifted past current quote
 #    between bar-close decision and PATCH; original bracket stop still protects.
 #  - "order is not open": bracket child already filled or canceled.
+#  - "already replaced": broker has already accepted a prior replace for this
+#    leg (seen in COIN logs: BREAKEVEN_REPLACE_FAILED looping every cycle).
 _BENIGN_BREAKEVEN_FRAGMENTS = (
     "must be >= base_price",
     "must be <= base_price",
     "order is not open",
+    "already replaced",
 )
 
 
@@ -280,27 +283,25 @@ class OrderExecutor:
 
     def close_position(
         self, symbol: str, side: str, qty: float,
+        *,
+        setup: str,
         asset_class: str = "crypto",
     ) -> dict | None:
-        """Submit a market close order. Used for virtual stops / time stops.
+        """Submit a market close order. Used for virtual / time stops.
 
-        The COID uses setup='_unknown' because this path doesn't know which
-        setup owned the position. Plan 3's reconciler service supersedes this
-        exit path and will use the real setup. The sanitizer strips the leading
-        underscore, so the parsed setup is 'unknown'.
+        ``setup`` is required so the exit COID parses back to the
+        (strategy, setup, symbol) triple at reconciler/fills.py
+        :apply_tagged_fill — without it, the reconciler can't match the
+        close fill to the open row and the row stays open indefinitely.
+        See incident 2026-06-02 (COIN: 22 stacked broker positions vs 1
+        open MySQL row) and design doc 2026-06-02-engine-exit-idempotency.
 
         ``asset_class`` controls the fee-drift safety margin: crypto closes
         shave ~1e-6 off the requested qty (fees drain from the asset side
         between snapshot and submit), equity passes through unchanged.
-
-        NOTE: The exit COID is sent to Alpaca but is NOT yet persisted to the
-        MySQL trades.exit_client_order_id column. The current MySQL close path
-        in scheduler/loop.py omits this kwarg. Plan 3's reconciler service will
-        back-fill exit_client_order_id by matching Alpaca filled orders to MySQL
-        rows via the COID, so this asymmetry is acceptable during rollout.
         """
         exit_coid = make_client_order_id(
-            self.strategy_name, "_unknown", symbol, Role.EXIT,
+            self.strategy_name, setup, symbol, Role.EXIT,
         )
         return submit_close_with_drift_recovery(
             client=self.client,
@@ -336,20 +337,32 @@ class OrderExecutor:
 
             if asset_class == "equity":
                 if a.kind in ("stop", "target"):
-                    self.logger.info("BRACKET_EXIT symbol=%s kind=%s price=%.4f",
-                                     a.symbol, a.kind, a.price)
+                    self._mark_exit_submitted(a.symbol, a.setup)
+                    self.logger.info(
+                        "BRACKET_EXIT symbol=%s kind=%s price=%.4f setup=%s",
+                        a.symbol, a.kind, a.price, a.setup,
+                    )
                     continue
                 if a.kind == "time_stop":
                     if parent_order_id:
                         try:
                             self.client.cancel_order(parent_order_id)
                         except Exception as exc:
-                            self.logger.error("CANCEL_FAILED symbol=%s order_id=%s error=%s",
-                                              a.symbol, parent_order_id, exc, exc_info=True)
-                    self.close_position(a.symbol, a.side, a.qty,
-                                        asset_class="equity")
-                    self.logger.info("TIME_STOP symbol=%s side=%s qty=%s",
-                                     a.symbol, a.side, a.qty)
+                            self.logger.warning(
+                                "CANCEL_FAILED_DURING_TIME_STOP symbol=%s "
+                                "order_id=%s error=%s — treating parent as "
+                                "already terminal, proceeding with close",
+                                a.symbol, parent_order_id, exc,
+                            )
+                    close_result = self.close_position(a.symbol, a.side, a.qty,
+                                                       setup=a.setup,
+                                                       asset_class="equity")
+                    if close_result is not None:
+                        self._mark_exit_submitted(a.symbol, a.setup)
+                    self.logger.info(
+                        "TIME_STOP symbol=%s side=%s qty=%s setup=%s",
+                        a.symbol, a.side, a.qty, a.setup,
+                    )
                     continue
 
             elif asset_class == "crypto":
@@ -363,16 +376,44 @@ class OrderExecutor:
                         try:
                             self.client.cancel_order(pos.target_order_id)
                         except Exception as exc:
-                            self.logger.error("CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
-                                              a.symbol, pos.target_order_id, exc)
-                    self.close_position(a.symbol, a.side, a.qty,
-                                        asset_class="crypto")
-                    self.logger.info("VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s",
-                                     a.symbol, a.kind, a.price, a.qty)
+                            self.logger.error(
+                                "CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
+                                a.symbol, pos.target_order_id, exc,
+                            )
+                    close_result = self.close_position(
+                        a.symbol, a.side, a.qty,
+                        setup=a.setup, asset_class="crypto",
+                    )
+                    if close_result is not None:
+                        self._mark_exit_submitted(a.symbol, a.setup)
+                    self.logger.info(
+                        "VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s setup=%s",
+                        a.symbol, a.kind, a.price, a.qty, a.setup,
+                    )
                     continue
 
             self.logger.warning("UNHANDLED_ACTION symbol=%s kind=%s asset_class=%s",
                                 a.symbol, a.kind, asset_class)
+
+    def _mark_exit_submitted(self, symbol: str, setup: str) -> None:
+        """Flip exit_submitted=True on the in-memory book and persist to
+        MySQL so PositionManager.on_bar stops emitting further exits for
+        this position. Idempotent — safe to call repeatedly.
+        """
+        pos = self.book.get(symbol, setup)
+        if pos is not None:
+            pos.exit_submitted = True
+        if self._mysql is not None:
+            try:
+                self._mysql.mark_exit_submitted(
+                    strategy_id=self._mysql.strategy_id,
+                    symbol=symbol, setup_name=setup,
+                )
+            except Exception as exc:
+                self.logger.error(
+                    "MARK_EXIT_SUBMITTED_FAILED symbol=%s setup=%s error=%s",
+                    symbol, setup, exc, exc_info=True,
+                )
 
     def _move_equity_stop_to_breakeven(self, a: PositionAction) -> None:
         pos = self.book.get(a.symbol, a.setup)
@@ -382,11 +423,21 @@ class OrderExecutor:
             return
         try:
             self.client.replace_order(stop_leg, stop_price=a.price)
+            if pos is not None:
+                pos.breakeven_moved = True
             self.logger.info("BREAKEVEN_REPLACED symbol=%s stop_leg=%s new_stop=%.4f",
                              a.symbol, stop_leg, a.price)
         except OrderRejectedError as exc:
             msg = str(exc)
             if any(frag in msg for frag in _BENIGN_BREAKEVEN_FRAGMENTS):
+                # Broker has already replaced the leg (or won't accept the
+                # replace because the order is closed / too close to quote).
+                # Flag the move as done so PositionManager stops re-emitting
+                # the breakeven action — this is the parallel idempotency
+                # hole to exit_submitted (today's COIN log: 6 retries before
+                # the position even time-stopped).
+                if pos is not None:
+                    pos.breakeven_moved = True
                 self.logger.warning("BREAKEVEN_SKIPPED symbol=%s stop_leg=%s reason=%s",
                                     a.symbol, stop_leg, msg)
                 return
