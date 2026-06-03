@@ -380,6 +380,112 @@ def test_multi_strategy_multiple_matching_fills_emits_ambiguous(store):
 
 
 # ---------------------------------------------------------------------------
+# 6b. Unattributable surplus — flatten broker excess, leave MySQL alone
+# ---------------------------------------------------------------------------
+
+
+def test_unattributed_surplus_closes_only_excess_and_leaves_mysql(store):
+    """COIN-style scenario: broker holds far more than every open MySQL row
+    combined could justify, COID attribution is ambiguous → close only the
+    surplus, leave MySQL rows untouched, resolve the strike.
+    """
+    cfg = _cfg(threshold=3)
+    now = datetime(2026, 5, 31, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    alpaca.list_orders.return_value = []
+    alpaca.submit_order.return_value = {"id": "ord-surplus"}
+    sid_a = _strategy_id(store, "vwap_wave")
+    sid_b = _strategy_id(store, "orb")
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "COIN", count=3, now=now,
+                     snapshot={"mysql_sum": 1.0, "broker_qty": 22.0})
+        # Two open rows, |qty| sum = 1; broker has 22 → surplus 21.
+        _seed_open_position(session, strategy_id=sid_a, symbol="COIN",
+                            setup="price_discovery", qty=1,
+                            asset_class="us_equity")
+        _seed_open_position(session, strategy_id=sid_b, symbol="COIN",
+                            setup="orb_breakout", qty=-1, side="short",
+                            asset_class="us_equity")
+        session.commit()
+        submitted = auto_resolve_qty_drift(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={"COIN": {"symbol": "COIN", "qty": "22",
+                                        "current_price": "150",
+                                        "asset_class": "us_equity"}},
+            anomalies=[_drift("COIN", 0.0, 22.0)],
+            recent_fills=[], cfg=cfg, now=now,
+        )
+        session.commit()
+
+    assert submitted == 1
+    kwargs = alpaca.submit_order.call_args.kwargs
+    assert kwargs["symbol"] == "COIN"
+    assert kwargs["side"] == "sell"
+    assert kwargs["qty"] == 20.0  # surplus = 22 - (1 + 1) = 20
+
+    with Session(store._engine) as session:
+        # MySQL rows untouched.
+        rows = session.query(PositionRow).all()
+        assert len(rows) == 2
+        assert all(r.status == "open" for r in rows)
+        # Strike resolved with the new reason.
+        strike = session.query(StrikeRow).one()
+        assert strike.resolved is True
+        assert strike.resolved_reason == "auto_close_qty_drift_surplus"
+        # Audit event emitted.
+        evts = session.query(EventRow).filter(
+            EventRow.type == "auto_close_qty_drift_surplus",
+        ).all()
+        assert len(evts) == 1
+
+
+def test_unattributed_no_surplus_still_emits_ambiguous(store):
+    """When attribution is ambiguous but broker_qty <= sum(|mysql qty|),
+    the surplus path must NOT fire — original ambiguous event must still
+    be emitted so an operator can untangle.
+    """
+    cfg = _cfg(threshold=3)
+    now = datetime(2026, 5, 31, 14, 0, tzinfo=timezone.utc)
+    alpaca = MagicMock()
+    sid_a = _strategy_id(store, "vwap_wave")
+    sid_b = _strategy_id(store, "orb")
+
+    with Session(store._engine) as session:
+        _seed_strike(session, "AAPL", count=3, now=now,
+                     snapshot={"mysql_sum": 150.0, "broker_qty": 100.0})
+        _seed_open_position(session, strategy_id=sid_a, symbol="AAPL",
+                            setup="price_discovery", qty=100,
+                            asset_class="us_equity")
+        _seed_open_position(session, strategy_id=sid_b, symbol="AAPL",
+                            setup="orb_breakout", qty=50,
+                            asset_class="us_equity")
+        session.commit()
+        auto_resolve_qty_drift(
+            alpaca=alpaca, store=store, session=session,
+            broker_positions={"AAPL": {"symbol": "AAPL", "qty": "100",
+                                        "current_price": "150",
+                                        "asset_class": "us_equity"}},
+            anomalies=[_drift("AAPL", 150, 100)],
+            recent_fills=[], cfg=cfg, now=now,
+        )
+        session.commit()
+
+    alpaca.submit_order.assert_not_called()
+    with Session(store._engine) as session:
+        ambig = session.query(EventRow).filter(
+            EventRow.type == "qty_drift_ambiguous_attribution",
+        ).all()
+        assert len(ambig) == 1
+        surplus = session.query(EventRow).filter(
+            EventRow.type == "auto_close_qty_drift_surplus",
+        ).all()
+        assert len(surplus) == 0
+        strike = session.query(StrikeRow).one()
+        assert strike.resolved is False
+
+
+# ---------------------------------------------------------------------------
 # 7-8. Asset class
 # ---------------------------------------------------------------------------
 

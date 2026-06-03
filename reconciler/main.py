@@ -439,6 +439,189 @@ def _attribute_qty_drift(
     return None
 
 
+def _close_unattributed_surplus(
+    *,
+    alpaca: Any,
+    session: Session,
+    broker_pos: dict,
+    symbol: str,
+    surplus_qty: float,
+    broker_qty_signed: float,
+    open_rows: list[PositionRow],
+    strike: StrikeRow,
+    cfg: ReconcilerConfig,
+    now: datetime,
+    asset_class: str | None,
+) -> int:
+    """Flatten broker surplus that cannot be attributed to any MySQL row.
+
+    Used when a qty_drift anomaly's COID-based attribution is ambiguous
+    *and* the broker side grossly exceeds the sum of |qty| across all open
+    MySQL rows on the symbol. The surplus is leaked broker-only inventory
+    (typical cause: multiple strategies on the same ticker each firing
+    their own entry while the aggregate book had no guard). MySQL stays
+    untouched — only the surplus closes — and the strike resolves with
+    reason ``auto_close_qty_drift_surplus``.
+
+    Returns the number of broker close orders submitted.
+    """
+    if cfg.shadow_mode:
+        return 0
+
+    broker_symbol = broker_pos.get("symbol") or symbol
+    side = "sell" if broker_qty_signed > 0 else "buy"
+
+    price = _broker_price(broker_pos)
+    if price is None:
+        log.error(
+            "QTY_DRIFT_SURPLUS_NO_PRICE symbol=%s qty=%s — leaving strike unresolved",
+            broker_symbol, surplus_qty,
+        )
+        emit_event(
+            session,
+            type="auto_close_qty_drift_surplus_failed",
+            symbol=symbol,
+            asset_class=asset_class,
+            payload={
+                "broker_symbol": broker_symbol,
+                "side": side, "surplus_qty": surplus_qty,
+                "strike_count": strike.strike_count,
+                "error": "no usable price field on broker position",
+            },
+        )
+        return 0
+
+    notional = surplus_qty * price
+    if notional < cfg.auto_close_dust_usd:
+        log.warning(
+            "QTY_DRIFT_SURPLUS_DUST symbol=%s qty=%s price=%.6f notional=%.6f "
+            "— resolving strike without submit",
+            broker_symbol, surplus_qty, price, notional,
+        )
+        emit_event(
+            session,
+            type="auto_close_dust",
+            symbol=symbol,
+            asset_class=asset_class,
+            payload={
+                "direction": "qty_drift_surplus",
+                "broker_symbol": broker_symbol,
+                "surplus_qty": surplus_qty, "price": price,
+                "notional": notional,
+                "dust_threshold_usd": cfg.auto_close_dust_usd,
+                "strike_count": strike.strike_count,
+            },
+        )
+        strike.resolved = True
+        strike.resolved_at = now
+        strike.resolved_reason = "auto_close_dust"
+        return 0
+
+    max_qty_per_chunk = cfg.auto_close_max_notional_usd / price
+    chunks = _split_qty(surplus_qty, max_qty_per_chunk)
+    if len(chunks) > _MAX_CHUNKS_PER_POSITION:
+        log.error(
+            "QTY_DRIFT_SURPLUS_TOO_MANY_CHUNKS symbol=%s qty=%s chunks=%d",
+            broker_symbol, surplus_qty, len(chunks),
+        )
+        emit_event(
+            session,
+            type="auto_close_qty_drift_surplus_failed",
+            symbol=symbol,
+            asset_class=asset_class,
+            payload={
+                "broker_symbol": broker_symbol,
+                "side": side, "surplus_qty": surplus_qty, "price": price,
+                "would_be_chunks": len(chunks),
+                "max_chunks": _MAX_CHUNKS_PER_POSITION,
+                "strike_count": strike.strike_count,
+                "error": "too many chunks — operator review required",
+            },
+        )
+        return 0
+
+    cancelled_ids = _cancel_open_orders_for_symbol(alpaca, broker_symbol)
+    if cancelled_ids:
+        log.info(
+            "QTY_DRIFT_SURPLUS_CANCELLED_OPEN_ORDERS symbol=%s count=%d",
+            broker_symbol, len(cancelled_ids),
+        )
+
+    is_crypto = broker_pos.get("asset_class") == "crypto"
+    chunk_margin = DEFAULT_DRIFT_MARGIN if is_crypto else 0.0
+
+    submitted = 0
+    order_ids: list[str | None] = []
+    for chunk_qty in chunks:
+        submit_qty = chunk_qty * (1.0 - chunk_margin)
+        coid = make_client_order_id(
+            "reconciler", "qty_drift_surplus", symbol, Role.EXIT,
+        )
+        order = submit_close_with_drift_recovery(
+            client=alpaca,
+            symbol=broker_symbol,
+            qty=submit_qty,
+            side=side,
+            client_order_id=coid,
+            asset_class=("crypto" if is_crypto else "equity"),
+        )
+        if order is None:
+            log.error(
+                "QTY_DRIFT_SURPLUS_SUBMIT_FAILED symbol=%s chunk=%d/%d",
+                broker_symbol, len(order_ids) + 1, len(chunks),
+            )
+            emit_event(
+                session,
+                type="auto_close_qty_drift_surplus_failed",
+                symbol=symbol,
+                asset_class=asset_class,
+                payload={
+                    "broker_symbol": broker_symbol,
+                    "side": side, "qty": submit_qty,
+                    "chunk_index": len(order_ids) + 1,
+                    "total_chunks": len(chunks),
+                    "submitted_so_far": order_ids,
+                    "strike_count": strike.strike_count,
+                    "error": "submit returned None — see safe_close logs",
+                },
+            )
+            return submitted
+        submitted += 1
+        order_ids.append(order.get("id") if isinstance(order, dict) else None)
+        log.warning(
+            "QTY_DRIFT_SURPLUS_SUBMITTED symbol=%s side=%s qty=%s order_id=%s "
+            "chunk=%d/%d strike_count=%d",
+            broker_symbol, side, submit_qty, order_ids[-1],
+            len(order_ids), len(chunks), strike.strike_count,
+        )
+
+    emit_event(
+        session,
+        type="auto_close_qty_drift_surplus",
+        symbol=symbol,
+        asset_class=asset_class,
+        payload={
+            "broker_symbol": broker_symbol,
+            "side": side,
+            "surplus_qty": surplus_qty,
+            "broker_qty": abs(broker_qty_signed),
+            "mysql_open_rows": [
+                {"strategy_id": r.strategy_id, "setup": r.setup_name,
+                 "qty": float(r.qty)}
+                for r in open_rows
+            ],
+            "price": price,
+            "chunks": len(chunks),
+            "order_ids": order_ids,
+            "strike_count": strike.strike_count,
+        },
+    )
+    strike.resolved = True
+    strike.resolved_at = now
+    strike.resolved_reason = "auto_close_qty_drift_surplus"
+    return submitted
+
+
 def auto_resolve_qty_drift(
     *,
     alpaca: Any,
@@ -492,6 +675,25 @@ def auto_resolve_qty_drift(
         target = _attribute_qty_drift(session, store, a.symbol, recent_fills)
         if target is None:
             open_rows = _open_rows_for_symbol(session, store, a.symbol)
+            mysql_sum_abs = sum(abs(float(r.qty)) for r in open_rows)
+            surplus = broker_qty - mysql_sum_abs
+            # If the broker is holding noticeably more than every open MySQL
+            # row combined could justify, the position cannot belong solely to
+            # those rows — it's leaked entries (e.g. cross-strategy duplicate
+            # signals on the same symbol). We can't credit any single strategy
+            # with the surplus, so we don't touch any MySQL row; we just
+            # flatten the unattributable excess and resolve the strike. The
+            # remaining `mysql_sum_abs` worth of broker qty stays put,
+            # matching the aggregate book.
+            if surplus > cfg.qty_eps:
+                submitted += _close_unattributed_surplus(
+                    alpaca=alpaca, session=session,
+                    broker_pos=broker_pos, symbol=a.symbol,
+                    surplus_qty=surplus, broker_qty_signed=broker_qty_signed,
+                    open_rows=open_rows, strike=existing,
+                    cfg=cfg, now=now, asset_class=asset_class,
+                )
+                continue
             emit_event(
                 session,
                 type="qty_drift_ambiguous_attribution",
