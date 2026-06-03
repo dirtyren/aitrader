@@ -61,6 +61,7 @@ from risk.circuit_breakers import CircuitBreaker
 from risk.filters import (
     BrokerPositionFilter, ConcurrentPositionFilter,
     ConsecutiveLossFilter, FilterPipeline,
+    ManualCloseCooldownFilter,
     NewsBlackoutFilter, RiskBudgetFilter, SystemHaltedFilter,
 )
 from risk.manager import RiskManager
@@ -88,7 +89,8 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def _build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None) -> FilterPipeline:
+def _build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None,
+                    mysql=None, strategy_id: int | None = None) -> FilterPipeline:
     filters = [
         SystemHaltedFilter(circuit_breaker=cb, lock_file_path=_LOCK_FILE_PATH),
         NewsBlackoutFilter(windows=[], pad_min=5),
@@ -100,6 +102,11 @@ def _build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None) -> FilterPipelin
         filters.append(BrokerPositionFilter(
             broker=alpaca,
             cache_ttl_s=float(os.environ.get("BROKER_POSITION_FILTER_TTL_S", "30")),
+        ))
+    if mysql is not None and strategy_id is not None:
+        filters.append(ManualCloseCooldownFilter(
+            store=mysql, strategy_id=strategy_id,
+            cache_ttl_s=float(os.environ.get("MANUAL_CLOSE_CACHE_TTL_S", "30")),
         ))
     filters.append(
         RiskBudgetFilter(daily_open_risk_cap_pct=cfg["risk"]["max_daily_risk_open"]),
@@ -190,7 +197,10 @@ def _build_loop(cfg: dict, logger: logging.Logger) -> GapAndGoLoop:
         daily_loss_limit_2=cb_cfg["daily_loss_limit_2"],
         drawdown_limit=cb_cfg["drawdown_limit"],
     )
-    pipeline = _build_pipeline(cfg, cb, alpaca=alpaca)
+    pipeline = _build_pipeline(
+        cfg, cb, alpaca=alpaca, mysql=mysql,
+        strategy_id=mysql.strategy_id if mysql is not None else None,
+    )
 
     sizing = SizingConfig(
         max_risk_per_trade=cfg["risk"]["max_risk_per_trade"],

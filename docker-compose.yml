@@ -269,6 +269,8 @@ services:
       - SHADOW_MODE=${SHADOW_MODE:-false}
       - RECONCILE_STATE_FILE=/app/runtime/reconciler_state_equity.json
       - RECONCILE_HEARTBEAT_STALE_AFTER_S=${RECONCILE_HEARTBEAT_STALE_AFTER_S:-300}
+      - MANUAL_CLOSE_CONFIRM_CYCLES=${MANUAL_CLOSE_CONFIRM_CYCLES:-2}
+      - MANUAL_CLOSE_COOLDOWN_MIN=${MANUAL_CLOSE_COOLDOWN_MIN:-60}
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
@@ -297,6 +299,8 @@ services:
       - SHADOW_MODE=${SHADOW_MODE:-false}
       - RECONCILE_STATE_FILE=/app/runtime/reconciler_state_crypto.json
       - RECONCILE_HEARTBEAT_STALE_AFTER_S=${RECONCILE_HEARTBEAT_STALE_AFTER_S:-300}
+      - MANUAL_CLOSE_CONFIRM_CYCLES=${MANUAL_CLOSE_CONFIRM_CYCLES:-2}
+      - MANUAL_CLOSE_COOLDOWN_MIN=${MANUAL_CLOSE_COOLDOWN_MIN:-60}
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./logs:/app/logs
