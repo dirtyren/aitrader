@@ -334,21 +334,32 @@ class OrderExecutor:
 
             if asset_class == "equity":
                 if a.kind in ("stop", "target"):
-                    self.logger.info("BRACKET_EXIT symbol=%s kind=%s price=%.4f",
-                                     a.symbol, a.kind, a.price)
+                    self._mark_exit_submitted(a.symbol, a.setup)
+                    self.logger.info(
+                        "BRACKET_EXIT symbol=%s kind=%s price=%.4f setup=%s",
+                        a.symbol, a.kind, a.price, a.setup,
+                    )
                     continue
                 if a.kind == "time_stop":
                     if parent_order_id:
                         try:
                             self.client.cancel_order(parent_order_id)
                         except Exception as exc:
-                            self.logger.error("CANCEL_FAILED symbol=%s order_id=%s error=%s",
-                                              a.symbol, parent_order_id, exc, exc_info=True)
-                    self.close_position(a.symbol, a.side, a.qty,
-                                        setup=a.setup,
-                                        asset_class="equity")
-                    self.logger.info("TIME_STOP symbol=%s side=%s qty=%s",
-                                     a.symbol, a.side, a.qty)
+                            self.logger.warning(
+                                "CANCEL_FAILED_DURING_TIME_STOP symbol=%s "
+                                "order_id=%s error=%s — treating parent as "
+                                "already terminal, proceeding with close",
+                                a.symbol, parent_order_id, exc,
+                            )
+                    close_result = self.close_position(a.symbol, a.side, a.qty,
+                                                       setup=a.setup,
+                                                       asset_class="equity")
+                    if close_result is not None:
+                        self._mark_exit_submitted(a.symbol, a.setup)
+                    self.logger.info(
+                        "TIME_STOP symbol=%s side=%s qty=%s setup=%s",
+                        a.symbol, a.side, a.qty, a.setup,
+                    )
                     continue
 
             elif asset_class == "crypto":
@@ -362,17 +373,42 @@ class OrderExecutor:
                         try:
                             self.client.cancel_order(pos.target_order_id)
                         except Exception as exc:
-                            self.logger.error("CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
-                                              a.symbol, pos.target_order_id, exc)
+                            self.logger.error(
+                                "CANCEL_TP_FAILED symbol=%s order_id=%s error=%s",
+                                a.symbol, pos.target_order_id, exc,
+                            )
                     self.close_position(a.symbol, a.side, a.qty,
                                         setup=a.setup,
                                         asset_class="crypto")
-                    self.logger.info("VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s",
-                                     a.symbol, a.kind, a.price, a.qty)
+                    self._mark_exit_submitted(a.symbol, a.setup)
+                    self.logger.info(
+                        "VIRTUAL_EXIT symbol=%s kind=%s price=%.4f qty=%s setup=%s",
+                        a.symbol, a.kind, a.price, a.qty, a.setup,
+                    )
                     continue
 
             self.logger.warning("UNHANDLED_ACTION symbol=%s kind=%s asset_class=%s",
                                 a.symbol, a.kind, asset_class)
+
+    def _mark_exit_submitted(self, symbol: str, setup: str) -> None:
+        """Flip exit_submitted=True on the in-memory book and persist to
+        MySQL so PositionManager.on_bar stops emitting further exits for
+        this position. Idempotent — safe to call repeatedly.
+        """
+        pos = self.book.get(symbol, setup)
+        if pos is not None:
+            pos.exit_submitted = True
+        if self._mysql is not None:
+            try:
+                self._mysql.mark_exit_submitted(
+                    strategy_id=self._mysql.strategy_id,
+                    symbol=symbol, setup_name=setup,
+                )
+            except Exception as exc:
+                self.logger.error(
+                    "MARK_EXIT_SUBMITTED_FAILED symbol=%s setup=%s error=%s",
+                    symbol, setup, exc, exc_info=True,
+                )
 
     def _move_equity_stop_to_breakeven(self, a: PositionAction) -> None:
         pos = self.book.get(a.symbol, a.setup)
