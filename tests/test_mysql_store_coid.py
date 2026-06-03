@@ -107,3 +107,56 @@ def test_position_closed_without_exit_coid_persists_null(store):
         assert pos_row.exit_client_order_id is None
         trade_row = session.query(TradeRow).one()
         assert trade_row.exit_client_order_id is None
+
+
+def test_mark_exit_submitted_flips_flag(store):
+    store.position_opened(_pos(), "equity")
+    ok = store.mark_exit_submitted(
+        strategy_id=store._strategy_id,
+        symbol="AAPL",
+        setup_name="vwap_bounce",
+    )
+    assert ok is True
+    book = store.load_open_positions()
+    reloaded = book.get("AAPL", "vwap_bounce")
+    assert reloaded is not None
+    assert reloaded.exit_submitted is True
+
+
+def test_mark_exit_submitted_idempotent(store):
+    store.position_opened(_pos(), "equity")
+    store.mark_exit_submitted(
+        strategy_id=store._strategy_id,
+        symbol="AAPL", setup_name="vwap_bounce",
+    )
+    ok = store.mark_exit_submitted(
+        strategy_id=store._strategy_id,
+        symbol="AAPL", setup_name="vwap_bounce",
+    )
+    assert ok is True
+
+
+def test_mark_exit_submitted_no_open_row_returns_false(store):
+    ok = store.mark_exit_submitted(
+        strategy_id=store._strategy_id,
+        symbol="ZZZZ", setup_name="nonexistent",
+    )
+    assert ok is False
+
+
+def test_load_open_positions_round_trips_exit_submitted(store):
+    store.position_opened(_pos(), "equity")
+    store.mark_exit_submitted(
+        strategy_id=store._strategy_id,
+        symbol="AAPL", setup_name="vwap_bounce",
+    )
+    book = store.load_open_positions()
+    reloaded = book.get("AAPL", "vwap_bounce")
+    assert reloaded.exit_submitted is True
+
+
+def test_position_opened_default_exit_submitted_false(store):
+    store.position_opened(_pos(), "equity")
+    book = store.load_open_positions()
+    pos = book.get("AAPL", "vwap_bounce")
+    assert pos.exit_submitted is False

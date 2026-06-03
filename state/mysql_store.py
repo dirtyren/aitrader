@@ -97,6 +97,11 @@ class PositionRow(Base):
     # virtual stop/target checks; while False, on_bar defers and will
     # poll Alpaca once before re-checking.
     fill_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # See OpenPosition.exit_submitted — once True, PositionManager.on_bar
+    # treats this position as exit-in-flight and stops emitting further
+    # virtual exit actions. Cleared by the row leaving the table when the
+    # reconciler closes it from the broker's actual close fill.
+    exit_submitted: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(Enum("open", "closed"), default="open")
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -297,6 +302,14 @@ class MySQLStore:
             # via the SQLAlchemy column default.
             "ALTER TABLE positions ADD COLUMN fill_confirmed TINYINT(1) "
             "NOT NULL DEFAULT 1",
+            # positions.exit_submitted: gates engine virtual exits AFTER a
+            # close has been submitted (the symmetric counterpart to
+            # fill_confirmed gating BEFORE the entry is confirmed). Default
+            # 0 for existing rows — they get one re-evaluation cycle, which
+            # is fine because the close COID is now setup-tagged so the
+            # reconciler will match the resulting close fill.
+            "ALTER TABLE positions ADD COLUMN exit_submitted TINYINT(1) "
+            "NOT NULL DEFAULT 0",
         ]
         try:
             with self._engine.connect() as conn:
@@ -568,6 +581,7 @@ class MySQLStore:
             "bars_held": pos.bars_held,
             "adopted": pos.adopted,
             "fill_confirmed": pos.fill_confirmed,
+            "exit_submitted": pos.exit_submitted,
             "status": "open",
             "opened_at": pos.opened_at,
         }
@@ -591,6 +605,7 @@ class MySQLStore:
             bars_held=row.bars_held,
             adopted=row.adopted,
             fill_confirmed=row.fill_confirmed,
+            exit_submitted=row.exit_submitted,
         )
 
     def mark_fill_confirmed(
@@ -612,6 +627,31 @@ class MySQLStore:
             if row is None:
                 return False
             row.fill_confirmed = True
+            session.commit()
+            return True
+
+    def mark_exit_submitted(
+        self, strategy_id: int, symbol: str, setup_name: str,
+    ) -> bool:
+        """Flip an open position's exit_submitted flag to True.
+
+        Called by OrderExecutor.handle_actions immediately after submitting
+        (or registering an in-flight bracket OCO firing for) a broker close,
+        so PositionManager stops emitting further exit actions on the next
+        bar. Returns True if the row was found and updated.
+
+        Idempotent: re-applying on an already-True row is a no-op success.
+        """
+        with Session(self._engine) as session:
+            row = session.query(PositionRow).filter(
+                PositionRow.strategy_id == strategy_id,
+                PositionRow.symbol.in_(self._get_symbol_candidates(symbol)),
+                PositionRow.setup_name == setup_name,
+                PositionRow.status == "open",
+            ).one_or_none()
+            if row is None:
+                return False
+            row.exit_submitted = True
             session.commit()
             return True
 
