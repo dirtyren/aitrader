@@ -1,6 +1,6 @@
 # Manual-Close Cooldown Filter
 
-> **Status**: Approved
+> **Status**: Done
 > **Created**: 2026-06-03
 
 ## 1. Business Context

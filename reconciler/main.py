@@ -1694,6 +1694,19 @@ def main() -> int:
     store.ensure_schema()
     store.upsert_strategy()
 
+    # Boot-time cleanup: drop manual_close_cooldowns rows whose window ended
+    # more than 7 days ago. Active and recently-expired rows stay so the
+    # dashboard keeps recent history visible. See specs/manual-close-cooldown.md.
+    try:
+        deleted = store.cleanup_expired_cooldowns(older_than_days=7)
+        if deleted:
+            log.info(
+                "MANUAL_CLOSE_COOLDOWN_CLEANUP asset_class=%s deleted=%d",
+                cfg.asset_class, deleted,
+            )
+    except Exception as exc:
+        log.warning("MANUAL_CLOSE_COOLDOWN_CLEANUP_FAILED: %s", exc)
+
     state = load_state(cfg.state_file_path)
     log.info(
         "RECONCILER_LOADED_STATE asset_class=%s last_orders_check_ts=%s",
