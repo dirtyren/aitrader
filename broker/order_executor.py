@@ -17,10 +17,13 @@ logger = logging.getLogger(__name__)
 #  - "must be (>=|<=) base_price ± 0.01": stop drifted past current quote
 #    between bar-close decision and PATCH; original bracket stop still protects.
 #  - "order is not open": bracket child already filled or canceled.
+#  - "already replaced": broker has already accepted a prior replace for this
+#    leg (seen in COIN logs: BREAKEVEN_REPLACE_FAILED looping every cycle).
 _BENIGN_BREAKEVEN_FRAGMENTS = (
     "must be >= base_price",
     "must be <= base_price",
     "order is not open",
+    "already replaced",
 )
 
 
@@ -420,11 +423,21 @@ class OrderExecutor:
             return
         try:
             self.client.replace_order(stop_leg, stop_price=a.price)
+            if pos is not None:
+                pos.breakeven_moved = True
             self.logger.info("BREAKEVEN_REPLACED symbol=%s stop_leg=%s new_stop=%.4f",
                              a.symbol, stop_leg, a.price)
         except OrderRejectedError as exc:
             msg = str(exc)
             if any(frag in msg for frag in _BENIGN_BREAKEVEN_FRAGMENTS):
+                # Broker has already replaced the leg (or won't accept the
+                # replace because the order is closed / too close to quote).
+                # Flag the move as done so PositionManager stops re-emitting
+                # the breakeven action — this is the parallel idempotency
+                # hole to exit_submitted (today's COIN log: 6 retries before
+                # the position even time-stopped).
+                if pos is not None:
+                    pos.breakeven_moved = True
                 self.logger.warning("BREAKEVEN_SKIPPED symbol=%s stop_leg=%s reason=%s",
                                     a.symbol, stop_leg, msg)
                 return
