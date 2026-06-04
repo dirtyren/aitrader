@@ -124,10 +124,18 @@ class IntradayReplay:
         )
         slippage = {ac.name: ac.slippage_bps for ac in self.asset_class_configs.values()}
         fill = SimulatedFillEngine(slippage_bps_by_class=slippage)
+        # In backtest there is no live broker to query for fill status. The
+        # SimulatedFillEngine books a position only after it actually fills
+        # against an OHLC bar, so any position the book holds IS filled by
+        # construction. Stub the order-status lookup so PositionManager's
+        # fill-confirmation gate doesn't permanently block stop/target/
+        # time-stop checks (which would leave every entry open forever and
+        # all subsequent signals rejected with concurrent_position).
         pm = PositionManager(
             book,
             max_hold_bars=self.config["position_management"]["max_hold_bars"],
             breakeven_at_R=self.config["position_management"]["breakeven_at_R"],
+            order_status_for=lambda pos: "filled",
         )
 
         # Build a chronological timeline across all symbols. Stable secondary
@@ -142,15 +150,32 @@ class IntradayReplay:
         equity_points: list[tuple[datetime, float]] = [(first_ts, ledger.equity)]
         trades_log: list[TradeRecord] = []
         filter_audit: dict[str, int] = {}
+        # Live traders are restarted daily and the in-memory DailyLedger
+        # starts fresh each session — that's how consecutive_loss resets
+        # to 0 in the live engine. Mirror this in replay so a strategy
+        # that has 2 losing trades on day 1 doesn't get permanently
+        # filtered out for the rest of the year. Bar timestamps are UTC;
+        # using the UTC date as the session key is approximate but
+        # consistent across symbols (and good enough for a per-day reset).
+        current_session_day = first_ts.date()
 
         for ts, sym, ac, bar in timeline:
+            if bar.ts.date() != current_session_day:
+                ledger.roll_day(bar.ts)
+                current_session_day = bar.ts.date()
             ctx = contexts[sym]
             ctx.ingest(bar)
 
-            # Phase A — manage positions opened on PRIOR bars
-            pos_before = book.get(sym)
+            # Phase A — manage positions opened on PRIOR bars.
+            # Snapshot positions BEFORE pm.on_bar runs (it closes book entries
+            # on stop/target hits) — record_exits_to_ledger looks the position
+            # up by setup name to compute realized PnL/R against the entry.
+            positions_snapshot = {p.setup: p for p in book.get_all(sym)}
             actions = pm.on_bar(sym, bar)
-            recorded = record_exits_to_ledger(ledger, sym, actions, bar, pos_before)
+            recorded = record_exits_to_ledger(
+                ledger, sym, actions, bar,
+                positions_snapshot=positions_snapshot,
+            )
             trades_log.extend(recorded)
 
             # Resolve pending fills against this bar's OHLC. Newly-filled

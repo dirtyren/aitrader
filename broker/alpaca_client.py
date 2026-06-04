@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 _DATA_BASE_URL = "https://data.alpaca.markets"
 
+# Bar fetches paginate when the result exceeds the per-request `limit`. Cap
+# the number of follow-up pages so a malformed/unbounded request can't loop
+# forever — 100 pages * 10k bars = 1M bars per call, far more than any
+# realistic backtest window.
+_MAX_BAR_PAGES = 100
+
 # ---------------------------------------------------------------------------
 # Custom exceptions
 # ---------------------------------------------------------------------------
@@ -432,7 +438,13 @@ class AlpacaClient:
     def get_stock_bars(self, symbol: str, timeframe: str,
                        start: datetime, end: datetime,
                        limit: int = 10000) -> list[dict]:
-        """GET /v2/stocks/{symbol}/bars — returns list of bar dicts (Alpaca raw shape)."""
+        """GET /v2/stocks/{symbol}/bars — returns ALL bar dicts in [start, end].
+
+        Follows ``next_page_token`` to retrieve every page; without this,
+        Alpaca caps a single response at 10k bars and silently truncates
+        long historical windows. Loop bounded by _MAX_BAR_PAGES as a
+        runaway-fetch safeguard.
+        """
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("start and end must be timezone-aware")
         params = {
@@ -443,13 +455,28 @@ class AlpacaClient:
             "adjustment": "raw",
             "feed": "iex",
         }
-        response = self._data_request("GET", f"/v2/stocks/{symbol}/bars", params=params)
-        return response.json().get("bars", []) or []
+        all_bars: list[dict] = []
+        for _ in range(_MAX_BAR_PAGES):
+            response = self._data_request(
+                "GET", f"/v2/stocks/{symbol}/bars", params=params,
+            )
+            body = response.json()
+            page = body.get("bars") or []
+            all_bars.extend(page)
+            token = body.get("next_page_token")
+            if not token:
+                return all_bars
+            params["page_token"] = token
+        # Safety bound exceeded — return what we have rather than infinite-loop.
+        return all_bars
 
     def get_crypto_bars(self, symbol: str, timeframe: str,
                         start: datetime, end: datetime,
                         limit: int = 10000) -> list[dict]:
-        """GET /v1beta3/crypto/us/bars — returns list of bar dicts for one symbol."""
+        """GET /v1beta3/crypto/us/bars — returns ALL bar dicts for one symbol.
+
+        Follows ``next_page_token`` for the same reason as get_stock_bars.
+        """
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("start and end must be timezone-aware")
         params = {
@@ -459,6 +486,16 @@ class AlpacaClient:
             "end": end.isoformat().replace("+00:00", "Z"),
             "limit": limit,
         }
-        response = self._data_request("GET", "/v1beta3/crypto/us/bars", params=params)
-        body = response.json().get("bars", {}) or {}
-        return body.get(symbol, []) or []
+        all_bars: list[dict] = []
+        for _ in range(_MAX_BAR_PAGES):
+            response = self._data_request(
+                "GET", "/v1beta3/crypto/us/bars", params=params,
+            )
+            body = response.json()
+            page = (body.get("bars") or {}).get(symbol) or []
+            all_bars.extend(page)
+            token = body.get("next_page_token")
+            if not token:
+                return all_bars
+            params["page_token"] = token
+        return all_bars
