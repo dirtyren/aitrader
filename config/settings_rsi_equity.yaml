@@ -18,10 +18,14 @@ regime_detector:
   balance_day_in_value_min: 0.6
 setups:
   rsi_reversion:
+    # Tuned via docs/sweeps/2026-06-04 (russell-1000 sweep). Best combo by
+    # symbols_above_floor + median_oos_sharpe + total_oos_pnl across the
+    # curated universe below.
+    # Prior values: threshold=40, stop_loss_pct=2.0, period=5.
     enabled: true
-    threshold: 40
+    threshold: 30
     direction: long
-    stop_loss_pct: 2.0
+    stop_loss_pct: 2.5
     position_size_r: 0.5
     period: 5
 risk:
@@ -50,20 +54,29 @@ asset_classes:
     session_close_local: '16:00'
     slippage_bps: 2
     commission_per_share: 0.0
+    # Curated from docs/sweeps/2026-06-04 (russell-1000 sweep). 19 symbols
+    # surviving OOS Sharpe >= 0.3 AND >= 10 OOS trades. Previous universe
+    # (SPY/QQQ/AAPL/MSFT/NVDA/...) had zero overlap with the survivors.
     symbols:
-    - SPY
-    - QQQ
-    - IWM
-    - XLF
-    - GLD
-    - AAPL
-    - MSFT
-    - NVDA
-    - JPM
-    - NFLX
-    - COIN
-    - PLTR
-    - UBER
+    - CSCO
+    - STLD
+    - PWR
+    - WBA
+    - AMAT
+    - TGT
+    - WAB
+    - NUE
+    - HPE
+    - SQ
+    - GLW
+    - EQR
+    - CTVA
+    - GEV
+    - JBHT
+    - CSX
+    - KEYS
+    - HAL
+    - CVX
 news_blackouts: []
 backtest:
   start: '2024-01-01'

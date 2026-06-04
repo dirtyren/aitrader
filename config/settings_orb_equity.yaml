@@ -7,13 +7,59 @@ asset_classes:
     session_close_local: '16:00'
     session_open_local: '09:30'
     slippage_bps: 2
+    # Curated from docs/sweeps/2026-06-04 (russell-1000 sweep). 48 symbols
+    # surviving OOS Sharpe >= 0.3 AND >= 10 OOS trades at the chosen combo.
+    # Previous universe (SPY/QQQ/IWM/NVDA/TSLA/META) had zero overlap with
+    # the survivors and is replaced wholesale.
     symbols:
-    - SPY
-    - QQQ
-    - IWM
-    - NVDA
-    - TSLA
-    - META
+    - STLD
+    - MAR
+    - LDOS
+    - TECH
+    - HES
+    - EFX
+    - AXP
+    - UAL
+    - SOFI
+    - PNR
+    - RVTY
+    - KEYS
+    - ZTS
+    - ETN
+    - NEM
+    - MPC
+    - EXPE
+    - REGN
+    - FAST
+    - IRM
+    - NSC
+    - WYNN
+    - J
+    - CRM
+    - TRV
+    - ODFL
+    - L
+    - ALL
+    - PHM
+    - GRMN
+    - FDX
+    - EIX
+    - GPC
+    - MAA
+    - VEEV
+    - MTCH
+    - DAL
+    - HUM
+    - WELL
+    - TROW
+    - HLT
+    - ICE
+    - TT
+    - ESS
+    - MHK
+    - SUI
+    - LHX
+    - MLM
     timezone: America/New_York
 backtest:
   cache_dir: runtime/bars_cache
@@ -59,9 +105,12 @@ scheduler:
   wake_grace_seconds: 5
 setups:
   orb_vwap:
-    atr_mult_stop: 0.75
+    # Tuned via docs/sweeps/2026-06-04 (russell-1000 sweep). Best combo by
+    # symbols_above_floor + median_oos_sharpe + total_oos_pnl.
+    # Prior values: atr_mult_stop=0.75, orb_bars=6, target_R=3.0.
+    atr_mult_stop: 0.5
     enabled: true
-    orb_bars: 6
+    orb_bars: 3
     target_R: 3.0
 system:
   name: orb_equity_trader
