@@ -103,26 +103,27 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-ib-equity:
-    build: .
-    command: python main.py --config config/settings_ib_equity.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_ib_eq.file
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-ib-equity: retired
+  # trader-ib-equity:
+  #   build: .
+  #   command: python main.py --config config/settings_ib_equity.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - LOCK_FILE_PATH=/app/runtime/lock_ib_eq.file
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   trader-vwap-bands-equity:
     build: .
