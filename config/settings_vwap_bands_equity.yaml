@@ -7,27 +7,46 @@ asset_classes:
     session_close_local: '23:59'
     session_open_local: 00:00
     slippage_bps: 2
+    # Curated from docs/sweeps/2026-06-04 (russell-1000 sweep). 36 symbols
+    # surviving OOS Sharpe >= 0.3 AND >= 10 OOS trades. Previous universe
+    # (SPY/QQQ/AAPL/MSFT/NVDA/TSLA/...) had zero overlap with the survivors.
     symbols:
-    - SPY
-    - QQQ
-    - IWM
-    - XLF
-    - XLE
-    - GLD
-    - AAPL
-    - MSFT
-    - NVDA
-    - TSLA
-    - AMZN
-    - GOOGL
-    - META
-    - AMD
-    - JPM
-    - AVGO
-    - NFLX
-    - COIN
-    - PLTR
-    - UBER
+    - MAS
+    - KLAC
+    - TTWO
+    - MLM
+    - DG
+    - NTRS
+    - APD
+    - WAB
+    - SBAC
+    - BDX
+    - PAYX
+    - NWS
+    - MAR
+    - FITB
+    - PG
+    - WM
+    - ADSK
+    - WEC
+    - LRCX
+    - CHTR
+    - WYNN
+    - CDNS
+    - NTAP
+    - WRB
+    - MMC
+    - MCHP
+    - WCN
+    - ADBE
+    - ADP
+    - KMB
+    - SYY
+    - SYK
+    - BA
+    - IBKR
+    - TDY
+    - DASH
     timezone: America/New_York
 backtest:
   cache_dir: runtime/bars_cache
@@ -73,10 +92,14 @@ scheduler:
   wake_grace_seconds: 5
 setups:
   vwap_dev_bands:
-    atr_mult_stop: 0.75
+    # Tuned via docs/sweeps/2026-06-04 (russell-1000 sweep). Best combo by
+    # symbols_above_floor + median_oos_sharpe + total_oos_pnl across the
+    # curated universe above.
+    # Prior values: atr_mult_stop=0.75, sigma=2.5, target_R=2.0.
+    atr_mult_stop: 0.5
     enabled: true
-    sigma: 2.5
-    target_R: 2.0
+    sigma: 3.0
+    target_R: 1.5
 system:
   name: vwap_bands_equity_trader
   trading_env: paper
