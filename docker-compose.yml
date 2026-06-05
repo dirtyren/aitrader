@@ -21,7 +21,7 @@ services:
 
   trader-vwap-wave-equity:
     build: .
-    command: python main.py --config config/settings_vwap_wave_equity.yaml
+    command: sh -c "python scripts/validate_grids.py vwap_wave && python main.py --config config/settings_vwap_wave_equity.yaml"
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
