@@ -151,6 +151,12 @@ def auto_clear_resolved(
     for row in q.all():
         if row.key in current_set:
             continue
+        # Synthetic strike keys created by detect_manual_close and other
+        # auto-resolution steps use different formats (e.g. "manual_close:11:FAST"
+        # vs the anomaly key "mysql_only:11:FAST"). These are managed exclusively
+        # by their respective auto-resolution functions — never self-heal them.
+        if row.key.startswith("manual_close:"):
+            continue
         row.resolved = True
         row.resolved_at = now
         row.resolved_reason = "self_healed"
