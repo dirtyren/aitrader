@@ -1035,15 +1035,37 @@ def auto_resolve_mysql_only_entry_never_filled(
                 None,
             )
             if closed_match is None:
+                # Entry COID is completely absent from Alpaca (both open and
+                # closed orders). The order expired from Alpaca's history and
+                # the position was likely closed long ago. Close the MySQL
+                # row at entry price with reason 'entry_untraceable'.
+                entry_px = float(row.entry_px)
+                store.position_closed(
+                    symbol=a.symbol,
+                    exit_px=entry_px,
+                    close_reason="entry_untraceable",
+                    setup_name=setup,
+                    strategy_id=a.strategy_id,
+                    closed_at=now,
+                )
                 emit_event(
                     session,
-                    type="mysql_only_entry_coid_missing",
+                    type="auto_close_entry_untraceable",
                     strategy_id=a.strategy_id,
                     symbol=a.symbol,
                     asset_class=asset_class,
                     payload={"entry_coid": entry_coid, "setup": setup,
-                             "qty": float(row.qty),
+                             "qty": float(row.qty), "entry_px": entry_px,
                              "strike_count": existing.strike_count},
+                )
+                existing.resolved = True
+                existing.resolved_at = now
+                existing.resolved_reason = "auto_close_entry_untraceable"
+                resolved_count += 1
+                log.warning(
+                    "AUTO_CLOSE_ENTRY_UNTRACEABLE symbol=%s setup=%s "
+                    "entry_coid=%s strike_count=%d",
+                    a.symbol, setup, entry_coid, existing.strike_count,
                 )
             else:
                 emit_event(
