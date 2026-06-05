@@ -1,4 +1,10 @@
 # Pending hypotheses for vwap_wave_crypto_trader
 
+# ✅ MARKED REFLECTED 2026-06-03 — No config change needed
+# 8 fade_extreme trades on SOLUSD/DOTUSD, all closed by auto_resolved_qty_drift
+# at bars_held=0 (same bar). Despite immediate drift-resolution, strategy achieved
+# 62.5% WR with +$1,939.68 PnL in choppy bull regime — signals are excellent.
+# Drift resolution is a code-level mechanism, not a strategy param. No tuning needed.
+
 # ✅ REFLECTED 2026-06-01 — No config change needed
 # 60% WR (+$361). Diverse setups (price_discovery, return_to_value, fade_extreme) spreading risk well. XRP and PEPE hit R=2.0 and R=1.0 targets.

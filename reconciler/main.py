@@ -1601,7 +1601,20 @@ def run_one_cycle(
                         strike_threshold=cfg.strike_threshold,
                     )
 
-        # 4.5. Auto-close broker_only anomalies whose strike has confirmed
+        # 4.5. Auto-clear strikes whose anomaly is no longer present.
+        # Must run BEFORE the auto-resolution steps (4.6-4.9) so that
+        # synthetic strikes created by auto_close_broker_only and
+        # detect_manual_close (which use different key formats —
+        # e.g. "manual_close:11:FAST" vs the anomaly key "11:FAST")
+        # aren't immediately wiped as "self_healed" on the same cycle.
+        auto_clear_resolved(
+            session,
+            current_anomaly_keys={a.key for a in anomalies},
+            now=now,
+            asset_class=asset_class,
+        )
+
+        # 4.6. Auto-close broker_only anomalies whose strike has confirmed
         # them as unmanaged. Strike-gated so transient races (in-flight fill
         # not yet written to MySQL) self-heal before we flatten anything.
         broker_positions_by_sym = _broker_position_by_symbol(broker_positions)
@@ -1612,7 +1625,7 @@ def run_one_cycle(
             asset_class=asset_class,
         )
 
-        # 4.6. Auto-resolve qty_drift anomalies. recent_fills carries the
+        # 4.7. Auto-resolve qty_drift anomalies. recent_fills carries the
         # COIDs we use to attribute drift to a specific strategy/setup when
         # multiple rows hold the symbol.
         auto_resolve_qty_drift(
@@ -1623,7 +1636,7 @@ def run_one_cycle(
             asset_class=asset_class,
         )
 
-        # 4.7. Auto-resolve mysql_only anomalies whose entry order is still
+        # 4.8. Auto-resolve mysql_only anomalies whose entry order is still
         # sitting unfilled at the broker. Self-heals the optimistic-insert
         # case (limit-bracket parent never hit during the session).
         auto_resolve_mysql_only_entry_never_filled(
@@ -1632,7 +1645,7 @@ def run_one_cycle(
             cfg=cfg, now=now, asset_class=asset_class,
         )
 
-        # 4.8. Detect manual closes (operator or external risk system closed
+        # 4.9. Detect manual closes (operator or external risk system closed
         # a position at the broker). When an mysql_only anomaly's entry COID
         # is filled at the broker but no exit COID for it appears in this
         # cycle's recent_fills, the position was closed externally — close
@@ -1644,15 +1657,7 @@ def run_one_cycle(
             cfg=cfg, now=now, asset_class=asset_class,
         )
 
-        # 5. Auto-clear strikes whose anomaly is no longer present.
-        auto_clear_resolved(
-            session,
-            current_anomaly_keys={a.key for a in anomalies},
-            now=now,
-            asset_class=asset_class,
-        )
-
-        # 6. Heartbeat.
+        # 5. Heartbeat.
         emit_event(
             session,
             type="heartbeat",
