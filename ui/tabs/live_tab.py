@@ -8,7 +8,7 @@ import streamlit as st
 
 from ui.data.positions_repo import get_open
 from ui.data.state_files import get_last_price
-from ui.data.strategy_configs import list_yaml_strategy_names
+from ui.data.strategy_configs import list_by_asset_class
 
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
@@ -58,43 +58,57 @@ def _live_body() -> None:
     so Settings forms, Strategy admin buttons, and other tabs stay stable."""
     try:
         df = get_open()
-        yaml_strategies = list_yaml_strategy_names()
     except Exception as e:
         st.error(f"MySQL unreachable: {e}")
         return
 
-    open_strategies = sorted(df["strategy"].unique().tolist()) if not df.empty else []
+    eq_tab, cr_tab = st.tabs(["Equity", "Crypto"])
+    with eq_tab:
+        _render_asset_class(df, "equity")
+    with cr_tab:
+        _render_asset_class(df, "crypto")
+
+
+def _render_asset_class(df: pd.DataFrame, asset_class: str) -> None:
+    try:
+        yaml_strategies = list_by_asset_class(asset_class)
+    except Exception as e:
+        st.error(f"Failed to load {asset_class} strategy configs: {e}")
+        return
+
+    ac_df = df[df["asset_class"] == asset_class] if not df.empty else df
+    open_strategies = sorted(ac_df["strategy"].unique().tolist()) if not ac_df.empty else []
     options = sorted(set(yaml_strategies) | set(open_strategies))
 
     if not options:
-        st.info("No strategies registered yet.")
+        st.info(f"No {asset_class} strategies registered yet.")
         return
 
     selected = st.multiselect(
         "Filter strategies",
         options=options,
         default=options,
-        key="live_strategy_filter",
+        key=f"live_strategy_filter_{asset_class}",
     )
 
-    if df.empty:
-        st.info("No open positions across any strategy.")
+    if ac_df.empty:
+        st.info(f"No open {asset_class} positions across any strategy.")
         return
 
-    df = df[df["strategy"].isin(selected)]
-    if df.empty:
-        st.info("No open positions for the selected strategies.")
+    ac_df = ac_df[ac_df["strategy"].isin(selected)]
+    if ac_df.empty:
+        st.info(f"No open {asset_class} positions for the selected strategies.")
         return
 
-    enriched = _enrich(df)
+    enriched = _enrich(ac_df)
 
     display_cols = [
-        "strategy", "symbol", "asset_class", "setup_name", "side", "qty",
+        "strategy", "symbol", "setup_name", "side", "qty",
         "entry_px", "current_px", "unrealized", "R_so_far",
         "stop_px", "target_px", "age",
     ]
     show = enriched[display_cols].rename(columns={
-        "strategy": "Strategy", "symbol": "Symbol", "asset_class": "Asset",
+        "strategy": "Strategy", "symbol": "Symbol",
         "setup_name": "Setup", "side": "Side", "qty": "Qty",
         "entry_px": "Entry", "current_px": "Current",
         "unrealized": "Unrealized PnL", "R_so_far": "R so far",
