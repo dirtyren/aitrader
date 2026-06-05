@@ -1,0 +1,5 @@
+{
+  "atr_mult_stop":   [1.0, 1.25, 1.5],
+  "target_R":        [2.0, 2.5, 3.0],
+  "arm_window_bars": [4, 6, 8]
+}
