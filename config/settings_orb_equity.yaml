@@ -111,7 +111,7 @@ setups:
     atr_mult_stop: 0.5
     enabled: true
     orb_bars: 3
-    target_R: 3.0
+    target_R: 4.0
 system:
   name: orb_equity_trader
   trading_env: paper

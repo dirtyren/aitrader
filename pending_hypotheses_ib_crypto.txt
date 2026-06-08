@@ -10,8 +10,19 @@
 # with vwap_bands_crypto_trader (shares: BTC, ETH, SOL, AVAX, LINK — 5 of 10 ib_crypto pairs).
 # Regime: bull. No parameter change will fix symbol overlap. Marked 6 trades reflected.
 
+## ✅ REFLECTED 2026-06-08 — No config change needed
+# 6 trades: 4× auto_resolved_qty_drift (LINK +$640, AVAX +$3/$277, PEPE $0) + 
+# 2× broker_exit (XRP -$11,096 at -0.82R, DOGE -$0.02 at -0.93R). All bars_held=0.
+# XRP loss is significant ($11K) but all 6 have 0 bars — consistent with structural 
+# cross-strategy drift artifacts, not genuine IB signal exits. XRP and DOGE are NOT 
+# in the vwap_bands_crypto overlap set (BTC/ETH/SOL/AVAX/LINK), but may be overlapping 
+# with vwap_wave_crypto_trader or another strategy. Regime: bull, avg alignment=0.7.
+# No parameter change — this is structural deconfliction debt.
+
 ## 🔮 PENDING (structural, not parameter tuning):
 # - Symbol deconfliction: remove BTC, ETH, SOL, AVAX, LINK from ib_crypto's list (keep the
 #   non-overlapping 5: ADA, DOGE, DOT, PEPE, XRP). This would eliminate the drift resolution entirely.
 # - Alternative: Remove those 5 from vwap_bands_crypto instead. Would need to verify vwap_bands 
 #   performance on the remaining 0 symbols (none — vwap_bands_crypto only has 5 pairs).
+# - Investigate XRP/DOGE overlap: these are NOT in vwap_bands_crypto's list but still produce 
+#   broker_exit drift — possible overlap with vwap_wave_crypto_trader or vwap_bands_crypto.
