@@ -174,6 +174,7 @@ class OrderExecutor:
         extended_hours = bool(signal.notes.get("extended_hours"))
 
         try:
+            oco_order = None  # Only set in regular equity; extended_hours uses post-open attach
             if asset_class == "equity" and extended_hours:
                 # Pre-market entry: plain limit with extended_hours=True. The
                 # OCO bracket is attached after the regular session opens.
@@ -188,16 +189,40 @@ class OrderExecutor:
                     extended_hours=True,
                 )
             elif asset_class == "equity":
-                order = self.client.submit_bracket_order(
+                # Market entry — fills immediately instead of the old
+                # limit-bracket that went unfilled in fast-moving
+                # breakouts (ORB, VWAP Wave, etc.), causing the
+                # reconciled_gone / entry_never_filled $0-PnL epidemic.
+                order = self.client.submit_order(
                     symbol=signal.symbol,
                     qty=decision.qty,
                     side=alp_side,
-                    limit_price=signal.entry,
-                    stop_loss=signal.stop,
-                    take_profit=signal.target,
+                    order_type="market",
                     time_in_force="day",
                     client_order_id=entry_coid,
                 )
+                # Attach OCO stop/target bracket to the filled position
+                oco_coid = make_client_order_id(
+                    self.strategy_name, signal.setup, signal.symbol, Role.STOP,
+                )
+                exit_side = "sell" if alp_side == "buy" else "buy"
+                oco_order = None
+                try:
+                    oco_order = self.client.attach_oco(
+                        symbol=signal.symbol,
+                        qty=decision.qty,
+                        side=exit_side,
+                        stop_price=signal.stop,
+                        target_price=signal.target,
+                        time_in_force="day",
+                        client_order_id=oco_coid,
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "OCO_ATTACH_FAILED_AFTER_MARKET_ENTRY symbol=%s "
+                        "setup=%s error=%s",
+                        signal.symbol, signal.setup, exc,
+                    )
             elif asset_class == "crypto":
                 # Crypto: market entry + engine-managed virtual stop/target
                 order = self.client.submit_order(
@@ -224,7 +249,7 @@ class OrderExecutor:
                               signal.symbol, exc, exc_info=True)
             return None
 
-        stop_order_id = self._extract_stop_leg_id(order) if asset_class == "equity" else None
+        stop_order_id = self._extract_stop_leg_id(oco_order) if (asset_class == "equity" and oco_order) else None
         # Crypto: target is engine-virtual. Submitting an immediate limit TP
         # right after a market entry trips Alpaca's wash-trade detector
         # ("potential wash trade detected. use complex orders") — and when
@@ -234,12 +259,10 @@ class OrderExecutor:
         # keeps the crypto path consistent and removes both failure modes.
         target_order_id = None
 
-        # Crypto market orders fill synchronously — when Alpaca returns
+        # Market orders fill synchronously — when Alpaca returns
         # status='filled' in the submit response, the broker already owns
         # the qty and we can let the engine act on virtual exits right
-        # away. Equity bracket parents come back 'accepted' and only
-        # actually fill if/when the limit price prints — flag stays False
-        # until PositionManager polls and confirms.
+        # away.
         order_status = (order or {}).get("status") if isinstance(order, dict) else None
         fill_confirmed = order_status in ("filled", "partially_filled")
 

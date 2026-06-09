@@ -17,19 +17,30 @@ def _signal(symbol="AAPL", side="long"):
 
 def test_submit_equity_uses_bracket_order():
     client = MagicMock()
-    client.submit_bracket_order.return_value = {"id": "ord-1"}
+    client.submit_order.return_value = {"id": "ord-1", "status": "filled"}
+    client.attach_oco.return_value = {
+        "id": "oco-1",
+        "legs": [
+            {"id": "tp-1", "type": "limit", "limit_price": 102},
+            {"id": "sl-1", "type": "stop", "stop_price": 99},
+        ],
+    }
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos is not None
     assert pos.symbol == "AAPL"
-    assert client.submit_bracket_order.called
-    payload = client.submit_bracket_order.call_args.kwargs
+    assert client.submit_order.called
+    payload = client.submit_order.call_args.kwargs
     assert payload["side"] == "buy"
     assert payload["symbol"] == "AAPL"
-    assert payload["stop_loss"] == 99
-    assert payload["take_profit"] == 102
+    assert payload["order_type"] == "market"
+    # Stop/target are now attached via OCO after the market entry
+    assert client.attach_oco.called
+    oco_payload = client.attach_oco.call_args.kwargs
+    assert oco_payload["stop_price"] == 99
+    assert oco_payload["target_price"] == 102
 
 
 def test_submit_crypto_uses_market_order_and_virtual_stop_and_target():
@@ -66,13 +77,13 @@ def test_submit_returns_none_when_rejected():
     decision = RiskDecision.reject("denied")
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos is None
-    client.submit_bracket_order.assert_not_called()
     client.submit_order.assert_not_called()
 
 
 def test_submit_equity_captures_stop_leg_id():
     client = MagicMock()
-    client.submit_bracket_order.return_value = {
+    client.submit_order.return_value = {"id": "entry-1", "status": "filled"}
+    client.attach_oco.return_value = {
         "id": "parent-1",
         "legs": [
             {"id": "tp-1", "type": "limit", "limit_price": 102},
@@ -84,12 +95,13 @@ def test_submit_equity_captures_stop_leg_id():
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(_signal(), decision, asset_class="equity")
     assert pos.stop_order_id == "sl-1"
-    assert pos.order_id == "parent-1"
+    assert pos.order_id == "entry-1"
 
 
 def test_submit_equity_no_legs_keeps_stop_order_id_none():
     client = MagicMock()
-    client.submit_bracket_order.return_value = {"id": "parent-2"}   # paper sometimes omits legs
+    client.submit_order.return_value = {"id": "entry-2", "status": "filled"}
+    client.attach_oco.return_value = {"id": "parent-2"}  # paper sometimes omits legs
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
@@ -122,13 +134,12 @@ def test_submit_skips_when_symbol_just_exited_this_cycle():
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(sig, decision, asset_class="equity")
     assert pos is None
-    client.submit_bracket_order.assert_not_called()
     client.submit_order.assert_not_called()
 
 
 def test_submit_logs_dtbp_rejection_at_warning_without_stack_trace(caplog):
     client = MagicMock()
-    client.submit_bracket_order.side_effect = InsufficientBuyingPowerError(
+    client.submit_order.side_effect = InsufficientBuyingPowerError(
         403, "insufficient day trading buying power"
     )
     book = PositionBook()
@@ -147,7 +158,7 @@ def test_submit_logs_dtbp_rejection_at_warning_without_stack_trace(caplog):
 
 def test_dtbp_rejection_short_circuits_subsequent_equity_submits_in_same_cycle():
     client = MagicMock()
-    client.submit_bracket_order.side_effect = InsufficientBuyingPowerError(
+    client.submit_order.side_effect = InsufficientBuyingPowerError(
         403, "insufficient day trading buying power"
     )
     book = PositionBook()
@@ -156,19 +167,19 @@ def test_dtbp_rejection_short_circuits_subsequent_equity_submits_in_same_cycle()
 
     # First submit triggers the broker call and gets rejected.
     assert ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity") is None
-    assert client.submit_bracket_order.call_count == 1
+    assert client.submit_order.call_count == 1
 
     # Subsequent equity submit in the same cycle must NOT call the broker.
     assert ex.submit(_signal(symbol="AAPL"), decision, asset_class="equity") is None
-    assert client.submit_bracket_order.call_count == 1
+    assert client.submit_order.call_count == 1
 
 
 def test_dtbp_short_circuit_does_not_block_crypto_submits():
     client = MagicMock()
-    client.submit_bracket_order.side_effect = InsufficientBuyingPowerError(
-        403, "insufficient day trading buying power"
-    )
-    client.submit_order.return_value = {"id": "ord-c"}
+    client.submit_order.side_effect = [
+        InsufficientBuyingPowerError(403, "insufficient day trading buying power"),
+        {"id": "ord-c", "status": "filled"},
+    ]
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=0.1, notional=5000)
@@ -178,12 +189,12 @@ def test_dtbp_short_circuit_does_not_block_crypto_submits():
     pos = ex.submit(_signal(symbol="BTC/USD", side="long"), decision,
                     asset_class="crypto")
     assert pos is not None
-    assert client.submit_order.call_count == 1  # market entry only
+    assert client.submit_order.call_count == 2  # equity (rejected) + crypto (filled)
 
 
 def test_reset_cycle_clears_dtbp_short_circuit():
     client = MagicMock()
-    client.submit_bracket_order.side_effect = [
+    client.submit_order.side_effect = [
         InsufficientBuyingPowerError(403, "insufficient day trading buying power"),
         {"id": "ord-next"},
     ]
@@ -194,17 +205,17 @@ def test_reset_cycle_clears_dtbp_short_circuit():
     assert ex.submit(_signal(symbol="PLTR"), decision, asset_class="equity") is None
     # Same-cycle short-circuit
     assert ex.submit(_signal(symbol="AAPL"), decision, asset_class="equity") is None
-    assert client.submit_bracket_order.call_count == 1
+    assert client.submit_order.call_count == 1
 
     ex.reset_cycle()
     pos = ex.submit(_signal(symbol="AAPL"), decision, asset_class="equity")
     assert pos is not None
-    assert client.submit_bracket_order.call_count == 2
+    assert client.submit_order.call_count == 2
 
 
 def test_submit_proceeds_after_just_exited_cleared():
     client = MagicMock()
-    client.submit_bracket_order.return_value = {"id": "ord-x"}
+    client.submit_order.return_value = {"id": "ord-x"}
     book = PositionBook()
     from state.position_book import OpenPosition  # noqa: F811 (re-import in function scope)
     book.add(OpenPosition(
@@ -221,7 +232,7 @@ def test_submit_proceeds_after_just_exited_cleared():
     decision = RiskDecision(approved=True, qty=10, notional=1000)
     pos = ex.submit(sig, decision, asset_class="equity")
     assert pos is not None
-    client.submit_bracket_order.assert_called_once()
+    client.submit_order.assert_called_once()
 
 
 def test_submit_crypto_short_is_blocked_immediately():
@@ -239,9 +250,12 @@ def test_submit_crypto_short_is_blocked_immediately():
 
 def test_crypto_insufficient_buying_power_does_not_trigger_dtbp_exhaustion():
     client = MagicMock()
-    client.submit_order.side_effect = InsufficientBuyingPowerError(
-        403, "insufficient balance for USD"
-    )
+    # Crypto submit_order raises, then equity submit_order + attach_oco succeed
+    client.submit_order.side_effect = [
+        InsufficientBuyingPowerError(403, "insufficient balance for USD"),
+        {"id": "ord-eq", "status": "filled"},
+    ]
+    client.attach_oco.return_value = {"id": "oco-x"}
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=0.1, notional=5000)
@@ -253,11 +267,10 @@ def test_crypto_insufficient_buying_power_does_not_trigger_dtbp_exhaustion():
     assert ex._dtbp_exhausted is False  # Must not set DTBP exhausted for crypto rejections
 
     # Subsequent equity submit in the same cycle must STILL call the broker
-    client.submit_bracket_order.return_value = {"id": "ord-eq"}
     sig_equity = _signal(symbol="AAPL", side="long")
     pos = ex.submit(sig_equity, RiskDecision(approved=True, qty=10, notional=1000), asset_class="equity")
     assert pos is not None
-    client.submit_bracket_order.assert_called_once()
+    assert client.submit_order.call_count == 2
 
 
 def test_virtual_exit_adopted_crypto_target_submits_close():
@@ -290,9 +303,10 @@ def test_virtual_exit_adopted_crypto_target_submits_close():
 
 
 def test_submit_equity_passes_coid_to_bracket_order():
-    """Equity submit must mint a role=entry COID and pass it to submit_bracket_order."""
+    """Equity submit must mint a role=entry COID and pass it to submit_order."""
     client = MagicMock()
-    client.submit_bracket_order.return_value = {"id": "ord-1"}
+    client.submit_order.return_value = {"id": "ord-1", "status": "filled"}
+    client.attach_oco.return_value = {"id": "oco-1"}
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
@@ -300,8 +314,8 @@ def test_submit_equity_passes_coid_to_bracket_order():
     pos = ex.submit(_signal(), decision, asset_class="equity")
 
     assert pos is not None
-    assert client.submit_bracket_order.called
-    coid = client.submit_bracket_order.call_args.kwargs["client_order_id"]
+    assert client.submit_order.called
+    coid = client.submit_order.call_args.kwargs["client_order_id"]
     assert coid is not None and coid.startswith("aitrader__vwap_wave__price_discovery__AAPL__entry__")
     # Position carries the same COID
     assert pos.client_order_id == coid
@@ -456,7 +470,6 @@ def test_submit_extended_hours_uses_plain_limit_not_bracket():
     decision = RiskDecision(approved=True, qty=10, notional=2000)
     pos = ex.submit(_eh_signal(), decision, asset_class="equity")
     assert pos is not None
-    client.submit_bracket_order.assert_not_called()
     client.submit_order.assert_called_once()
     payload = client.submit_order.call_args.kwargs
     assert payload["order_type"] == "limit"
@@ -480,9 +493,10 @@ def test_submit_extended_hours_marks_position_pending_oco_attach():
 
 
 def test_submit_regular_equity_does_not_set_pending_oco_attach():
-    """The default bracket path must not flip the new flag."""
+    """Regular-session equity (market entry + OCO) must not flip the pre-market flag."""
     client = MagicMock()
-    client.submit_bracket_order.return_value = {"id": "ord-1"}
+    client.submit_order.return_value = {"id": "ord-1", "status": "filled"}
+    client.attach_oco.return_value = {"id": "oco-1"}
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="orb_vwap", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=10, notional=1000)
@@ -538,7 +552,6 @@ def test_submit_rejects_invalid_equity_bracket_geometry(
     pos = ex.submit(sig, decision, asset_class="equity")
 
     assert pos is None
-    client.submit_bracket_order.assert_not_called()
     client.submit_order.assert_not_called()
     # Surface the reject reason via the warning log so operators see it.
     assert log.warning.called
@@ -552,7 +565,7 @@ def test_submit_accepts_subdollar_tick_geometry():
     """Sub-$1 prices use a $0.0001 tick. A target $0.0001 above a $0.50
     entry must pass; a target $0.00005 above must fail."""
     client = MagicMock()
-    client.submit_bracket_order.return_value = {"id": "sub-1"}
+    client.submit_order.return_value = {"id": "sub-1"}
     book = PositionBook()
     ex = OrderExecutor(client, book, strategy_name="vwap_wave", logger=MagicMock())
     decision = RiskDecision(approved=True, qty=100, notional=50)
@@ -594,7 +607,7 @@ def test_submit_skips_when_book_already_has_opposing_position():
     pos = ex.submit(sig, decision, asset_class="equity")
 
     assert pos is None
-    client.submit_bracket_order.assert_not_called()
+    client.submit_order.assert_not_called()
     msg = log.info.call_args.args[0] % log.info.call_args.args[1:]
     assert "ORDER_SKIPPED_OPPOSING_OPEN_ORDER" in msg
 
@@ -618,7 +631,7 @@ def test_submit_skips_when_book_has_same_side_same_setup():
     pos = ex.submit(_signal(), decision, asset_class="equity")
 
     assert pos is None
-    client.submit_bracket_order.assert_not_called()
+    client.submit_order.assert_not_called()
 
 
 def test_submit_crypto_skips_geometry_check():
@@ -662,4 +675,3 @@ def test_submit_extended_hours_equity_skips_geometry_check():
     pos = ex.submit(sig, decision, asset_class="equity")
     assert pos is not None
     client.submit_order.assert_called_once()
-    client.submit_bracket_order.assert_not_called()
