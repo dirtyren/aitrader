@@ -6,11 +6,15 @@
 # ✅ APPLIED 2026-06-08 — target_R: 3.0 → 4.0
 # Rationale: 10 trades, 0% fill rate (P&L=$0, entry=exit). Breakout Limit Bracket Orders Unfilled Limit
 # Drift — limit orders at bar.close never fill in momentum breakouts. Bull regime → compensate by making
-# the rare fills capture 4.0R instead of 3.0R. Standard heuristic for this pattern.
-# Container rebuilt 2026-06-05 11:11 ET; only 1 post-rebuild trade (UAL, also unfilled).
-# If fills stay at 0%, this is a code-level issue (need market orders for ORB entries).
+# the rare fills capture 4.0R instead of 3.0R.
+# Result: No improvement — 15 more trades at 0% fill post-change. Confirmed code-level issue.
+
+# ✅ APPLIED 2026-06-09 — consecutive_closes: 2 → 1
+# Rationale: 15 trades, 0% fill rate (P&L=$0, entry=exit). Same code-level issue persists.
+# Firing after 1 bar instead of 2 enters earlier before momentum exhausts the entry zone.
+# If fills stay at 0%, this confirms market orders are needed for ORB entries.
 
 # 🔮 PENDING:
-# - Switch to 1Hour bars + IB-style approach (like successful ib_crypto 1H IB pattern)
-# - Reduce orb_bars from 3→2 for more signal opportunities (more shots at filling)
-# - Code change: market order entries instead of limit orders for ORB breakouts
+# - Switch to 1Hour bars + IB-style approach (like successful ib_crypto 1H IB pattern, now retired)
+# - Code change: market order entries instead of limit orders for ORB breakouts (REQUIRED)
+# - Consider retiring orb_equity_trader entirely if code fix not feasible

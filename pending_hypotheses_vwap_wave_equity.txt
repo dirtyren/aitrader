@@ -1,15 +1,16 @@
 # Pending hypotheses for vwap_wave_equity_trader
 
-## Applied this cycle: shift scale_weights [0.4,0.35,0.25] -> [0.3,0.4,0.30]
+# ✅ APPLIED — scale_weights shifted [0.4,0.35,0.25] -> [0.3,0.4,0.30]
 
-## Alternative ideas (not yet applied):
+# ✅ APPLIED 2026-06-09 — consecutive_closes: 2 → 1
+# Rationale: 6 trades, 0% fill rate (P&L=$0, entry=exit), all setups affected.
+# Entry_never_filled + manual_close pattern. min_distance_atr already at 0.20.
+# Firing after 1 bar instead of 2 enters earlier, before momentum exhausts the entry zone.
+# If fills stay at 0%, confirms deeper issue with limit order mechanism on VWAP reversion signals.
 
-1. **Remove AVGO from symbol list** — Two AVGO fade_extreme losses totaling -$852, with position sizes varying wildly (226 vs 54 shares). AVGO may not be suitable for VWAP reversion due to its high-beta semiconductor profile. Next time AVGO appears as a fade_extreme loss, consider trimming it.
-
-2. **Increase fade_extreme target from VWAP to a wider offset** — The current `target: vwap` gives tiny R wins on small bounces. Consider adding a `target_R: 1.5` or using a VWAP band (e.g. 1.0 sigma) as the target to let winners run further. This would need code changes to support non-VWAP target for fade_extreme.
-
-3. **Reduce price_discovery atr_mult_stop from 1.0 to 0.75** — price_discovery has 5 losses at -1.0R vs 8 wins at 2.0R. The EV is +0.86R/trade which is already excellent. Tightening the stop would reduce loss magnitude but might increase the loss rate. Low priority due to strong existing performance.
-
-4. **Increase fade_extreme atr_mult_stop from 0.75 to 1.0** — Widening the stop would let winners ride longer before hitting VWAP target. Risk: losses also grow. Only consider if scale_weights shift above doesn't improve avg win R.
-
-5. **Trim XLF, XLE from symbol list** — These slow sector ETFs may not be suitable for fade_extreme reversion. Monitor their individual P&L contribution.
+# 🔮 PENDING:
+# 1. Remove AVGO from symbol list — Two AVGO fade_extreme losses totaling -$852. AVGO may be unsuitable for VWAP reversion.
+# 2. Increase fade_extreme target from VWAP to wider offset — current `target: vwap` gives tiny R wins. Needs code change.
+# 3. Reduce price_discovery atr_mult_stop from 1.0 to 0.75 — EV already +0.86R/trade, low priority.
+# 4. Increase fade_extreme atr_mult_stop from 0.75 to 1.0 — only if scale_weights shift doesn't improve avg win R.
+# 5. Trim XLF, XLE from symbol list — slow sector ETFs, monitor P&L contribution.
