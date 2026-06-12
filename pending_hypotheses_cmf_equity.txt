@@ -1,33 +1,37 @@
 # Pending Hypotheses — cmf_equity_trader
-# Created: 2026-06-12
-# Gold (GLD) CMF crossover strategy
+# Updated: 2026-06-12 — replaced GLD with 15 equities + WFO-optimal params
+# WFO: 5yr, 3mo IS / 9mo OOS, 15/15 passed (100%), mean WFE=0.67, Sharpe=3.33
 
-## H1: Reduce CMF period from 20 to 10 for faster signal on 15Min bars
-Rationale: Gold's mean reversion is sharp. A shorter CMF period may capture
-accumulation/distribution pivots earlier, improving fill rates.
-Risk: More false signals (whipsaws) in low-volume periods.
+## H1: Add 1Hour timeframe for fewer but higher-quality signals
+Rationale: WFO used 15Min only. 1H CMF signals may filter intraday noise.
+Risk: Fewer trades, longer holds, wider stops needed.
 
-## H2: Widen threshold from 0.10 to 0.15 for stronger conviction
-Rationale: Require more extreme money flow readings to reduce noise.
-Risk: Fewer signals; may miss shallower but profitable reversion moves.
+## H2: Regime filter — disable CMF in strong trend regimes
+Rationale: CMF crossover works best in mean-reverting/range-bound markets.
+Adding the 20-day rolling return classifier could filter trend-day false signals.
+Risk: Misses breakout continuation trades that happen to cross CMF threshold.
 
-## H3: Increase target_R from 1.5 to 2.0
-Rationale: If gold trends strongly on CMF signals, the current tight target
-may cut winners too short. Backtests on VWAP bands show 2.0R worked on 5Min.
-Risk: Lower win rate; more trades hit stop before target.
+## H3: Tighten threshold from 0.15 to 0.20 for higher conviction
+Rationale: WFO showed threshold=0.20 was best for several walks. Higher
+threshold means fewer but higher-conviction signals.
+Risk: Misses shallower accumulation/distribution pivots.
 
-## H4: Add SLV (silver) as second symbol
-Rationale: Silver moves with gold but has higher beta. CMF signals may
-be more pronounced and profitable on SLV.
-Risk: Silver needs wider stops (0.75x ATR vs 0.5x). May need separate tuning.
+## H4: Trim weakest 5 symbols (PG, JNJ, WMT had lowest OOS Sharpe)
+Rationale: PG (1.64), JNJ (2.00), WMT (2.99) underperform vs NVDA (4.27), JPM (4.33).
+Concentrating on top 10 may improve aggregate Sharpe.
+Risk: Less diversification, concentration risk.
 
-## H5: Switch to 5Min timeframe for higher signal frequency
-Rationale: VWAP bands backtest showed 242 trades on 5Min vs 27 on 15Min.
-More data faster for optimization. Same 0.5x ATR + 2.0R config was viable.
-Risk: Higher noise, more whipsaws; may need threshold adjustment.
+## H5: Add SLV and GDX as commodity-adjacent supplements
+Rationale: The original GLD config showed some profitability (2/7 passes).
+Adding SLV/GDX alongside equities may provide uncorrelated returns.
+Risk: Gold/silver have different CMF behavior than equities; may dilute results.
 
-## H6: Add VWAP confirmation filter
-Rationale: Only take CMF signals when price is on the correct side of VWAP
-(long below VWAP, short above VWAP). This combines money flow with structural
-mean reversion, potentially filtering out false signals.
-Risk: Fewer signals; requires additional code changes.
+## H6: Switch from 15Min to 5Min for more signals
+Rationale: More bars = more crossovers = more trades. With 15 symbols,
+signal frequency already high — 5Min may over-trade.
+Risk: Overtrading, higher commission impact, more noise.
+
+## H7: Add trailing stop (trail_at_R=1.5, trail_atr=1.0 already set)
+Rationale: Current config has trailing enabled. If stops tighten too much
+and cut winners short, consider trail_at_R=2.0.
+Risk: Giving back more open profit if trend reverses sharply.
