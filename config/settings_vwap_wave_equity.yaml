@@ -83,7 +83,6 @@ asset_classes:
       - IWM
       - XLF
       - XLE
-      - GLD
       - AAPL
       - MSFT
       - NVDA
