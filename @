@@ -1,0 +1,315 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpass
+      - MYSQL_DATABASE=aitrader
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./state/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  trader-vwap-wave-equity:
+    build: .
+    command: python main.py --config config/settings_vwap_wave_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_vwap_wave_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-vwap-wave-crypto:
+    build: .
+    command: python main.py --config config/settings_vwap_wave_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_vwap_wave_cr.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-rsi-equity:
+    build: .
+    command: python main.py --config config/settings_rsi_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_rsi_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-rsi-crypto:
+    build: .
+    command: python main.py --config config/settings_rsi_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_rsi_cr.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-ib-equity:
+    build: .
+    command: python main.py --config config/settings_ib_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_ib_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-vwap-bands-equity:
+    build: .
+    command: python main.py --config config/settings_vwap_bands_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_vwap_bands_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-vwap-bands-crypto:
+    build: .
+    command: python main.py --config config/settings_vwap_bands_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_vwap_bands_cr.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-orb-equity:
+    build: .
+    command: python main.py --config config/settings_orb_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_orb_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-orb-crypto:
+    build: .
+    command: python main.py --config config/settings_orb_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_orb_cr.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-ib-crypto:
+    build: .
+    command: python main.py --config config/settings_ib_crypto.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_ib_crypto.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  trader-alpaca-gap_and_go:
+    build: .
+    command: python main_gap_and_go.py --config config/settings_gap_and_go_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - LOCK_FILE_PATH=/app/runtime/lock_gap_and_go_eq.file
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+      - ./config/universe_russell_1000.csv:/app/config/universe_russell_1000.csv:ro
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  reconciler:
+    build: .
+    command: python -m reconciler.main
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+      - RECONCILE_INTERVAL_S=${RECONCILE_INTERVAL_S:-30}
+      - RECONCILE_STRIKE_THRESHOLD=${RECONCILE_STRIKE_THRESHOLD:-3}
+      - RECONCILE_STRIKE_MIN_GAP_S=${RECONCILE_STRIKE_MIN_GAP_S:-60}
+      - RECONCILE_QTY_EPS=${RECONCILE_QTY_EPS:-1e-6}
+      - SHADOW_MODE=${SHADOW_MODE:-false}
+      - RECONCILE_STATE_FILE=/app/runtime/reconciler_state.json
+      - RECONCILE_HEARTBEAT_STALE_AFTER_S=${RECONCILE_HEARTBEAT_STALE_AFTER_S:-300}
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  dashboard:
+    build: .
+    command: streamlit run ui/dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    env_file: ./config/.env
+    environment:
+      - STATE_FILE_PATH=/app/runtime/trading_state.json
+      - PYTHONPATH=/app
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  nginx:
+    build: ./nginx
+    env_file: ./config/.env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - dashboard_certs:/etc/nginx/certs
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+
+volumes:
+  db_data:
+  dashboard_certs:

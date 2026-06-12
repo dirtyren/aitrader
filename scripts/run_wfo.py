@@ -68,13 +68,16 @@ def _resolve_universe(wfo_cfg: dict, client: AlpacaClient) -> list[tuple[str, st
                 for s in wfo_cfg["universe"]["symbols"]]
     if src == "alpaca_scan":
         scan = wfo_cfg["universe"]["alpaca_scan"]
-        return scan_alpaca_universe(
+        pairs = scan_alpaca_universe(
             client,
             classes=scan["classes"],
             min_dollar_volume_20d=scan["min_dollar_volume_20d"],
             top_n_per_class=scan["top_n_per_class"],
             cache_dir=scan["cache_dir"],
         )
+        # Normalize Alpaca class names → system asset classes
+        _class_map = {"us_equity": "equity"}
+        return [(sym, _class_map.get(cls, cls)) for sym, cls in pairs]
     raise ValueError(f"Unknown universe.source: {src!r}")
 
 

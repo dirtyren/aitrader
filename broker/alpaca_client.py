@@ -432,7 +432,7 @@ class AlpacaClient:
 
     def get_assets(self, asset_class: str | None = None) -> list[dict]:
         params = {"asset_class": asset_class} if asset_class else {}
-        resp = self._request("GET", "v2/assets", params=params)
+        resp = self._request("GET", "/v2/assets", params=params)
         return resp.json()
 
     def get_stock_bars(self, symbol: str, timeframe: str,

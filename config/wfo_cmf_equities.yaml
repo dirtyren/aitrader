@@ -1,0 +1,50 @@
+# Walk-Forward Optimization — CMF on top Alpaca equities
+# 5-year history, 3mo IS / 9mo OOS, 15Min bars
+
+run:
+  output_root: runtime/wfo
+  random_seed: 42
+  parallelism: -1
+
+history:
+  start: "2021-06-12"
+  end: "2026-06-12"
+  initial_equity: 100000
+
+windowing:
+  in_sample: "3mo"
+  out_of_sample: "9mo"
+  step: null
+
+universe:
+  source: alpaca_scan
+  alpaca_scan:
+    classes: [us_equity]
+    min_dollar_volume_20d: 50000000
+    top_n_per_class:
+      us_equity: 15
+    cache_dir: runtime/wfo/universe_cache
+
+timeframes:
+  - 15Min
+
+fitness:
+  metric: sharpe
+  min_trades: 5
+
+gate:
+  wfe_min: 0.3
+  require_positive_oos_pnl: true
+
+grid:
+  cmf:
+    enabled: [true]
+    period: [14, 20]
+    threshold: [0.10, 0.15, 0.20]
+    atr_mult_stop: [0.5, 0.75, 1.0]
+    target_R: [1.5, 2.0, 2.5]
+    cooldown_bars: [6]
+
+position_management:
+  max_hold_bars: [12]
+  breakeven_at_R: [1.0]
