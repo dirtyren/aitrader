@@ -1,0 +1,33 @@
+# Pending Hypotheses — cmf_equity_trader
+# Created: 2026-06-12
+# Gold (GLD) CMF crossover strategy
+
+## H1: Reduce CMF period from 20 to 10 for faster signal on 15Min bars
+Rationale: Gold's mean reversion is sharp. A shorter CMF period may capture
+accumulation/distribution pivots earlier, improving fill rates.
+Risk: More false signals (whipsaws) in low-volume periods.
+
+## H2: Widen threshold from 0.10 to 0.15 for stronger conviction
+Rationale: Require more extreme money flow readings to reduce noise.
+Risk: Fewer signals; may miss shallower but profitable reversion moves.
+
+## H3: Increase target_R from 1.5 to 2.0
+Rationale: If gold trends strongly on CMF signals, the current tight target
+may cut winners too short. Backtests on VWAP bands show 2.0R worked on 5Min.
+Risk: Lower win rate; more trades hit stop before target.
+
+## H4: Add SLV (silver) as second symbol
+Rationale: Silver moves with gold but has higher beta. CMF signals may
+be more pronounced and profitable on SLV.
+Risk: Silver needs wider stops (0.75x ATR vs 0.5x). May need separate tuning.
+
+## H5: Switch to 5Min timeframe for higher signal frequency
+Rationale: VWAP bands backtest showed 242 trades on 5Min vs 27 on 15Min.
+More data faster for optimization. Same 0.5x ATR + 2.0R config was viable.
+Risk: Higher noise, more whipsaws; may need threshold adjustment.
+
+## H6: Add VWAP confirmation filter
+Rationale: Only take CMF signals when price is on the correct side of VWAP
+(long below VWAP, short above VWAP). This combines money flow with structural
+mean reversion, potentially filtering out false signals.
+Risk: Fewer signals; requires additional code changes.

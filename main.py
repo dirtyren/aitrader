@@ -62,6 +62,7 @@ from scheduler.loop import VWAPWaveEngine
 from state.daily_ledger import DailyLedger
 from state.dashboard_state import DashboardSnapshot, write_dashboard_state
 from state.mysql_store import MySQLStore
+from strategies.setup_cmf import CMFSetup
 from strategies.setup_fade_extreme import FadeExtremeSetup
 from strategies.setup_price_discovery import PriceDiscoverySetup
 from strategies.setup_return_to_value import ReturnToValueSetup
@@ -181,6 +182,14 @@ def build_setups(cfg: dict, symbol: str):
             atr_mult_stop=s["orb_vwap"]["atr_mult_stop"],
             target_R=s["orb_vwap"]["target_R"],
         ))
+    if "cmf" in s and s["cmf"].get("enabled", False):
+        setups.append(CMFSetup(
+            symbol,
+            period=s["cmf"].get("period", 20),
+            threshold=s["cmf"].get("threshold", 0.10),
+            atr_mult_stop=s["cmf"]["atr_mult_stop"],
+            target_R=s["cmf"]["target_R"],
+        ))
     return setups
 
 
@@ -207,6 +216,13 @@ _OVERRIDE_FACTORIES = {
         atr_mult_stop=p["atr_mult_stop"],
         target_R=p["target_R"],
         arm_window_bars=p["arm_window_bars"],
+    ),
+    "cmf": lambda symbol, p: CMFSetup(
+        symbol,
+        period=p.get("period", 20),
+        threshold=p.get("threshold", 0.10),
+        atr_mult_stop=p["atr_mult_stop"],
+        target_R=p["target_R"],
     ),
 }
 
