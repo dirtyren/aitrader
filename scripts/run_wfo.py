@@ -64,7 +64,7 @@ def _build_asset_class_configs(settings_cfg: dict, wfo_cfg: dict
 def _resolve_universe(wfo_cfg: dict, client: AlpacaClient) -> list[tuple[str, str]]:
     src = wfo_cfg["universe"]["source"]
     if src == "symbols":
-        return [(s, "us_equity" if "/" not in s else "crypto")
+        return [(s, "equity" if "/" not in s else "crypto")
                 for s in wfo_cfg["universe"]["symbols"]]
     if src == "alpaca_scan":
         scan = wfo_cfg["universe"]["alpaca_scan"]

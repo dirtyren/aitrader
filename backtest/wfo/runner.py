@@ -57,7 +57,7 @@ def _build_replay_cfg(task: RunTask) -> dict:
     receives its setup_values; position_management receives pm_values.
     """
     setups: dict = {}
-    for name in ("price_discovery", "fade_extreme", "return_to_value", "vwap_bounce"):
+    for name in ("price_discovery", "fade_extreme", "return_to_value", "vwap_bounce", "cmf"):
         if name == task.combo.setup:
             base = {"enabled": True, "atr_mult_stop": 1.0, "cooldown_bars": 12}
             base.update(task.combo.setup_values)
@@ -66,12 +66,16 @@ def _build_replay_cfg(task: RunTask) -> dict:
             base.setdefault("arm_window_bars", 6)
             base.setdefault("scale_offsets_atr", [0.0, 0.25, 0.5])
             base.setdefault("scale_weights", [0.4, 0.35, 0.25])
+            # CMF-specific defaults
+            base.setdefault("period", 20)
+            base.setdefault("threshold", 0.10)
             setups[name] = base
         else:
             setups[name] = {
                 "enabled": False, "atr_mult_stop": 1.0, "target_R": 1.5,
                 "arm_window_bars": 6, "cooldown_bars": 12,
                 "scale_offsets_atr": [0.0], "scale_weights": [1.0],
+                "period": 20, "threshold": 0.10,
             }
     return {
         "setups": setups,
