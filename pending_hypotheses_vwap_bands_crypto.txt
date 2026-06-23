@@ -1,19 +1,32 @@
-# VWAP Bands Crypto Pending Hypotheses — Jun 2 2026
+# VWAP Bands Crypto Pending Hypotheses — Jun 23 2026
 
-## ✅ REFLECTED 2026-06-02 — No config change needed
-# 5 trades all profitable (100% WR, avg R=1.76, total +$1,533.15) via vwap_dev_bands signals, all 
-# closed via auto_resolved_qty_drift. Excellent trade quality (1.32R on SOL, 4.54R on AVAX!) but 
-# positions resolved early by cross-strategy qty drift from ib_crypto_trader overlap 
-# (shared: BTC, ETH, SOL, AVAX, LINK). Sigma=2.6 + consecutive_closes=2 is performing well 
-# post-rebuild (Jun 2 01:25 UTC). No parameter change warranted. Marked 5 trades reflected.
+## APPLIED 2026-06-23 — Remove LINK/USD to stop cross-strategy drift
+# Removed LINK/USD from vwap_bands_crypto symbols. LINK overlapped with orb_crypto_trader,
+# causing auto_resolved_qty_drift on 3 of 4 drift trades. Post-removal, vwap_bands_crypto
+# now trades BTC, ETH, SOL, AVAX only (still overlap with vwap_wave_crypto on these 4 pairs).
+# 
+# Drift analysis: 6 unreflected trades with setup_name=vwap_dev_bands:
+#   - 28: LINK, +$131, +0.46R, auto_resolved_qty_drift (drift)
+#   - 30: LINK, -$13, -0.04R, auto_resolved_qty_drift (drift)
+#   - 35: SOL, -$3,017, -10.22R, broker_fill (STALE — pre-Jun-12 rebuild, virtual stop bypass)
+#   - 36: ETH, -$5,169, -71.26R, broker_fill (STALE — pre-Jun-12 rebuild, virtual stop bypass)
+#   - 87: LINK, +$303, +2.83R, auto_resolved_qty_drift (drift, post-rebuild)
+#   - 88: AVAX, -$407, -1.57R, auto_resolved_qty_drift (drift, post-rebuild)
+# 
+# Regime: bull (33%), bear (33%), neutral (33%) — even split. Avg alignment 0.8.
+# Current params: sigma=2.6, atr_mult_stop=0.75, cons_closes=2, min_distance_atr=0.15.
+# Excluding stale trades: 50% WR, avg +0.42R. Parameters are well-tuned for current regime.
 
-## APPLIED (previous cycles):
-# - consecutive_closes: 1 → 2 — Applied 2026-06-01. Post-rebuild trades confirm this works.
-# - sigma: 2.5 → 2.6 — May 28 2026
-# - sigma: 2.0 → 2.5, 1.5 → 2.0 — Previous iterations
-# - min_distance_atr: 0.25 → 0.15 — Fixed reconciled_gone fills
+## ✅ REFLECTED 2026-06-23 — LINK removal + 6 trades marked reflected
 
 ## PENDING (for future cycles):
-# 1. bar_timeframe: 5Min → 15Min — Longer bars give more room for reversion.
-# 2. atr_mult_stop: 0.75 → 0.5 — Tighter stop, but only if WR drops.
-# 3. sigma: 2.6 → 2.8 — If WR/avg R declines.
+# 1. Full crypto deconfliction: BTC/ETH/SOL/AVAX still overlap with vwap_wave_crypto_trader.
+#    Consider dedicated per-strategy crypto symbols or a single "crypto hub" trader.
+# 2. sigma: 2.6 → 2.8 — If drift trades return on remaining symbols.
+# 3. atr_mult_stop: 0.75 → 0.5 — Tighter stop if WR drops below 40%.
+# 4. bar_timeframe: 5Min → 15Min — Longer bars for cleaner reversion signals.
+# 
+## PREVIOUS:
+# - consecutive_closes: 1 → 2 — Jun 1 2026
+# - sigma: 2.5 → 2.6 — May 28 2026
+# - min_distance_atr: 0.25 → 0.15 — Fixed reconciled_gone fills

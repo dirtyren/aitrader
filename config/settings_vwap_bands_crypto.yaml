@@ -12,7 +12,7 @@ asset_classes:
     - ETH/USD
     - SOL/USD
     - AVAX/USD
-    - LINK/USD
+
     timezone: UTC
 backtest:
   cache_dir: runtime/bars_cache
