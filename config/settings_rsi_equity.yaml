@@ -23,7 +23,7 @@ setups:
     # curated universe below.
     # Prior values: threshold=40, stop_loss_pct=2.0, period=5.
     enabled: true
-    threshold: 30
+    threshold: 35
     direction: long
     stop_loss_pct: 2.5
     position_size_r: 0.5

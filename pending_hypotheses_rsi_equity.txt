@@ -13,10 +13,16 @@
 # the primary diagnosis — the entry_never_filled bottleneck is the binding constraint on signal capture.
 # 6 trades reflected.
 
-# Alternative 1: Increase position_size_r from 0.5 to 1.0
-# Rationale: With 100% WR on filled strategy signals, sizing up could boost PnL. Only after verifying 
-# threshold=40 improves fill rate and we get enough filled trades to evaluate.
+# (threshold later swept back to 30 on 2026-06-04 via russell-1000 sweep)
 
-# Alternative 2: Switch from limit to market entry mode
-# Rationale: If threshold=40 still produces entry_never_filled, RSI reversion on 1H bars may need 
-# market orders to capture the snap-back. Higher slippage but guaranteed fills.
+## ✅ APPLIED 2026-07-08 — threshold: 30 → 35
+# Rationale: 6 unreflected trades — 2 entry_never_filled, 4 manual_close — all $0 PnL, entry=exit.
+# Current threshold=30 fires too deep in oversold territory; limit orders can't fill before reversion.
+# Regime: bull, perfect alignment (1.0). Stepwise raise: 30→35, follow heuristic table exactly.
+# If fill rate stays at 0% with threshold=35, next step is 35→40.
+# Trades reflected: 41,69,94,95,96,97.
+
+# 🔮 PENDING:
+# - Raise threshold to 40 if fill rate stays 0% at 35 (iterative: 35→40→45 per heuristic table)
+# - Increase position_size_r from 0.5 to 1.0 (only after fill rate improves — verified filled trades exist)
+# - Code change: market order entries instead of limit orders (last resort if threshold 45 still fails)
