@@ -2,7 +2,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from risk.circuit_breakers import CircuitBreaker
 from risk.filters import FilterPipeline
 from risk.sizing import SizingConfig, size_position
 from state.daily_ledger import DailyLedger
@@ -26,13 +25,11 @@ class RiskDecision:
 
 class RiskManager:
     def __init__(self,
-                 circuit_breaker: CircuitBreaker,
                  pipeline: FilterPipeline,
                  sizing_equity: SizingConfig,
                  sizing_crypto: SizingConfig,
                  ledger: DailyLedger,
                  book: PositionBook):
-        self.circuit_breaker = circuit_breaker
         self.pipeline = pipeline
         self.sizing_equity = sizing_equity
         self.sizing_crypto = sizing_crypto
@@ -42,7 +39,6 @@ class RiskManager:
 
     def update_equity(self, equity: float) -> None:
         self.ledger.equity = equity
-        self.circuit_breaker.peak_equity = max(self.circuit_breaker.peak_equity, equity)
 
     def update_cash(self, cash: float | None) -> None:
         self.available_cash = float(cash) if cash is not None else None
@@ -62,13 +58,6 @@ class RiskManager:
             )
         except ValueError as exc:
             return RiskDecision.reject(str(exc))
-
-        # Apply circuit-breaker L1 (halve sizes).
-        # CircuitBreaker doesn't store .level as an attribute; getattr-default keeps this
-        # safe when level isn't set yet (i.e. before any .check() call).
-        if getattr(self.circuit_breaker, "level", 0) == 1:
-            qty *= 0.5
-            notional *= 0.5
 
         if qty <= 0:
             return RiskDecision.reject("sized to zero")

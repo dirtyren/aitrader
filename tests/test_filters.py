@@ -5,28 +5,17 @@ from state.position_book import PositionBook, OpenPosition
 from risk.filters import (
     BrokerPositionFilter,
     FilterPipeline, FilterResult,
-    SystemHaltedFilter, SessionWindowFilter, NewsBlackoutFilter,
+    SessionWindowFilter, NewsBlackoutFilter,
     ConsecutiveLossFilter, ConcurrentPositionFilter,
     NewsBlackout,
 )
 from strategies.base_setup import SetupSignal
 
 
-@dataclass
-class FakeCB:
-    level: int = 0
-
-
 def _signal(symbol="AAPL"):
     return SetupSignal(setup="x", symbol=symbol, side="long",
                        entry=100, stop=99, target=102, atr=1.0,
                        level=100, ts=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc))
-
-
-def test_system_halted_blocks_when_cb_l2():
-    f = SystemHaltedFilter(circuit_breaker=FakeCB(level=2), lock_file_path="/nonexistent")
-    res = f.check(_signal(), ctx=None, ledger=None, book=None)
-    assert not res.passed
 
 
 def test_consecutive_loss_blocks_after_two():
@@ -127,7 +116,6 @@ def test_pipeline_short_circuits_on_first_reject():
                                entry_px=100, exit_px=99, side="long", qty=10,
                                R_realized=-1.0, pnl_usd=-10))
     pipeline = FilterPipeline([
-        SystemHaltedFilter(circuit_breaker=FakeCB(level=0), lock_file_path="/nonexistent"),
         ConsecutiveLossFilter(limit=2, scope="per_symbol"),
         ConcurrentPositionFilter(max_concurrent=10),
     ])

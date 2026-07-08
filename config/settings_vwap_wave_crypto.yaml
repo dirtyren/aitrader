@@ -55,11 +55,6 @@ risk:
   max_daily_risk_open: 0.03
   consecutive_loss_limit: 3
   loss_filter_scope: per_symbol
-  circuit_breaker:
-    daily_loss_limit_1: 0.025
-    daily_loss_limit_2: 0.04
-    drawdown_limit: 0.08
-
 filters:
   opening_blackout_min: 0
   volume_deficit_pct: 0.30

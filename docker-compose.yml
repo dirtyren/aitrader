@@ -25,7 +25,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_vwap_wave_eq.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -46,7 +45,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_vwap_wave_cr.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -67,7 +65,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_rsi_eq.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -88,7 +85,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_rsi_cr.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -110,7 +106,6 @@ services:
   #   env_file: ./config/.env
   #   environment:
   #     - TRADING_ENV=${TRADING_ENV:-production}
-  #     - LOCK_FILE_PATH=/app/runtime/lock_ib_eq.file
   #     - MYSQL_HOST=mysql
   #     - MYSQL_PORT=3306
   #     - MYSQL_USER=trader
@@ -131,7 +126,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_vwap_bands_eq.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -152,7 +146,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_vwap_bands_cr.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -173,7 +166,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_orb_eq.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -194,7 +186,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_orb_cr.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -215,7 +206,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_cmf_eq.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader
@@ -237,7 +227,6 @@ services:
   #   env_file: ./config/.env
   #   environment:
   #     - TRADING_ENV=${TRADING_ENV:-production}
-  #     - LOCK_FILE_PATH=/app/runtime/lock_ib_crypto.file
   #     - MYSQL_HOST=mysql
   #     - MYSQL_PORT=3306
   #     - MYSQL_USER=trader
@@ -258,7 +247,6 @@ services:
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
-      - LOCK_FILE_PATH=/app/runtime/lock_gap_and_go_eq.file
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=trader

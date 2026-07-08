@@ -17,13 +17,23 @@ windowing:
   step: null
 
 universe:
-  source: alpaca_scan
-  alpaca_scan:
-    classes: [us_equity]
-    min_dollar_volume_20d: 50000000
-    top_n_per_class:
-      us_equity: 15
-    cache_dir: runtime/wfo/universe_cache
+  source: symbols
+  symbols:
+    - SPY
+    - QQQ
+    - NVDA
+    - AAPL
+    - MSFT
+    - AMZN
+    - META
+    - TSLA
+    - GOOGL
+    - JPM
+    - XOM
+    - JNJ
+    - WMT
+    - BAC
+    - PG
 
 timeframes:
   - 15Min

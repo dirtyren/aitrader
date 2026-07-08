@@ -16,43 +16,18 @@ from pathlib import Path
 
 import yaml
 
-# ---------------------------------------------------------------------------
-# Lock-file guard — must run before heavy imports.
-# ---------------------------------------------------------------------------
-
-_LOCK_FILE_PATH = os.environ.get("LOCK_FILE_PATH", "lock.file")
-_TRADING_ENV = os.environ.get("TRADING_ENV", "production")
-
-if _TRADING_ENV != "test" and os.path.exists(_LOCK_FILE_PATH):
-    print("=" * 60)
-    print("SYSTEM HALTED: Emergency lock file detected.")
-    print(f"Lock file: {os.path.abspath(_LOCK_FILE_PATH)}")
-    try:
-        with open(_LOCK_FILE_PATH) as _fh:
-            _contents = _fh.read().strip()
-        if _contents:
-            print("-" * 60)
-            print(_contents)
-            print("-" * 60)
-    except OSError as _exc:
-        print(f"(could not read lock file contents: {_exc})")
-    print("Resolve incident and remove lock.file before restarting.")
-    print("=" * 60)
-    sys.exit(1)
-
 from broker.alpaca_client import AlpacaClient
 from broker.alpaca_data import AlpacaData
 from broker.order_executor import OrderExecutor
 from core.asset_class import AssetClassConfig, session_start_for
 from core.position_manager import PositionManager
 from core.session import SessionContext
-from risk.circuit_breakers import CircuitBreaker
 from risk.filters import (
     BrokerPositionFilter, ConcurrentPositionFilter,
     ConsecutiveLossFilter, FilterPipeline,
     ManualCloseCooldownFilter,
     NewsBlackout, NewsBlackoutFilter, RiskBudgetFilter,
-    SessionWindowFilter, SetupCooldownFilter, SystemHaltedFilter,
+    SessionWindowFilter, SetupCooldownFilter,
     VolumeDeficitFilter,
 )
 from risk.manager import RiskManager
@@ -297,7 +272,7 @@ class _PerSymbolPositionManager:
         return pm.on_bar(symbol, bar)
 
 
-def build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None,
+def build_pipeline(cfg: dict, alpaca=None,
                    mysql=None, strategy_id: int | None = None) -> FilterPipeline:
     news_windows = [
         NewsBlackout(start=datetime.fromisoformat(w["start"]),
@@ -305,7 +280,6 @@ def build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None,
         for w in cfg.get("news_blackouts") or []
     ]
     filters = [
-        SystemHaltedFilter(circuit_breaker=cb, lock_file_path=_LOCK_FILE_PATH),
         SessionWindowFilter(opening_blackout_min=cfg["filters"]["opening_blackout_min"]),
         NewsBlackoutFilter(windows=news_windows, pad_min=5),
         VolumeDeficitFilter(deficit_pct=cfg["filters"]["volume_deficit_pct"]),
@@ -338,7 +312,7 @@ def build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None,
     return FilterPipeline(filters)
 
 
-def _collect_snapshot(symbols, contexts, book, ledger, cb,
+def _collect_snapshot(symbols, contexts, book, ledger,
                       recent_rejects: list[dict] | None = None) -> DashboardSnapshot:
     rows = []
     for sym, _ in symbols:
@@ -360,7 +334,6 @@ def _collect_snapshot(symbols, contexts, book, ledger, cb,
         timestamp=datetime.now(timezone.utc),
         equity=ledger.equity,
         day_pnl=ledger.day_pnl,
-        circuit_level=cb.level,
         symbols=rows,
         recent_filter_rejects=(recent_rejects or [])[-20:],
     )
@@ -466,16 +439,8 @@ def main():
     )
     ledger = DailyLedger(initial_equity=initial_equity)
 
-    cb_cfg = cfg["risk"]["circuit_breaker"]
-    cb = CircuitBreaker(
-        peak_equity=initial_equity,
-        daily_loss_limit_1=cb_cfg["daily_loss_limit_1"],
-        daily_loss_limit_2=cb_cfg["daily_loss_limit_2"],
-        drawdown_limit=cb_cfg["drawdown_limit"],
-    )
-
     pipeline = build_pipeline(
-        cfg, cb, alpaca=alpaca, mysql=mysql,
+        cfg, alpaca=alpaca, mysql=mysql,
         strategy_id=mysql.strategy_id if mysql is not None else None,
     )
 
@@ -491,7 +456,7 @@ def main():
     )
 
     rm = RiskManager(
-        circuit_breaker=cb, pipeline=pipeline,
+        pipeline=pipeline,
         sizing_equity=sizing_eq, sizing_crypto=sizing_cr,
         ledger=ledger, book=book,
     )
@@ -607,7 +572,6 @@ def main():
             rm.update_cash(float(cash_raw) if cash_raw is not None else None)
 
             daily_pnl_pct = ledger.day_pnl / initial_equity if initial_equity > 0 else 0.0
-            cb.check(equity, daily_pnl_pct)
 
             logger.info("CYCLE_DONE equity=%.2f day_pnl=%.2f open_positions=%d",
                         equity, ledger.day_pnl, book.count())
@@ -627,7 +591,7 @@ def main():
                     logger.error("MYSQL_SYNC_FAILED symbol=%s: %s",
                                 pos.symbol, exc, exc_info=True)
 
-            snap = _collect_snapshot(symbols, contexts, book, ledger, cb)
+            snap = _collect_snapshot(symbols, contexts, book, ledger)
             state_file_path = os.environ.get("STATE_FILE_PATH", f"runtime/trading_state_{system_name}.json")
             write_dashboard_state(state_file_path, snap)
         except Exception as exc:

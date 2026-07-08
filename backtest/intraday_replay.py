@@ -11,11 +11,10 @@ from core.asset_class import AssetClassConfig
 from core.bar import Bar
 from core.position_manager import PositionManager
 from core.session import SessionContext
-from risk.circuit_breakers import CircuitBreaker
 from risk.filters import (
     ConcurrentPositionFilter, ConsecutiveLossFilter, FilterPipeline,
     RiskBudgetFilter, SessionWindowFilter, SetupCooldownFilter,
-    SystemHaltedFilter, VolumeDeficitFilter,
+    VolumeDeficitFilter,
 )
 from risk.manager import RiskManager
 from risk.sizing import SizingConfig
@@ -88,17 +87,9 @@ class IntradayReplay:
                                               for sym, _ in self.symbols}
         book = PositionBook()
         ledger = DailyLedger(initial_equity=self.initial_equity)
-        cb_cfg = self.config["risk"]["circuit_breaker"]
-        cb = CircuitBreaker(
-            peak_equity=self.initial_equity,
-            daily_loss_limit_1=cb_cfg["daily_loss_limit_1"],
-            daily_loss_limit_2=cb_cfg["daily_loss_limit_2"],
-            drawdown_limit=cb_cfg["drawdown_limit"],
-        )
         # Filters: SessionWindowFilter is permissive when opening_blackout_min == 0
         # (which is the backtest default); NewsBlackoutFilter is omitted entirely.
         pipeline = FilterPipeline([
-            SystemHaltedFilter(circuit_breaker=cb, lock_file_path="/__nonexistent__"),
             SessionWindowFilter(opening_blackout_min=self.config["filters"]["opening_blackout_min"]),
             VolumeDeficitFilter(deficit_pct=self.config["filters"]["volume_deficit_pct"]),
             ConsecutiveLossFilter(limit=self.config["risk"]["consecutive_loss_limit"],
@@ -118,7 +109,7 @@ class IntradayReplay:
             allow_fractional=True,
         )
         rm = RiskManager(
-            circuit_breaker=cb, pipeline=pipeline,
+            pipeline=pipeline,
             sizing_equity=sizing_eq, sizing_crypto=sizing_cr,
             ledger=ledger, book=book,
         )

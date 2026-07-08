@@ -10,7 +10,6 @@ def _snap(symbols=None, rejects=None):
         timestamp=datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
         equity=100_100.0,
         day_pnl=100.0,
-        circuit_level=0,
         symbols=symbols or [],
         recent_filter_rejects=rejects or [],
     )
@@ -37,7 +36,6 @@ def test_write_dashboard_state_round_trips_payload(tmp_path: Path):
     data = json.loads(out.read_text())
     assert data["equity"] == 100_100.0
     assert data["day_pnl"] == 100.0
-    assert data["circuit_level"] == 0
     assert len(data["symbols"]) == 2
     assert data["symbols"][0]["last_price"] == 100.7
     assert data["symbols"][1]["last_price"] == 50_050.0
@@ -58,12 +56,11 @@ def test_write_dashboard_state_overwrites_atomically(tmp_path: Path):
     write_dashboard_state(out, _snap())
     second = DashboardSnapshot(
         timestamp=datetime(2026, 5, 14, 14, 5, tzinfo=timezone.utc),
-        equity=100_200.0, day_pnl=200.0, circuit_level=1,
+        equity=100_200.0, day_pnl=200.0,
         symbols=[], recent_filter_rejects=[],
     )
     write_dashboard_state(out, second)
     data = json.loads(out.read_text())
     assert data["equity"] == 100_200.0
-    assert data["circuit_level"] == 1
     # No tmp file lingers after rename
     assert not (tmp_path / "state.json.tmp").exists()

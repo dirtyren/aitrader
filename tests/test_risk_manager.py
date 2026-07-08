@@ -2,11 +2,10 @@ import os
 from datetime import datetime, timezone
 from risk.manager import RiskManager
 from risk.filters import (
-    FilterPipeline, SystemHaltedFilter, ConcurrentPositionFilter,
+    FilterPipeline, ConcurrentPositionFilter,
     ConsecutiveLossFilter,
 )
 from risk.sizing import SizingConfig
-from risk.circuit_breakers import CircuitBreaker
 from state.daily_ledger import DailyLedger
 from state.position_book import PositionBook
 from strategies.base_setup import SetupSignal
@@ -19,16 +18,13 @@ def _signal():
 
 
 def _build_rm(ledger, book, lock_path="/nonexistent"):
-    cb = CircuitBreaker(peak_equity=100000, daily_loss_limit_1=0.015,
-                        daily_loss_limit_2=0.025, drawdown_limit=0.05)
     pipeline = FilterPipeline([
-        SystemHaltedFilter(circuit_breaker=cb, lock_file_path=lock_path),
         ConcurrentPositionFilter(max_concurrent=4),
         ConsecutiveLossFilter(limit=2, scope="per_symbol"),
     ])
     # Notional cap raised to 0.60 so the risk-per-trade limit binds (matches test_sizing fix).
     sizing = SizingConfig(max_risk_per_trade=0.005, max_notional_per_trade_pct=0.60)
-    return RiskManager(circuit_breaker=cb, pipeline=pipeline, sizing_equity=sizing,
+    return RiskManager(pipeline=pipeline, sizing_equity=sizing,
                        sizing_crypto=sizing, ledger=ledger, book=book)
 
 

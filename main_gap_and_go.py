@@ -26,30 +26,6 @@ from pathlib import Path
 
 import yaml
 
-# ---------------------------------------------------------------------------
-# Lock-file guard — must run before heavy imports.
-# ---------------------------------------------------------------------------
-
-_LOCK_FILE_PATH = os.environ.get("LOCK_FILE_PATH", "lock.file")
-_TRADING_ENV = os.environ.get("TRADING_ENV", "production")
-
-if _TRADING_ENV != "test" and os.path.exists(_LOCK_FILE_PATH):
-    print("=" * 60)
-    print("SYSTEM HALTED: Emergency lock file detected.")
-    print(f"Lock file: {os.path.abspath(_LOCK_FILE_PATH)}")
-    try:
-        with open(_LOCK_FILE_PATH) as _fh:
-            _contents = _fh.read().strip()
-        if _contents:
-            print("-" * 60)
-            print(_contents)
-            print("-" * 60)
-    except OSError as _exc:
-        print(f"(could not read lock file contents: {_exc})")
-    print("Resolve incident and remove lock.file before restarting.")
-    print("=" * 60)
-    sys.exit(1)
-
 import pytz
 
 from broker.alpaca_client import AlpacaClient
@@ -57,12 +33,11 @@ from broker.alpaca_data import AlpacaData
 from broker.order_executor import OrderExecutor
 from core.asset_class import AssetClassConfig
 from core.position_manager import PositionManager
-from risk.circuit_breakers import CircuitBreaker
 from risk.filters import (
     BrokerPositionFilter, ConcurrentPositionFilter,
     ConsecutiveLossFilter, FilterPipeline,
     ManualCloseCooldownFilter,
-    NewsBlackoutFilter, RiskBudgetFilter, SystemHaltedFilter,
+    NewsBlackoutFilter, RiskBudgetFilter,
 )
 from risk.manager import RiskManager
 from risk.sizing import SizingConfig
@@ -89,10 +64,9 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def _build_pipeline(cfg: dict, cb: CircuitBreaker, alpaca=None,
+def _build_pipeline(cfg: dict, alpaca=None,
                     mysql=None, strategy_id: int | None = None) -> FilterPipeline:
     filters = [
-        SystemHaltedFilter(circuit_breaker=cb, lock_file_path=_LOCK_FILE_PATH),
         NewsBlackoutFilter(windows=[], pad_min=5),
         ConsecutiveLossFilter(limit=cfg["risk"]["consecutive_loss_limit"],
                               scope=cfg["risk"]["loss_filter_scope"]),
@@ -190,15 +164,8 @@ def _build_loop(cfg: dict, logger: logging.Logger) -> GapAndGoLoop:
     )
     ledger = DailyLedger(initial_equity=initial_equity)
 
-    cb_cfg = cfg["risk"]["circuit_breaker"]
-    cb = CircuitBreaker(
-        peak_equity=initial_equity,
-        daily_loss_limit_1=cb_cfg["daily_loss_limit_1"],
-        daily_loss_limit_2=cb_cfg["daily_loss_limit_2"],
-        drawdown_limit=cb_cfg["drawdown_limit"],
-    )
     pipeline = _build_pipeline(
-        cfg, cb, alpaca=alpaca, mysql=mysql,
+        cfg, alpaca=alpaca, mysql=mysql,
         strategy_id=mysql.strategy_id if mysql is not None else None,
     )
 
@@ -208,7 +175,7 @@ def _build_loop(cfg: dict, logger: logging.Logger) -> GapAndGoLoop:
         allow_fractional=False,
     )
     risk_manager = RiskManager(
-        circuit_breaker=cb, pipeline=pipeline,
+        pipeline=pipeline,
         sizing_equity=sizing, sizing_crypto=sizing,
         ledger=ledger, book=book,
     )

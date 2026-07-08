@@ -41,12 +41,7 @@ position_management:
   max_hold_bars: 24
   trail_at_R: 1.5
   trail_atr: 1.0
-risk:
-  circuit_breaker:
-    daily_loss_limit_1: 0.025
-    daily_loss_limit_2: 0.04
-    drawdown_limit: 0.08
-  consecutive_loss_limit: 3
+risk:  consecutive_loss_limit: 3
   loss_filter_scope: per_symbol
   max_concurrent_positions: 3
   max_daily_risk_open: 0.03

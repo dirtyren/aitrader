@@ -54,10 +54,7 @@ def _task(*, is_bars, oos_bars, combo=None):
             "max_risk_per_trade": 0.005, "max_notional_per_trade_pct": 0.20,
             "max_concurrent_positions": 4, "max_daily_risk_open": 0.02,
             "consecutive_loss_limit": 2, "loss_filter_scope": "per_symbol",
-            "circuit_breaker": {"daily_loss_limit_1": 0.02,
-                                "daily_loss_limit_2": 0.03,
-                                "drawdown_limit": 0.10},
-        },
+            },
         filters_cfg={"opening_blackout_min": 0, "volume_deficit_pct": 0.30},
         min_trades=1,
     )
@@ -138,10 +135,7 @@ def _runner_cfg(*, history_start, history_end):
             "max_risk_per_trade": 0.005, "max_notional_per_trade_pct": 0.20,
             "max_concurrent_positions": 4, "max_daily_risk_open": 0.02,
             "consecutive_loss_limit": 2, "loss_filter_scope": "per_symbol",
-            "circuit_breaker": {"daily_loss_limit_1": 0.02,
-                                "daily_loss_limit_2": 0.03,
-                                "drawdown_limit": 0.10},
-        },
+            },
         "filters": {"opening_blackout_min": 0, "volume_deficit_pct": 0.30},
     }
 

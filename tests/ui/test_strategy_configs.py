@@ -67,9 +67,6 @@ asset_classes:
 risk:
   max_risk_per_trade: 0.005
   max_concurrent_positions: 4
-  circuit_breaker:
-    daily_loss_limit_1: 0.015
-    daily_loss_limit_2: 0.025
 setups:
   breakout:
     enabled: true
@@ -114,7 +111,7 @@ def test_load_yaml_configs_parses_single_yaml(tmp_path):
     assert eq.commission_bps is None
 
     assert cfg.risk["max_risk_per_trade"] == 0.005
-    assert cfg.risk["circuit_breaker.daily_loss_limit_1"] == 0.015
+    assert cfg.risk[] == 0.015
 
     setups_by_name = {s.name: s for s in cfg.setups}
     assert setups_by_name["breakout"].enabled is True

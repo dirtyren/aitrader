@@ -12,7 +12,6 @@ class DashboardSnapshot:
     timestamp: datetime
     equity: float
     day_pnl: float
-    circuit_level: int
     symbols: list[dict]
     recent_filter_rejects: list[dict]
 
@@ -31,7 +30,6 @@ def write_dashboard_state(path: Path | str, snap: DashboardSnapshot) -> None:
         "timestamp": snap.timestamp.isoformat(),
         "equity": snap.equity,
         "day_pnl": snap.day_pnl,
-        "circuit_level": snap.circuit_level,
         "symbols": snap.symbols,
         "recent_filter_rejects": snap.recent_filter_rejects,
     }
