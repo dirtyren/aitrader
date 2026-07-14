@@ -76,8 +76,6 @@ asset_classes:
       - SPY
       - QQQ
       - IWM
-      - XLF
-      - XLE
       - AAPL
       - MSFT
       - NVDA
@@ -87,11 +85,13 @@ asset_classes:
       - META
       - AMD
       - JPM
-      - AVGO
       - NFLX
       - COIN
       - PLTR
       - UBER
+      # Removed 2026-07-14 per pending hypotheses:
+      # - AVGO (two fade_extreme losses -$852, unsuitable for VWAP reversion)
+      # - XLF, XLE (slow sector ETFs, worst performers)
 
 news_blackouts: []
 

@@ -39,25 +39,26 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-vwap-wave-crypto:
-    build: .
-    command: python main.py --config config/settings_vwap_wave_crypto.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-vwap-wave-crypto: DISABLED 2026-07-14
+  # trader-vwap-wave-crypto:
+  #   build: .
+  #   command: python main.py --config config/settings_vwap_wave_crypto.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   trader-rsi-equity:
     build: .
@@ -79,25 +80,26 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-rsi-crypto:
-    build: .
-    command: python main.py --config config/settings_rsi_crypto.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-rsi-crypto: DISABLED 2026-07-14
+  # trader-rsi-crypto:
+  #   build: .
+  #   command: python main.py --config config/settings_rsi_crypto.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   # trader-ib-equity: retired
   # trader-ib-equity:
@@ -140,25 +142,26 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-vwap-bands-crypto:
-    build: .
-    command: python main.py --config config/settings_vwap_bands_crypto.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-vwap-bands-crypto: DISABLED 2026-07-14
+  # trader-vwap-bands-crypto:
+  #   build: .
+  #   command: python main.py --config config/settings_vwap_bands_crypto.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   trader-orb-equity:
     build: .
@@ -180,25 +183,26 @@ services:
       mysql:
         condition: service_healthy
 
-  trader-orb-crypto:
-    build: .
-    command: python main.py --config config/settings_orb_crypto.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-orb-crypto: DISABLED 2026-07-14
+  # trader-orb-crypto:
+  #   build: .
+  #   command: python main.py --config config/settings_orb_crypto.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   trader-cmf-equity:
     build: .
@@ -292,35 +296,36 @@ services:
       mysql:
         condition: service_healthy
 
-  reconciler-crypto:
-    build: .
-    command: python -m reconciler.main
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-      - RECONCILER_ASSET_CLASS=crypto
-      - RECONCILE_INTERVAL_S=${RECONCILE_INTERVAL_S:-30}
-      - RECONCILE_STRIKE_THRESHOLD=${RECONCILE_STRIKE_THRESHOLD:-3}
-      - RECONCILE_STRIKE_MIN_GAP_S=${RECONCILE_STRIKE_MIN_GAP_S:-60}
-      - RECONCILE_QTY_EPS=${RECONCILE_QTY_EPS:-1e-6}
-      - SHADOW_MODE=${SHADOW_MODE:-false}
-      - RECONCILE_STATE_FILE=/app/runtime/reconciler_state_crypto.json
-      - RECONCILE_HEARTBEAT_STALE_AFTER_S=${RECONCILE_HEARTBEAT_STALE_AFTER_S:-300}
-      - MANUAL_CLOSE_CONFIRM_CYCLES=${MANUAL_CLOSE_CONFIRM_CYCLES:-2}
-      - MANUAL_CLOSE_COOLDOWN_MIN=${MANUAL_CLOSE_COOLDOWN_MIN:-60}
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # reconciler-crypto: DISABLED 2026-07-14
+  # reconciler-crypto:
+  #   build: .
+  #   command: python -m reconciler.main
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #     - RECONCILER_ASSET_CLASS=crypto
+  #     - RECONCILE_INTERVAL_S=${RECONCILE_INTERVAL_S:-30}
+  #     - RECONCILE_STRIKE_THRESHOLD=${RECONCILE_STRIKE_THRESHOLD:-3}
+  #     - RECONCILE_STRIKE_MIN_GAP_S=${RECONCILE_STRIKE_MIN_GAP_S:-60}
+  #     - RECONCILE_QTY_EPS=${RECONCILE_QTY_EPS:-1e-6}
+  #     - SHADOW_MODE=${SHADOW_MODE:-false}
+  #     - RECONCILE_STATE_FILE=/app/runtime/reconciler_state_crypto.json
+  #     - RECONCILE_HEARTBEAT_STALE_AFTER_S=${RECONCILE_HEARTBEAT_STALE_AFTER_S:-300}
+  #     - MANUAL_CLOSE_CONFIRM_CYCLES=${MANUAL_CLOSE_CONFIRM_CYCLES:-2}
+  #     - MANUAL_CLOSE_COOLDOWN_MIN=${MANUAL_CLOSE_COOLDOWN_MIN:-60}
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   dashboard:
     build: .

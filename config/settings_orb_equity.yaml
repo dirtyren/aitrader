@@ -7,59 +7,19 @@ asset_classes:
     session_close_local: '16:00'
     session_open_local: '09:30'
     slippage_bps: 2
-    # Curated from docs/sweeps/2026-06-04 (russell-1000 sweep). 48 symbols
-    # surviving OOS Sharpe >= 0.3 AND >= 10 OOS trades at the chosen combo.
-    # Previous universe (SPY/QQQ/IWM/NVDA/TSLA/META) had zero overlap with
-    # the survivors and is replaced wholesale.
+    # 2026-07-14: Trimmed from 48 to 8 high-vol symbols per skill guidance.
+    # Breakout strategies need high-vol, high-liquidity names to generate
+    # meaningful ranges. 48 low-vol symbols = diluted signals, 0% fill rate.
+    # Focusing on highest ATR names from the original list.
     symbols:
-    - STLD
-    - MAR
-    - LDOS
-    - TECH
-    - HES
-    - EFX
-    - AXP
     - UAL
-    - SOFI
-    - PNR
-    - RVTY
-    - KEYS
-    - ZTS
-    - ETN
-    - NEM
-    - MPC
-    - EXPE
-    - REGN
-    - FAST
-    - IRM
-    - NSC
-    - WYNN
-    - J
-    - CRM
-    - TRV
-    - ODFL
-    - L
-    - ALL
-    - PHM
-    - GRMN
-    - FDX
-    - EIX
-    - GPC
-    - MAA
-    - VEEV
-    - MTCH
     - DAL
-    - HUM
-    - WELL
-    - TROW
-    - HLT
-    - ICE
-    - TT
-    - ESS
-    - MHK
-    - SUI
-    - LHX
-    - MLM
+    - SOFI
+    - EXPE
+    - WYNN
+    - CRM
+    - MPC
+    - NEM
     timezone: America/New_York
 backtest:
   cache_dir: runtime/bars_cache
@@ -88,7 +48,8 @@ regime_detector:
   balance_day_in_value_min: 0.6
   trend_day_in_value_max: 0.3
   trend_day_range_mult: 1.5
-risk:  consecutive_loss_limit: 2
+risk:
+  consecutive_loss_limit: 2
   loss_filter_scope: per_symbol
   max_concurrent_positions: 4
   max_daily_risk_open: 0.02
@@ -103,6 +64,9 @@ setups:
     # Tuned via docs/sweeps/2026-06-04 (russell-1000 sweep). Best combo by
     # symbols_above_floor + median_oos_sharpe + total_oos_pnl.
     # Prior values: atr_mult_stop=0.75, orb_bars=6, target_R=3.0.
+    # 2026-07-14: No param changes — 48→8 symbol trim is the one-var change
+    # for this cycle. All 30 prior trades were $0 PnL (29/30 manual_close or
+    # entry_never_filled). Fewer, higher-vol names should concentrate signals.
     atr_mult_stop: 0.5
     enabled: true
     orb_bars: 3

@@ -22,8 +22,11 @@ setups:
     # symbols_above_floor + median_oos_sharpe + total_oos_pnl across the
     # curated universe below.
     # Prior values: threshold=40, stop_loss_pct=2.0, period=5.
+    # 2026-07-14: threshold raised 35→40 to fix entry_never_filled (signals
+    # firing too deep in the move; prior 35→40 cycle on Jun 2 still had 
+    # 5/6 post-rebuild trades entry_never_filled, so push to 40).
     enabled: true
-    threshold: 35
+    threshold: 40
     direction: long
     stop_loss_pct: 2.5
     position_size_r: 0.5
@@ -34,7 +37,8 @@ risk:
   max_concurrent_positions: 4
   max_daily_risk_open: 0.02
   consecutive_loss_limit: 2
-  loss_filter_scope: per_symbolfilters:
+  loss_filter_scope: per_symbol
+filters:
   opening_blackout_min: 15
   volume_deficit_pct: 0.3
 position_management:
@@ -45,7 +49,10 @@ position_management:
 asset_classes:
   equity:
     timezone: America/New_York
-    session_open_local: '00:00'
+    # 2026-07-14: session_open changed from 00:00 to 09:30 — RSI signals
+    # on pre-market bars (midnight-09:30 ET) were generating ghost entries
+    # with entry_never_filled. Market hours only.
+    session_open_local: '09:30'
     session_close_local: '16:00'
     slippage_bps: 2
     commission_per_share: 0.0

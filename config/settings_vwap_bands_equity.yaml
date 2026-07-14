@@ -4,8 +4,8 @@ acceptance:
 asset_classes:
   equity:
     commission_per_share: 0.0
-    session_close_local: '23:59'
-    session_open_local: 00:00
+    session_close_local: '16:00'
+    session_open_local: '09:30'
     slippage_bps: 2
     # Curated from docs/sweeps/2026-06-04 (russell-1000 sweep). 36 symbols
     # surviving OOS Sharpe >= 0.3 AND >= 10 OOS trades. Previous universe
@@ -75,7 +75,8 @@ regime_detector:
   balance_day_in_value_min: 0.6
   trend_day_in_value_max: 0.3
   trend_day_range_mult: 1.5
-risk:  consecutive_loss_limit: 2
+risk:
+  consecutive_loss_limit: 2
   loss_filter_scope: per_symbol
   max_concurrent_positions: 4
   max_daily_risk_open: 0.02
