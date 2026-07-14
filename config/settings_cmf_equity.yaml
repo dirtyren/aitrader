@@ -34,7 +34,11 @@ setups:
 
 risk:
   max_risk_per_trade: 0.005
-  max_notional_per_trade_pct: 0.10
+  # 2026-07-14: raised 0.10→0.30 to fix "sized to zero" problem.
+  # At ~$2K equity, 0.10=$203 cap made 8/15 symbols untradeable
+  # (1 share exceeds cap). 0.30=$609 covers all but SPY/QQQ/META
+  # which are now dropped from the symbol list.
+  max_notional_per_trade_pct: 0.30
   max_concurrent_positions: 4
   max_daily_risk_open: 0.02
   consecutive_loss_limit: 2
@@ -53,20 +57,20 @@ position_management:
 asset_classes:
   equity:
     timezone: America/New_York
-    session_open_local: '00:00'
+    # 2026-07-14: session_open changed from 00:00 to 09:30.
+    # Polling for 9.5 hours before market open burned Alpaca free-tier
+    # rate limits with no benefit. Market hours only.
+    session_open_local: '09:30'
     session_close_local: '16:00'
     slippage_bps: 2
     commission_per_share: 0.0
-    # 15 top equities by dollar volume — WFO-proven on all 15.
-    # Overlaps with other strategies handled by multi-position-per-symbol arch.
+    # 2026-07-14: Dropped SPY, QQQ, META (>$500/share, untradeable
+    # even at 0.30 notional cap on $2K account). 12 symbols remain.
     symbols:
-      - SPY
-      - QQQ
       - NVDA
       - AAPL
       - MSFT
       - AMZN
-      - META
       - TSLA
       - GOOGL
       - JPM

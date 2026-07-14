@@ -203,6 +203,19 @@ class GapScanner:
         oldest = min(b.computed_at for b in self.baselines.values())
         return (now - oldest).total_seconds() / 86400.0
 
+    def _baselines_age_p95_days(self, now: datetime) -> float | None:
+        """95th-percentile baseline age — ignores a handful of stale outliers
+        (e.g. IEX symbols with no daily bars) that would otherwise block
+        trading for ALL symbols."""
+        if not self.baselines:
+            return None
+        ages = sorted(
+            (now - b.computed_at).total_seconds() / 86400.0
+            for b in self.baselines.values()
+        )
+        idx = int(len(ages) * 0.95)
+        return ages[idx]
+
     def baselines_are_stale(self, now: datetime) -> bool:
         """True when refresh is recommended."""
         age = self.baselines_age_days(now)
@@ -211,8 +224,10 @@ class GapScanner:
         return age > self.baselines_max_age_days
 
     def baselines_too_old_to_trade(self, now: datetime) -> bool:
-        """True when baselines are 2x past the recommended max — hard fail-safe."""
-        age = self.baselines_age_days(now)
+        """True when the 95th-percentile baseline age exceeds 2x the
+        recommended max — hard fail-safe.  Uses p95 instead of min() so
+        a single stale IEX symbol can't block the entire strategy."""
+        age = self._baselines_age_p95_days(now)
         if age is None:
             return True
         return age > self.baselines_max_age_days * 2
