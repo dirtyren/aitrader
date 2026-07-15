@@ -266,9 +266,16 @@ class OrderExecutor:
         order_status = (order or {}).get("status") if isinstance(order, dict) else None
         fill_confirmed = order_status in ("filled", "partially_filled")
 
+        # Use the actual Alpaca fill price when available (market orders
+        # fill synchronously and return filled_avg_price). Fall back to
+        # signal.entry for limit orders that haven't filled yet (extended
+        # hours) — the fill is confirmed later by the reconciler.
+        actual_fill = float(order.get("filled_avg_price") or 0)
+        entry_px = actual_fill if actual_fill > 0 else signal.entry
+
         pos = OpenPosition(
             symbol=signal.symbol, setup=signal.setup, side=signal.side,
-            qty=decision.qty, entry_px=signal.entry, stop_px=signal.stop,
+            qty=decision.qty, entry_px=entry_px, stop_px=signal.stop,
             target_px=signal.target, opened_at=signal.ts,
             order_id=order.get("id", ""),
             stop_order_id=stop_order_id,
