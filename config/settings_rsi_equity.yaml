@@ -22,11 +22,14 @@ setups:
     # symbols_above_floor + median_oos_sharpe + total_oos_pnl across the
     # curated universe below.
     # Prior values: threshold=40, stop_loss_pct=2.0, period=5.
-    # 2026-07-14: threshold raised 35→40 to fix entry_never_filled (signals
-    # firing too deep in the move; prior 35→40 cycle on Jun 2 still had 
-    # 5/6 post-rebuild trades entry_never_filled, so push to 40).
+    # 2026-07-20: threshold raised 40→45 to fix entry_never_filled (7/7 unreflected
+    # trades since Jul 14 rebuild — 0% fill rate at threshold=40 during bull regime.
+    # 5 trades at 19:00 ET (post-close ghost signals despite session_close=16:00
+    # — suspect session-hour enforcement bug for 1Hour bars), 2 market-hour trades
+    # (GLW 12:00) also unfilled. Iterative raise per heuristic: 30→35→40→45.
+    # Prior: threshold=35→40 on 2026-07-14 (5/6 ENF). Jun 2 cycle: 35→40 (5/6 ENF).
     enabled: true
-    threshold: 40
+    threshold: 45
     direction: long
     stop_loss_pct: 2.5
     position_size_r: 0.5

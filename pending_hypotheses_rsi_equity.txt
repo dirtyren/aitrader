@@ -22,7 +22,15 @@
 # If fill rate stays at 0% with threshold=35, next step is 35→40.
 # Trades reflected: 41,69,94,95,96,97.
 
+## ✅ APPLIED 2026-07-20 — threshold: 40 → 45
+# Rationale: 7 unreflected trades, all entry_never_filled, $0 PnL, 0 bars.
+# Threshold at 40 after Jul 14 rebuild still 0% fill rate. 5 trades at 19:00 ET (post-close ghost
+# signals despite session_close=16:00 — session-hour enforcement bug for 1Hour bars suspected),
+# 2 market-hour trades (GLW 12:00) also unfilled. Regime: bull (1.0 alignment). Raise 40→45.
+# Trades reflected: 143,144,145,146,147,148,149.
+
 # 🔮 PENDING:
-# - Raise threshold to 40 if fill rate stays 0% at 35 (iterative: 35→40→45 per heuristic table)
+# - Raise threshold to 50 if fill rate stays 0% at 45 (next iterative step per heuristic table)
 # - Increase position_size_r from 0.5 to 1.0 (only after fill rate improves — verified filled trades exist)
-# - Code change: market order entries instead of limit orders (last resort if threshold 45 still fails)
+# - Code change: market order entries instead of limit orders (last resort if threshold 45+ still fails)
+# - Investigate session-hour enforcement bug: 19:00 ET bars processed despite session_close_local='16:00' (1Hour timeframe)
