@@ -272,7 +272,8 @@ class _PerSymbolPositionManager:
         return pm.on_bar(symbol, bar)
 
 
-def build_pipeline(cfg: dict, alpaca=None,
+def build_pipeline(cfg: dict, ac_configs: dict | None = None,
+                   alpaca=None,
                    mysql=None, strategy_id: int | None = None) -> FilterPipeline:
     news_windows = [
         NewsBlackout(start=datetime.fromisoformat(w["start"]),
@@ -280,7 +281,10 @@ def build_pipeline(cfg: dict, alpaca=None,
         for w in cfg.get("news_blackouts") or []
     ]
     filters = [
-        SessionWindowFilter(opening_blackout_min=cfg["filters"]["opening_blackout_min"]),
+        SessionWindowFilter(
+            opening_blackout_min=cfg["filters"]["opening_blackout_min"],
+            asset_class_configs=ac_configs,
+        ),
         NewsBlackoutFilter(windows=news_windows, pad_min=5),
         VolumeDeficitFilter(deficit_pct=cfg["filters"]["volume_deficit_pct"]),
         ConsecutiveLossFilter(limit=cfg["risk"]["consecutive_loss_limit"],
@@ -440,7 +444,7 @@ def main():
     ledger = DailyLedger(initial_equity=initial_equity)
 
     pipeline = build_pipeline(
-        cfg, alpaca=alpaca, mysql=mysql,
+        cfg, ac_configs=ac_configs, alpaca=alpaca, mysql=mysql,
         strategy_id=mysql.strategy_id if mysql is not None else None,
     )
 

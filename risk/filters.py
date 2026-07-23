@@ -62,16 +62,32 @@ class SessionWindowFilter(EntryFilter):
     name = "session_window"
 
     def __init__(self, opening_blackout_min: int = 15,
+                 asset_class_configs: dict[str, "AssetClassConfig"] | None = None,
                  now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
         self.opening_blackout_min = opening_blackout_min
         self.now_fn = now_fn
+        self._ac_configs = asset_class_configs or {}
 
     def check(self, signal, ctx, ledger, book) -> FilterResult:
         if ctx is None or ctx.session_start_ts is None:
             return FilterResult.ok()
-        elapsed = (self.now_fn() - ctx.session_start_ts).total_seconds() / 60.0
+        now = self.now_fn()
+        elapsed = (now - ctx.session_start_ts).total_seconds() / 60.0
         if elapsed < self.opening_blackout_min:
-            return FilterResult.reject(f"opening blackout: {elapsed:.1f} < {self.opening_blackout_min} min")
+            return FilterResult.reject(
+                f"opening blackout: {elapsed:.1f} < {self.opening_blackout_min} min")
+
+        # Session-close enforcement: refuse entries when the asset class session
+        # has ended. The session_close_local from the config is parsed but was
+        # never previously checked, allowing signals to leak past the close.
+        if ctx.asset_class and self._ac_configs:
+            ac = self._ac_configs.get(ctx.asset_class.name)
+            if ac is not None:
+                from core.asset_class import is_session_active
+                if not is_session_active(now, ac):
+                    return FilterResult.reject(
+                        f"session closed: {ac.session_close_local}")
+
         return FilterResult.ok()
 
 
