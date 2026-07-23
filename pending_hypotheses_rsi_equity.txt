@@ -29,8 +29,16 @@
 # 2 market-hour trades (GLW 12:00) also unfilled. Regime: bull (1.0 alignment). Raise 40→45.
 # Trades reflected: 143,144,145,146,147,148,149.
 
+## ✅ APPLIED 2026-07-23 — threshold: 45 → 50
+# Rationale: 6 unreflected trades, all entry_never_filled, $0 PnL, 0 bars.
+# ALL 6 opened at 19:00-20:00 ET — post-close ghost signals from session-hour
+# enforcement leak (1Hour bars). Threshold at 45 still 0% fill rate. No market-hour
+# signals exist to evaluate threshold efficacy — this is purely the interim
+# mitigation per session-hour-enforcement-leak reference. Regime: bull (1.0 alignment).
+# Trades reflected: 150,151,152,153,154,155.
+
 # 🔮 PENDING:
-# - Raise threshold to 50 if fill rate stays 0% at 45 (next iterative step per heuristic table)
 # - Increase position_size_r from 0.5 to 1.0 (only after fill rate improves — verified filled trades exist)
-# - Code change: market order entries instead of limit orders (last resort if threshold 45+ still fails)
-# - Investigate session-hour enforcement bug: 19:00 ET bars processed despite session_close_local='16:00' (1Hour timeframe)
+# - Code change: market order entries instead of limit orders (last resort if threshold 50 still fails)
+# - Code change: fix session-hour enforcement leak for 1Hour bars (critical — blocks all market-hour signal
+#   evaluation; ALL 6 unreflected trades this cycle are post-close ghost signals at 19:00-20:00 ET)

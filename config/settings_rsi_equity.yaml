@@ -22,14 +22,16 @@ setups:
     # symbols_above_floor + median_oos_sharpe + total_oos_pnl across the
     # curated universe below.
     # Prior values: threshold=40, stop_loss_pct=2.0, period=5.
-    # 2026-07-20: threshold raised 40→45 to fix entry_never_filled (7/7 unreflected
-    # trades since Jul 14 rebuild — 0% fill rate at threshold=40 during bull regime.
-    # 5 trades at 19:00 ET (post-close ghost signals despite session_close=16:00
-    # — suspect session-hour enforcement bug for 1Hour bars), 2 market-hour trades
-    # (GLW 12:00) also unfilled. Iterative raise per heuristic: 30→35→40→45.
-    # Prior: threshold=35→40 on 2026-07-14 (5/6 ENF). Jun 2 cycle: 35→40 (5/6 ENF).
+    # 2026-07-23: threshold raised 45→50 to fix entry_never_filled. 6 unreflected
+    # trades since Jul 20 rebuild — 0% fill rate at threshold=45. ALL 6 trades
+    # opened at 19:00-20:00 ET (post-close ghost signals despite session_close=16:00
+    # — session-hour enforcement leak for 1Hour bars confirmed). Iterative raise
+    # per heuristic: 30→35→40→45→50. No market-hour signals exist to evaluate
+    # threshold efficacy — this is purely the interim mitigation while the
+    # session-hour enforcement code bug remains unresolved.
+    # Prior: 40→45 on 2026-07-20 (7/7 ENF). 35→40 on 2026-07-14 (5/6 ENF).
     enabled: true
-    threshold: 45
+    threshold: 50
     direction: long
     stop_loss_pct: 2.5
     position_size_r: 0.5
