@@ -48,18 +48,23 @@ class RSISetup(BaseSetup):
         bar = ctx.bars[-1]
         atr = ctx.atr() or (bar.close * 0.01)
 
-        # IDLE -> FIRE
+        # IDLE -> FIRE (long: oversold bounce)
         if self.state == "IDLE":
             if self.direction == "long" and rsi < self.threshold:
                 entry = bar.close
                 stop = entry * (1 - self.stop_loss_pct)
-                target = entry + ((entry - stop) * 1.5) # Generic 1.5R target
+                target = entry + ((entry - stop) * 1.5)
                 
-                self.reset() # Reset state
+                self.reset()
                 return SetupSignal(
                     setup=self.name, symbol=self.symbol, side="long",
                     entry=entry, stop=stop, target=target,
-                    atr=atr, level=entry, ts=bar.ts, notes={"strategy": "rsi", "rsi_val": rsi, "position_size_r": self.position_size_r}
+                    atr=atr, level=entry, ts=bar.ts,
+                    notes={
+                        "strategy": "rsi", "rsi_val": rsi,
+                        "position_size_r": self.position_size_r,
+                        "defer_to_next_bar": True,
+                    },
                 )
                 
             elif self.direction == "short" and rsi > (100 - self.threshold):
@@ -71,6 +76,11 @@ class RSISetup(BaseSetup):
                 return SetupSignal(
                     setup=self.name, symbol=self.symbol, side="short",
                     entry=entry, stop=stop, target=target,
-                    atr=atr, level=entry, ts=bar.ts, notes={"strategy": "rsi", "rsi_val": rsi, "position_size_r": self.position_size_r}
+                    atr=atr, level=entry, ts=bar.ts,
+                    notes={
+                        "strategy": "rsi", "rsi_val": rsi,
+                        "position_size_r": self.position_size_r,
+                        "defer_to_next_bar": True,
+                    },
                 )
         return None

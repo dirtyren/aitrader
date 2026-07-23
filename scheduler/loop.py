@@ -100,6 +100,10 @@ class VWAPWaveEngine:
     ledger: DailyLedger
     position_manager: PositionManager
     mysql_store: object | None = None
+    _deferred_signals: list[tuple["SetupSignal", "RiskDecision", str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        self._deferred_signals = []
 
     def tick(self, now: datetime, fresh_bars: dict[str, list[Bar]]) -> None:
         total_bars = sum(len(v) for v in fresh_bars.values())
@@ -136,6 +140,17 @@ class VWAPWaveEngine:
                         parent_order_id=parent_order_id,
                     )
 
+        # ── Deferred-entry processing ──
+        # Signals flagged `defer_to_next_bar` from the PREVIOUS tick are
+        # submitted NOW — bars have just been ingested for this tick, so
+        # the market order fills at the next bar's open price.
+        deferred = self._deferred_signals
+        self._deferred_signals = []
+        for signal, decision, asset_class in deferred:
+            logger.info("DEFERRED_FIRED symbol=%s setup=%s side=%s entry=%.4f",
+                        signal.symbol, signal.setup, signal.side, signal.entry)
+            self.executor.submit(signal, decision, asset_class)
+
         # Phase B: setup detection + entries
         for symbol, asset_class in self.symbols:
             ctx = self.contexts[symbol]
@@ -151,7 +166,12 @@ class VWAPWaveEngine:
                 logger.info("SIGNAL_FIRED symbol=%s setup=%s side=%s entry=%.4f stop=%.4f target=%.4f",
                             signal.symbol, signal.setup, signal.side,
                             signal.entry, signal.stop, signal.target)
-                self.executor.submit(signal, decision, asset_class)
+                if signal.notes.get("defer_to_next_bar"):
+                    self._deferred_signals.append((signal, decision, asset_class))
+                    logger.info("SIGNAL_DEFERRED symbol=%s setup=%s — will fire at next bar open",
+                                signal.symbol, signal.setup)
+                else:
+                    self.executor.submit(signal, decision, asset_class)
 
     def _record_exits(self, symbol: str, actions: list[PositionAction],
                       last_bar: Bar,
