@@ -1,9 +1,10 @@
 from __future__ import annotations
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from broker.order_executor import OrderExecutor
+from core.asset_class import is_session_active
 from core.bar import Bar
 from core.position_manager import PositionAction, PositionManager
 from core.session import SessionContext
@@ -144,9 +145,19 @@ class VWAPWaveEngine:
         # Signals flagged `defer_to_next_bar` from the PREVIOUS tick are
         # submitted NOW — bars have just been ingested for this tick, so
         # the market order fills at the next bar's open price.
+        # Guard: if the session has closed between signal generation and now,
+        # skip execution — submitting to a closed market causes fill-at-next-open
+        # price gaps (e.g. GLW: signal entry $156.31 vs fill $149.28).
         deferred = self._deferred_signals
         self._deferred_signals = []
+        now_utc = datetime.now(timezone.utc)
         for signal, decision, asset_class in deferred:
+            ctx = self.contexts.get(signal.symbol)
+            ac_cfg = ctx.asset_class if ctx else None
+            if ac_cfg is not None and not is_session_active(now_utc, ac_cfg):
+                logger.info("DEFERRED_SKIPPED_CLOSED symbol=%s setup=%s — session closed",
+                            signal.symbol, signal.setup)
+                continue
             logger.info("DEFERRED_FIRED symbol=%s setup=%s side=%s entry=%.4f",
                         signal.symbol, signal.setup, signal.side, signal.entry)
             self.executor.submit(signal, decision, asset_class)
