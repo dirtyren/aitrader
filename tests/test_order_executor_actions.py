@@ -80,20 +80,18 @@ def test_crypto_time_stop_submits_market_close():
     client.cancel_order.assert_not_called()
 
 
-# ---- equity: broker bracket owns stop/target ------------------------------
+# ---- equity: broker close on every exit kind -------------------------------
 
-def test_equity_stop_is_noop():
+def test_equity_stop_submits_market_close():
     ex, client = _make_executor()
     ex.handle_actions([_action("stop")], asset_class="equity", parent_order_id="parent-4")
-    client.submit_order.assert_not_called()
-    client.cancel_order.assert_not_called()
+    client.submit_order.assert_called_once()
 
 
-def test_equity_target_is_noop():
+def test_equity_target_submits_market_close():
     ex, client = _make_executor()
     ex.handle_actions([_action("target")], asset_class="equity", parent_order_id="parent-5")
-    client.submit_order.assert_not_called()
-    client.cancel_order.assert_not_called()
+    client.submit_order.assert_called_once()
 
 
 def test_equity_time_stop_cancels_parent_then_market_close():

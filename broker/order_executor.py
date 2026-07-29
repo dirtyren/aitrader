@@ -367,10 +367,21 @@ class OrderExecutor:
 
             if asset_class == "equity":
                 if a.kind in ("stop", "target"):
-                    self._mark_exit_submitted(a.symbol, a.setup)
+                    # Equity stop/target: the bracket assumption was freezing
+                    # positions — OCO attach fails silently OR day orders expire
+                    # at close, leaving zero broker-side orders. Instead of
+                    # assuming broker owns the exit, send a market close order.
+                    # If a bracket still exists the close may race, but Alpaca
+                    # handles that safely (duplicate closes are idempotent).
+                    close_result = self.close_position(a.symbol, a.side, a.qty,
+                                                       setup=a.setup,
+                                                       asset_class="equity")
+                    if close_result is not None:
+                        self._mark_exit_submitted(a.symbol, a.setup)
                     self.logger.info(
-                        "BRACKET_EXIT symbol=%s kind=%s price=%.4f setup=%s",
+                        "EQUITY_EXIT symbol=%s kind=%s price=%.4f setup=%s closed=%s",
                         a.symbol, a.kind, a.price, a.setup,
+                        close_result is not None,
                     )
                     continue
                 if a.kind == "time_stop":

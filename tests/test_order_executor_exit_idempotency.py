@@ -61,9 +61,10 @@ def test_equity_time_stop_flips_flag_in_book_and_mysql():
     )
 
 
-def test_equity_bracket_exit_flips_flag_without_submitting_close():
-    """For equity stop/target, the broker bracket OCO fires server-side.
-    We only need to flip the flag — no close to submit."""
+def test_equity_stop_target_submits_close_and_flips_flag():
+    """For equity stop/target, we now submit a market close AND flip the
+    flag. The bracket assumption was freezing positions when OCO attach
+    failed or day orders expired."""
     client = MagicMock()
     book = PositionBook()
     _seed(book)
@@ -78,7 +79,7 @@ def test_equity_bracket_exit_flips_flag_without_submitting_close():
     ex.handle_actions([action], asset_class="equity",
                       parent_order_id="parent-1")
 
-    client.submit_order.assert_not_called()  # OCO is broker-side
+    client.submit_order.assert_called_once()  # now submits market close
     assert book.get("COIN", "price_discovery").exit_submitted is True
     mysql.mark_exit_submitted.assert_called_once()
 
