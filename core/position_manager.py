@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from core.bar import Bar
@@ -78,7 +79,26 @@ class PositionManager:
                 # the reconciler closes the MySQL row from the broker fill
                 # and the next cycle's book reload drops it. bars_held is
                 # NOT incremented — same shape as the fill gate.
-                continue
+                #
+                # Safety timeout: if the close order has been stuck for
+                # more than 2 hours (e.g. after-hours submission that never
+                # fills in paper trading), reset exit_submitted and retry.
+                # Without this, the position bleeds forever with no exit path.
+                if pos.exit_submitted_at is not None:
+                    stuck_s = (datetime.now(timezone.utc) - pos.exit_submitted_at).total_seconds()
+                    if stuck_s > 7200:  # 2 hours
+                        logger.warning(
+                            "EXIT_STUCK_TIMEOUT symbol=%s setup=%s stuck_s=%.0f "
+                            "— resetting exit_submitted to retry close",
+                            pos.symbol, pos.setup, stuck_s,
+                        )
+                        pos.exit_submitted = False
+                        pos.exit_submitted_at = None
+                        # Fall through to _check_position — DO NOT continue
+                    else:
+                        continue
+                else:
+                    continue
             actions = self._check_position(pos, bar)
             all_actions.extend(actions)
         return all_actions

@@ -48,6 +48,10 @@ class OpenPosition:
     # Cleared only by the position leaving the book — i.e. the reconciler
     # closing the MySQL row from the broker's actual close fill.
     exit_submitted: bool = False
+    # Timestamp when exit_submitted was flipped to True. Used by
+    # PositionManager to detect stuck close orders (e.g. after-hours
+    # submissions that never fill in paper trading) and retry.
+    exit_submitted_at: datetime | None = None
 
     @property
     def initial_risk_per_share(self) -> float:
