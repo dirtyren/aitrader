@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from broker.alpaca_client import InsufficientBuyingPowerError, OrderRejectedError
@@ -440,10 +441,15 @@ class OrderExecutor:
         """Flip exit_submitted=True on the in-memory book and persist to
         MySQL so PositionManager.on_bar stops emitting further exits for
         this position. Idempotent — safe to call repeatedly.
+
+        Sets exit_submitted_at so the PositionManager can detect stuck
+        close orders (e.g. after-hours submissions that never fill) and
+        retry after a timeout.
         """
         pos = self.book.get(symbol, setup)
         if pos is not None:
             pos.exit_submitted = True
+            pos.exit_submitted_at = datetime.now(timezone.utc)
         if self._mysql is not None:
             try:
                 self._mysql.mark_exit_submitted(

@@ -886,6 +886,13 @@ class MySQLStore:
             ).all()
             for row in rows:
                 pos = self._dict_to_pos(row)
+                # Seed exit_submitted_at for positions that were frozen before
+                # this field existed. Without it, the PositionManager's stuck-
+                # close timeout can never fire because exit_submitted_at stays
+                # None, keeping the position permanently frozen. Start the
+                # countdown from now so the retry fires within 2 hours.
+                if pos.exit_submitted and pos.exit_submitted_at is None:
+                    pos.exit_submitted_at = datetime.utcnow().replace(tzinfo=timezone.utc)
                 try:
                     book.add(pos)
                 except ValueError:

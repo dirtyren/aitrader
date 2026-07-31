@@ -19,7 +19,7 @@ import yaml
 from broker.alpaca_client import AlpacaClient
 from broker.alpaca_data import AlpacaData
 from broker.order_executor import OrderExecutor
-from core.asset_class import AssetClassConfig, session_start_for
+from core.asset_class import AssetClassConfig, is_session_active, session_start_for
 from core.position_manager import PositionManager
 from core.session import SessionContext
 from risk.filters import (
@@ -519,6 +519,36 @@ def main():
                 book.replace_from(fresh_book)
             except Exception as exc:
                 logger.error("MYSQL_REBUILD_FAILED: %s", exc, exc_info=True)
+
+            # Session-close gate: skip bar ingestion and position management
+            # when NO asset class session is active. Running the full tick
+            # cycle on extended-hours bars causes stop/target exits to be
+            # submitted to a closed market (orders sit pending until next
+            # open), bars_held increments during dead hours, and the
+            # reconciler never sees fills because the orders are stuck.
+            any_session_active = any(
+                is_session_active(cycle_now, ac) for ac in ac_configs.values()
+            )
+            if not any_session_active:
+                # Still sync position state so external closures are reflected
+                # in MySQL, and write the dashboard snapshot.
+                for pos in book.all():
+                    try:
+                        for sym_name, ac_name in symbols:
+                            if sym_name == pos.symbol:
+                                mysql.sync_position_state(pos, ac_name)
+                                break
+                    except Exception as exc:
+                        logger.error("MYSQL_SYNC_FAILED symbol=%s: %s",
+                                    pos.symbol, exc, exc_info=True)
+                snap = _collect_snapshot(symbols, contexts, book, ledger)
+                state_file_path = os.environ.get(
+                    "STATE_FILE_PATH",
+                    f"runtime/trading_state_{system_name}.json",
+                )
+                write_dashboard_state(state_file_path, snap)
+                logger.debug("SESSION_CLOSED_SKIP cycle — all sessions closed")
+                continue
 
             # Operator kill-switch. When `enabled=False`, sweep any open
             # positions and skip the rest of the cycle. This is also the
