@@ -8,9 +8,16 @@
 # Firing after 1 bar instead of 2 enters earlier, before momentum exhausts the entry zone.
 # If fills stay at 0%, confirms deeper issue with limit order mechanism on VWAP reversion signals.
 
+# ✅ APPLIED 2026-08-03 — fade_extreme atr_mult_stop: 0.75 → 1.0
+# Rationale: fade_extreme is weakest setup — 3 trades (0W/2L/1BE, net -2.62R). All shorts
+# in bull regime (alignment 0.2), all stopped at broker. Wider stop (1.0x ATR) gives fades
+# 33% more room to revert to VWAP before stop-out. price_discovery remains strong (4W/1L).
+# Next cycle: if fade_extreme still losing, consider disabling the setup entirely in bull regime.
+
 # 🔮 PENDING:
 # 1. Remove AVGO from symbol list — Two AVGO fade_extreme losses totaling -$852. AVGO may be unsuitable for VWAP reversion.
 # 2. Increase fade_extreme target from VWAP to wider offset — current `target: vwap` gives tiny R wins. Needs code change.
 # 3. Reduce price_discovery atr_mult_stop from 1.0 to 0.75 — EV already +0.86R/trade, low priority.
-# 4. Increase fade_extreme atr_mult_stop from 0.75 to 1.0 — only if scale_weights shift doesn't improve avg win R.
 # 5. Trim XLF, XLE from symbol list — slow sector ETFs, monitor P&L contribution.
+# 6. Investigate post-close trades (7/10 opened ≥16:00 ET Jul 31 despite session_close_local: "16:00" and fix 22dbc98 deployed)
+# 7. Regime filter: suppress fade_extreme shorts in bull regime (avg alignment 0.24 — shorts fighting bull trend)

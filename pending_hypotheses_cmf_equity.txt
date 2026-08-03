@@ -2,6 +2,15 @@
 # Updated: 2026-06-12 — replaced GLD with 15 equities + WFO-optimal params
 # WFO: 5yr, 3mo IS / 9mo OOS, 15/15 passed (100%), mean WFE=0.67, Sharpe=3.33
 
+# ✅ REFLECTED 2026-08-03 — NO CONFIG CHANGE
+# Rationale: Only 5 trades, 2 manual_close at $0 (cleanup noise, not strategy outcomes).
+# 3 real trades: 1W (NVDA +2.70R), 2L (JNJ -2.01R, GOOGL -1.11R). Net -0.14R, 33% WR.
+# Insufficient data for single-var change. Session-hour leak suspected:
+# ALL 5 trades opened at 18:30-19:30 ET (after session_close_local: "16:00").
+# GOOGL (Jul 31 19:00 ET) opened AFTER container rebuild with session-close gate fix
+# (commit 22dbc98) — investigation needed: does SessionWindowFilter apply to CMF 15Min bars?
+# Regime: bull (alignment 0.72 avg, longs well-aligned, short misaligned)
+
 ## H1: Add 1Hour timeframe for fewer but higher-quality signals
 Rationale: WFO used 15Min only. 1H CMF signals may filter intraday noise.
 Risk: Fewer trades, longer holds, wider stops needed.
@@ -35,3 +44,9 @@ Risk: Overtrading, higher commission impact, more noise.
 Rationale: Current config has trailing enabled. If stops tighten too much
 and cut winners short, consider trail_at_R=2.0.
 Risk: Giving back more open profit if trend reverses sharply.
+
+## H8: Investigate session-hour leak for 15Min bars
+Rationale: All 5 trades opened post-close (18:30-19:30 ET). GOOGL trade on
+Jul 31 after container rebuild with fix 22dbc98 deployed. SessionWindowFilter
+may have a gap for CMF's 15Min bar path.
+Risk: Trades placed when market closed → filled at next open at different prices.

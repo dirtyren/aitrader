@@ -30,7 +30,7 @@ setups:
     cooldown_bars: 12
   fade_extreme:
     enabled: true
-    atr_mult_stop: 0.75
+    atr_mult_stop: 1.0
     scale_weights: [0.3, 0.4, 0.30]
     scale_offsets_atr: [0.0, 0.25, 0.50]
     target: vwap

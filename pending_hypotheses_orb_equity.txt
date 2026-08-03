@@ -14,7 +14,17 @@
 # Firing after 1 bar instead of 2 enters earlier before momentum exhausts the entry zone.
 # If fills stay at 0%, this confirms market orders are needed for ORB entries.
 
+# ✅ APPLIED 2026-08-03 — atr_mult_stop: 0.5 → 0.75
+# Rationale: 7 trades (first batch with actual fills after 48→8 symbol trim), 29% WR, -0.83 avg R.
+# All 5 losses hit tight 0.5x ATR stop (avg -1.54R). 2 wins (+0.87R, +1.03R) hit max_hold_bars=12,
+# never reaching 4.0R target. 50% wider stop gives breakouts room to develop before noise triggers
+# stop-out. In bull regime, temporary reversals against the breakout should be survived.
+# Target_R=4.0 remains aspirational — reduce to 2.5-3.0 if wins still can't reach target after stop widening.
+
 # 🔮 PENDING:
 # - Switch to 1Hour bars + IB-style approach (like successful ib_crypto 1H IB pattern, now retired)
 # - Code change: market order entries instead of limit orders for ORB breakouts (REQUIRED)
 # - Consider retiring orb_equity_trader entirely if code fix not feasible
+# - Option B: reduce target_R from 4.0 → 2.5 — winners never get near 4.0R; max_hold closes at +0.9-1.0R
+# - Regime filter: 6/7 trades were short in bull regime (avg alignment 0.29). Only CRM long (alignment 1.0)
+#   still lost — breakout quality problem not just regime misalignment

@@ -67,7 +67,7 @@ setups:
     # 2026-07-14: No param changes — 48→8 symbol trim is the one-var change
     # for this cycle. All 30 prior trades were $0 PnL (29/30 manual_close or
     # entry_never_filled). Fewer, higher-vol names should concentrate signals.
-    atr_mult_stop: 0.5
+    atr_mult_stop: 0.75
     enabled: true
     orb_bars: 3
     target_R: 4.0
