@@ -3,5 +3,16 @@
 # ✅ REFLECTED 2026-06-01 — No config change needed
 # 60% WR, nearly breakeven (+$13). Hits big targets (GOOGL +3.32R, AMD +0.96R) offset by AMD -1.0R stop.
 
-# Alternative: Reduce sigma from 2.5 to 2.0
-# Rationale: Generate more signals. Current sigma=2.5 only fired 5 trades in ~2 trading days.
+# ✅ APPLIED 2026-08-04 — sigma: 3.0 → 2.0
+# Rationale: 5 trades (2 in-session + 3 post-close ghosts), 20% WR, -1.61 avg R. All vwap_dev_bands.
+# Current sigma=3.0 creates entries at extreme 3σ deviations — but tight 0.5x ATR stop means one
+# small continuation against entry triggers stop-out (avg -2.1R on losses). Backtest-optimal is
+# sigma=1.5/stop=0.75. Lowering sigma to 2.0 moves entries earlier in the deviation, giving 1.5σ
+# more room for reversion to VWAP before 0.5σ stop is hit. 3/5 trades were post-close (session-
+# hour enforcement bug — same as orb_equity investigation needed).
+
+# 🔮 PENDING:
+# - Continue lowering sigma toward backtest-optimal 1.5 if 2.0 shows improvement
+# - Widen atr_mult_stop from 0.5 to 0.75 (backtest-optimal combo is sigma=1.5 + stop=0.75)
+# - Session-hour enforcement fix needed for vwap_bands_equity container (built Jul 31, fix fcc1692 Jul 29)
+# - Consider removing low-vol symbols that don't reach 3σ deviations frequently

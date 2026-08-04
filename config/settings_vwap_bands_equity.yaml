@@ -94,7 +94,7 @@ setups:
     # Prior values: atr_mult_stop=0.75, sigma=2.5, target_R=2.0.
     atr_mult_stop: 0.5
     enabled: true
-    sigma: 3.0
+    sigma: 2.0
     target_R: 1.5
 system:
   name: vwap_bands_equity_trader

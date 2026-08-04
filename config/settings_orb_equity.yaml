@@ -69,7 +69,7 @@ setups:
     # entry_never_filled). Fewer, higher-vol names should concentrate signals.
     atr_mult_stop: 0.75
     enabled: true
-    orb_bars: 3
+    orb_bars: 4
     target_R: 4.0
 system:
   name: orb_equity_trader

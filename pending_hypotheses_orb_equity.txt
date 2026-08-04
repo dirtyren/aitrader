@@ -21,10 +21,21 @@
 # stop-out. In bull regime, temporary reversals against the breakout should be survived.
 # Target_R=4.0 remains aspirational — reduce to 2.5-3.0 if wins still can't reach target after stop widening.
 
+# ✅ APPLIED 2026-08-04 — orb_bars: 3 → 4
+# Rationale: 6 trades (4 in-session + 2 post-close ghosts). In-session WR 75% but small avg win
+# (~1.3R, all exit at max_hold_bars=12 never reaching 4.0R target). High WR + small avg win
+# heuristic: wider range (4 bars = 20min vs 3 bars = 15min) filters noise breakouts, produces
+# stronger signals with better follow-through. 2 post-close trades (18:20/19:00 ET) are session-
+# hour enforcement failures — container image Aug 3 after fix fcc1692 but filter not blocking.
+# Investigation needed: SessionWindowFilter.is_session_active() works correctly in isolation
+# but produces zero "session closed" rejections in production logs at 18:25-19:50 ET.
+
 # 🔮 PENDING:
 # - Switch to 1Hour bars + IB-style approach (like successful ib_crypto 1H IB pattern, now retired)
 # - Code change: market order entries instead of limit orders for ORB breakouts (REQUIRED)
 # - Consider retiring orb_equity_trader entirely if code fix not feasible
-# - Option B: reduce target_R from 4.0 → 2.5 — winners never get near 4.0R; max_hold closes at +0.9-1.0R
 # - Regime filter: 6/7 trades were short in bull regime (avg alignment 0.29). Only CRM long (alignment 1.0)
 #   still lost — breakout quality problem not just regime misalignment
+# - Session-hour enforcement bug: filter code correct but signals fire at 18:25-19:50 ET regardless.
+#   ctx.session_start_ts confirmed set; SessionWindowFilter.check() returns correct rejection.
+#   Root cause likely in `_ac_configs` dict lookup or filter pipeline construction at runtime.

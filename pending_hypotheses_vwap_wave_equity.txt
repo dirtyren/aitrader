@@ -14,10 +14,20 @@
 # 33% more room to revert to VWAP before stop-out. price_discovery remains strong (4W/1L).
 # Next cycle: if fade_extreme still losing, consider disabling the setup entirely in bull regime.
 
+# ✅ APPLIED 2026-08-04 — price_discovery arm_window_bars: 4 → 6
+# Rationale: 5 trades (1 in-session + 4 post-close ghosts), 20% WR, -0.86 avg R. The only
+# in-session trade was UBER price_discovery -0.92R (bars_held=1, quick stop-out). Returning
+# arm_window_bars to 6 (30min confirmation vs 20min) gives the session more time to establish
+# direction before arming. 4/5 trades were post-close (session-hour enforcement bug — 
+# PLTR price_discovery fired at 19:50 ET with SIGNAL_FIRED but no session rejection).
+# fade_extreme post-close trades (NFLX +0.19R, UBER -1.79R, NFLX -0.88R) are unreliable.
+
 # 🔮 PENDING:
 # 1. Remove AVGO from symbol list — Two AVGO fade_extreme losses totaling -$852. AVGO may be unsuitable for VWAP reversion.
 # 2. Increase fade_extreme target from VWAP to wider offset — current `target: vwap` gives tiny R wins. Needs code change.
 # 3. Reduce price_discovery atr_mult_stop from 1.0 to 0.75 — EV already +0.86R/trade, low priority.
-# 5. Trim XLF, XLE from symbol list — slow sector ETFs, monitor P&L contribution.
-# 6. Investigate post-close trades (7/10 opened ≥16:00 ET Jul 31 despite session_close_local: "16:00" and fix 22dbc98 deployed)
-# 7. Regime filter: suppress fade_extreme shorts in bull regime (avg alignment 0.24 — shorts fighting bull trend)
+# 4. Trim XLF, XLE from symbol list — slow sector ETFs, monitor P&L contribution.
+# 5. Regime filter: suppress fade_extreme shorts in bull regime (avg alignment 0.24 — shorts fighting bull trend)
+# 6. Session-hour enforcement bug: PLTR fired at 19:50 ET, DAL at 18:25, UAL at 19:05 — all post-close.
+#    is_session_active() returns correct False. Filter code correct. Likely runtime pipeline issue.
+#    Container built Aug 3 after all fixes — should be blocking these. Investigation needed.
