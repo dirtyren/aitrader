@@ -28,6 +28,10 @@
 # 3. Reduce price_discovery atr_mult_stop from 1.0 to 0.75 — EV already +0.86R/trade, low priority.
 # 4. Trim XLF, XLE from symbol list — slow sector ETFs, monitor P&L contribution.
 # 5. Regime filter: suppress fade_extreme shorts in bull regime (avg alignment 0.24 — shorts fighting bull trend)
-# 6. Session-hour enforcement bug: PLTR fired at 19:50 ET, DAL at 18:25, UAL at 19:05 — all post-close.
-#    is_session_active() returns correct False. Filter code correct. Likely runtime pipeline issue.
-#    Container built Aug 3 after all fixes — should be blocking these. Investigation needed.
+# 6. Session-hour enforcement bug: 8/10 trades post-close (Aug 4-5, 16:40-19:35 ET). Filter code correct,
+#    SessionWindowFilter.check() returns correct rejection in isolation, but zero "session closed" rejections
+#    in production logs. Hypothesis: _ac_configs dict lookup returns None at runtime, silently skipping filter.
+#    Debug: check in-container _ac_configs contents, verify ctx.asset_class.name matches dict key.
+
+# 📋 2026-08-05 cycle: All 10 trades reflected. No config change — 8/10 post-close (SessionWindowFilter bypass),
+# 2 in-session wins (+$1.71, 100% WR). Insufficient in-session data for tuning.

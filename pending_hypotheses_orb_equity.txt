@@ -30,12 +30,18 @@
 # Investigation needed: SessionWindowFilter.is_session_active() works correctly in isolation
 # but produces zero "session closed" rejections in production logs at 18:25-19:50 ET.
 
+# ✅ APPLIED 2026-08-05 — target_R: 4.0 → 3.0
+# Rationale: 3 in-session trades (1W/1L/1BE). CRM win (+1.83, R=2.02) exited at max_hold_bars=12,
+# never reaching aspirational 4.0R target. 3.0R would have been hit at ~R=2.0. In bull regime with
+# 0.75x ATR stop, breakouts have follow-through but not 4.0R magnitude. Lowering to achievable 3.0R
+# should convert time-exit wins into target-hits. WYNN loss (-1.89R) is noise — quick stop-out.
+# 2/5 post-close (UAL 17:15, NEM 16:45) — SessionWindowFilter bypass, same bug as vwap_wave_equity.
+
 # 🔮 PENDING:
 # - Switch to 1Hour bars + IB-style approach (like successful ib_crypto 1H IB pattern, now retired)
 # - Code change: market order entries instead of limit orders for ORB breakouts (REQUIRED)
 # - Consider retiring orb_equity_trader entirely if code fix not feasible
-# - Regime filter: 6/7 trades were short in bull regime (avg alignment 0.29). Only CRM long (alignment 1.0)
-#   still lost — breakout quality problem not just regime misalignment
-# - Session-hour enforcement bug: filter code correct but signals fire at 18:25-19:50 ET regardless.
-#   ctx.session_start_ts confirmed set; SessionWindowFilter.check() returns correct rejection.
-#   Root cause likely in `_ac_configs` dict lookup or filter pipeline construction at runtime.
+# - Regime filter: post-close noise removed — but 3 in-session trades too few for regime conclusions
+# - Session-hour enforcement bug: 2/5 post-close (16:45, 17:15 ET). Same _ac_configs pipeline issue.
+# - If target_R=3.0 doesn't improve hit rate, next step: widen orb_bars 4→5 for stronger breakouts
+#   OR tighten atr_mult_stop 0.75→0.5 (revert Aug 3 change) to reduce loss magnitude on false breakouts
