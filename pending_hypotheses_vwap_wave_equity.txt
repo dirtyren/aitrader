@@ -22,16 +22,17 @@
 # PLTR price_discovery fired at 19:50 ET with SIGNAL_FIRED but no session rejection).
 # fade_extreme post-close trades (NFLX +0.19R, UBER -1.79R, NFLX -0.88R) are unreliable.
 
-# 🔮 PENDING:
-# 1. Remove AVGO from symbol list — Two AVGO fade_extreme losses totaling -$852. AVGO may be unsuitable for VWAP reversion.
-# 2. Increase fade_extreme target from VWAP to wider offset — current `target: vwap` gives tiny R wins. Needs code change.
-# 3. Reduce price_discovery atr_mult_stop from 1.0 to 0.75 — EV already +0.86R/trade, low priority.
-# 4. Trim XLF, XLE from symbol list — slow sector ETFs, monitor P&L contribution.
-# 5. Regime filter: suppress fade_extreme shorts in bull regime (avg alignment 0.24 — shorts fighting bull trend)
-# 6. Session-hour enforcement bug: 8/10 trades post-close (Aug 4-5, 16:40-19:35 ET). Filter code correct,
-#    SessionWindowFilter.check() returns correct rejection in isolation, but zero "session closed" rejections
-#    in production logs. Hypothesis: _ac_configs dict lookup returns None at runtime, silently skipping filter.
-#    Debug: check in-container _ac_configs contents, verify ctx.asset_class.name matches dict key.
+# 📋 2026-08-06 cycle: 5 trades (4 in-session + 1 post-close). No config change.
+# In-session: 2W/2L = 50% WR, +$0.66, avg +0.16R — near breakeven, insufficient data.
+# Post-close: 273 COIN price_discovery at 18:10 ET — SessionWindowFilter bypass (known bug).
+# price_discovery: 1W/0L in-session (254 COIN +1.29R), strong.
+# fade_extreme: 1W/2L in-session (266 NFLX -1.26R, 268 COIN -0.68R, 270 COIN +1.30R), struggling.
+# Post-change fade_extreme atr_mult_stop=1.0 only 2 in-session samples — need more data.
 
-# 📋 2026-08-05 cycle: All 10 trades reflected. No config change — 8/10 post-close (SessionWindowFilter bypass),
-# 2 in-session wins (+$1.71, 100% WR). Insufficient in-session data for tuning.
+# 🔮 PENDING:
+# 1. Increase fade_extreme target from VWAP to wider offset — current `target: vwap` gives tiny R wins. Needs code change.
+# 2. Reduce price_discovery atr_mult_stop from 1.0 to 0.75 — EV already +0.86R/trade, low priority.
+# 3. Regime filter: suppress fade_extreme shorts in bull regime (avg alignment 0.24 — shorts fighting bull trend)
+# 4. Session-hour enforcement bug: post-close entries still leaking through SessionWindowFilter
+#    silent bypass on 5Min strategies. Filter code correct but _ac_configs dict lookup may return
+#    None at runtime. Debug: check in-container _ac_configs contents.

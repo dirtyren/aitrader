@@ -92,7 +92,7 @@ setups:
     # symbols_above_floor + median_oos_sharpe + total_oos_pnl across the
     # curated universe above.
     # Prior values: atr_mult_stop=0.75, sigma=2.5, target_R=2.0.
-    atr_mult_stop: 0.5
+    atr_mult_stop: 0.75
     enabled: true
     sigma: 2.0
     target_R: 1.5

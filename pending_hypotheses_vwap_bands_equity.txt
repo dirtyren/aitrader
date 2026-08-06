@@ -11,8 +11,16 @@
 # more room for reversion to VWAP before 0.5σ stop is hit. 3/5 trades were post-close (session-
 # hour enforcement bug — same as orb_equity investigation needed).
 
+# ✅ APPLIED 2026-08-06 — atr_mult_stop: 0.5 → 0.75
+# Rationale: 17 trades (11 in-session + 6 post-close ghosts), 27.3% WR, -$4.89, avg -1.18R.
+# 5/11 in-session trades had bars_held=0 (immediate stop-out on next bar), averaging -2.19R.
+# The 0.5x ATR stop is too tight — VWAP deviation entries at 2σ still face brief continuation
+# before reversion, and tiny noise moves trigger the narrow stop. Widening to 0.75x ATR gives
+# 50% more breathing room. Backtest-optimal combo is sigma=1.5 + stop=0.75.
+# Post-close trades (6): SessionWindowFilter silent bypass on 5Min strategies — known bug.
+# Container built Aug 4 07:13 ET (fcc1692 Jul 29 already deployed).
+
 # 🔮 PENDING:
-# - Continue lowering sigma toward backtest-optimal 1.5 if 2.0 shows improvement
-# - Widen atr_mult_stop from 0.5 to 0.75 (backtest-optimal combo is sigma=1.5 + stop=0.75)
-# - Session-hour enforcement fix needed for vwap_bands_equity container (built Jul 31, fix fcc1692 Jul 29)
-# - Consider removing low-vol symbols that don't reach 3σ deviations frequently
+# - Continue lowering sigma toward backtest-optimal 1.5 if 0.75 stop shows improvement
+# - Session-hour enforcement fix still leaking post-close entries on 5Min strategies (six 16:15-19:00 ET trades)
+# - Consider removing low-vol symbols that don't reach 2σ deviations frequently
