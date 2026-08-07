@@ -20,7 +20,15 @@
 # Post-close trades (6): SessionWindowFilter silent bypass on 5Min strategies — known bug.
 # Container built Aug 4 07:13 ET (fcc1692 Jul 29 already deployed).
 
+# ✅ APPLIED 2026-08-07 — atr_mult_stop: 0.75 → 1.0
+# Rationale: 9 trades (6 in-session + 3 post-close ghosts), 16.7% WR (in-session), avg -1.37R.
+# 4/6 in-session trades bars_held=0 — the 0.75 stop is still too tight. Regime: bull, alignment 0.87.
+# Winners: SYY +6.97R (post-close ghost, 12 bars held). In-session losses averaged -1.65R.
+# Continuing toward backtest-optimal combo: the 0.5→0.75 jump was insufficient; 1.0x ATR is
+# the next step. Post-close ghosts (3): MAS, SYY, MCHP at 17:40-19:25 ET — SessionWindowFilter
+# silent bypass persists.
+
 # 🔮 PENDING:
-# - Continue lowering sigma toward backtest-optimal 1.5 if 0.75 stop shows improvement
-# - Session-hour enforcement fix still leaking post-close entries on 5Min strategies (six 16:15-19:00 ET trades)
-# - Consider removing low-vol symbols that don't reach 2σ deviations frequently
+# - Lower sigma from 2.0 toward backtest-optimal 1.5 after stop stabilizes at 1.0x
+# - Session-hour enforcement fix still leaking post-close entries on 5Min strategies
+# - Consider dropping lowest-vol symbols (WEC, IBKR) that trigger but can't reversion fast enough

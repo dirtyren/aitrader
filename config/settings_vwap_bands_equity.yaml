@@ -92,7 +92,10 @@ setups:
     # symbols_above_floor + median_oos_sharpe + total_oos_pnl across the
     # curated universe above.
     # Prior values: atr_mult_stop=0.75, sigma=2.5, target_R=2.0.
-    atr_mult_stop: 0.75
+# 2026-08-07: atr_mult_stop 0.5→0.75→1.0. After 0.5→0.75 on Aug 6,
+# 4/6 in-session trades still bars_held=0 (immediate noise stop-out).
+# Widening to 1.0 for full 1.0x ATR breathing room.
+    atr_mult_stop: 1.0
     enabled: true
     sigma: 2.0
     target_R: 1.5

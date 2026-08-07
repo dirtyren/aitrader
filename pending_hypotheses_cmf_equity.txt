@@ -1,15 +1,20 @@
 # Pending Hypotheses — cmf_equity_trader
-# Updated: 2026-06-12 — replaced GLD with 15 equities + WFO-optimal params
-# WFO: 5yr, 3mo IS / 9mo OOS, 15/15 passed (100%), mean WFE=0.67, Sharpe=3.33
+# Updated: 2026-08-07 — All 5 trades post-close ghosts, no config change
 
 # ✅ REFLECTED 2026-08-03 — NO CONFIG CHANGE
 # Rationale: Only 5 trades, 2 manual_close at $0 (cleanup noise, not strategy outcomes).
 # 3 real trades: 1W (NVDA +2.70R), 2L (JNJ -2.01R, GOOGL -1.11R). Net -0.14R, 33% WR.
 # Insufficient data for single-var change. Session-hour leak suspected:
 # ALL 5 trades opened at 18:30-19:30 ET (after session_close_local: "16:00").
-# GOOGL (Jul 31 19:00 ET) opened AFTER container rebuild with session-close gate fix
-# (commit 22dbc98) — investigation needed: does SessionWindowFilter apply to CMF 15Min bars?
-# Regime: bull (alignment 0.72 avg, longs well-aligned, short misaligned)
+
+# ✅ REFLECTED 2026-08-07 — NO CONFIG CHANGE
+# Rationale: 5 trades, ALL opened 18:30-19:30 ET — after session_close_local 16:00.
+# Zero in-session trades to evaluate. SessionWindowFilter silent bypass for 15Min bars
+# (same root cause as 5Min strategy leak). Notable: MSFT -$29.30 (-9.00R) on weekend
+# gap fill (Fri Jul 31 short → Mon Aug 3 open). JPM +$6.74 (+7.37R) counterbalance.
+# Net: 3W/2L (60% WR), -$21.21 total, -0.21 avg R. No valid in-session data.
+# Container: check if running post-fcc1692 code (Jul 29 deferred-entry fix).
+# ALL five trades pre-exist any session-hour fix that might land.
 
 ## H1: Add 1Hour timeframe for fewer but higher-quality signals
 Rationale: WFO used 15Min only. 1H CMF signals may filter intraday noise.
@@ -45,8 +50,11 @@ Rationale: Current config has trailing enabled. If stops tighten too much
 and cut winners short, consider trail_at_R=2.0.
 Risk: Giving back more open profit if trend reverses sharply.
 
-## H8: Investigate session-hour leak for 15Min bars
-Rationale: All 5 trades opened post-close (18:30-19:30 ET). GOOGL trade on
-Jul 31 after container rebuild with fix 22dbc98 deployed. SessionWindowFilter
-may have a gap for CMF's 15Min bar path.
-Risk: Trades placed when market closed → filled at next open at different prices.
+## 🔴 H8: CRITICAL — Session-hour leak for 15Min bars (ZERO in-session trades)
+Rationale: ALL 5 trades opened 18:30-19:30 ET despite session_close_local "16:00".
+SessionWindowFilter silent bypass on non-5Min timeframes. Same root cause as
+the 5Min strategy leak but for 15Min bars. Without fixing this, CMF will
+continue producing ghost trades filled at next-day opens with unpredictable
+gap risk. MSFT -$29.30 loss from a weekend gap on a 1-share short is the
+canonical example of why this must be fixed before any parameter tuning.
+Priority: FIX SESSION-HOUR LEAK before any config changes.
