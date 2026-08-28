@@ -242,11 +242,20 @@ New and changed:
   universe CSV, counts open positions in the signal's sector, rejects beyond
   the cap. Without this, "top-5 at full risk each" can become one leveraged
   sector bet: five semiconductor longs are one risk, not five.
-- **`ConsecutiveLossFilter` scope must be `per_strategy`, not `per_symbol`.**
+- **`ConsecutiveLossFilter` scope must be `system_wide`, not `per_symbol`.**
   Every other strategy here trades a fixed symbol list, where `per_symbol` is
   correct. This strategy rotates symbols daily and will rarely see the same
   name twice, so `per_symbol` would never fire — dead config offering false
   comfort.
+
+  **Correction (2026-08-28, during implementation planning):** an earlier
+  revision of this section specified `per_strategy`. **No such scope exists
+  in the code.** `ConsecutiveLossFilter.check` branches on the exact string
+  `"system_wide"` (reading `ledger.consec_losses_system`) and treats every
+  other value as per-symbol — so `per_strategy` would have silently fallen
+  through to the per-symbol path and never fired, producing exactly the dead
+  config this requirement exists to avoid. `system_wide` is the value that
+  delivers the intent.
 - **PDT guard** — boot-time precondition, config-gated, blocking live start
   when the account is margin and equity < $25,000. Tested, not assumed (§2.4).
 
