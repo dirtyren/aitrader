@@ -103,3 +103,33 @@ class AlpacaData:
         if use_cache:
             self._write_cache(cache_path, bars)
         return bars
+
+    def get_bars_multi(
+        self,
+        symbols: list[str],
+        asset_class: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[Bar]]:
+        """Bulk multi-symbol bars, parsed into Bar objects, keyed by symbol.
+
+        Deliberately uncached: the caller uses this for a same-day intraday
+        window, where the disk cache in get_bars() would serve a stale
+        partial range on a re-run within the same session.
+
+        Symbols absent from the response (no prints in the window) are simply
+        absent from the returned dict — callers must handle missing keys
+        rather than assume one entry per requested symbol.
+        """
+        if asset_class != "equity":
+            raise ValueError(
+                f"get_bars_multi supports equity only, got {asset_class!r}"
+            )
+        raw_by_symbol = self.client.get_stock_bars_multi(
+            symbols, timeframe, start, end,
+        )
+        return {
+            sym: _bars_from_raw(raw, sym)
+            for sym, raw in raw_by_symbol.items()
+        }
