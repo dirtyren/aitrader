@@ -19,9 +19,13 @@ services:
       timeout: 5s
       retries: 5
 
-  trader-vwap-wave-equity:
+  # ── SINGLE-BOT CONFIG (2026-08-28) ──────────────────────────────────────
+  # Only the SMA-slope daily TQQQ strategy trades. All other trader services
+  # are disabled below. Infrastructure (mysql, reconciler, dashboard, nginx)
+  # stays up.
+  trader-sma-slope-equity:
     build: .
-    command: sh -c "python scripts/validate_grids.py vwap_wave && python main.py --config config/settings_vwap_wave_equity.yaml"
+    command: python main_daily.py --config config/settings_sma_slope_equity.yaml
     env_file: ./config/.env
     environment:
       - TRADING_ENV=${TRADING_ENV:-production}
@@ -38,6 +42,27 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+
+  # trader-vwap-wave-equity: DISABLED 2026-08-28 (single-bot SMA-slope only)
+  # trader-vwap-wave-equity:
+  #   build: .
+  #   command: sh -c "python scripts/validate_grids.py vwap_wave && python main.py --config config/settings_vwap_wave_equity.yaml"
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   # trader-vwap-wave-crypto: DISABLED 2026-07-14
   # trader-vwap-wave-crypto:
@@ -60,25 +85,26 @@ services:
   #     mysql:
   #       condition: service_healthy
 
-  trader-rsi-equity:
-    build: .
-    command: python main.py --config config/settings_rsi_equity.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-rsi-equity: DISABLED 2026-08-28 (single-bot SMA-slope only)
+  # trader-rsi-equity:
+  #   build: .
+  #   command: python main.py --config config/settings_rsi_equity.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   # trader-rsi-crypto: DISABLED 2026-07-14
   # trader-rsi-crypto:
@@ -122,25 +148,26 @@ services:
   #     mysql:
   #       condition: service_healthy
 
-  trader-vwap-bands-equity:
-    build: .
-    command: python main.py --config config/settings_vwap_bands_equity.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-vwap-bands-equity: DISABLED 2026-08-28 (single-bot SMA-slope only)
+  # trader-vwap-bands-equity:
+  #   build: .
+  #   command: python main.py --config config/settings_vwap_bands_equity.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   # trader-vwap-bands-crypto: DISABLED 2026-07-14
   # trader-vwap-bands-crypto:
@@ -163,25 +190,26 @@ services:
   #     mysql:
   #       condition: service_healthy
 
-  trader-orb-equity:
-    build: .
-    command: python main.py --config config/settings_orb_equity.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-orb-equity: DISABLED 2026-08-28 (single-bot SMA-slope only)
+  # trader-orb-equity:
+  #   build: .
+  #   command: python main.py --config config/settings_orb_equity.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   # trader-orb-crypto: DISABLED 2026-07-14
   # trader-orb-crypto:
@@ -204,25 +232,26 @@ services:
   #     mysql:
   #       condition: service_healthy
 
-  trader-cmf-equity:
-    build: .
-    command: python main.py --config config/settings_cmf_equity.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-cmf-equity: DISABLED 2026-08-28 (single-bot SMA-slope only)
+  # trader-cmf-equity:
+  #   build: .
+  #   command: python main.py --config config/settings_cmf_equity.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   # trader-ib-crypto: retired
   # trader-ib-crypto:
@@ -245,26 +274,27 @@ services:
   #     mysql:
   #       condition: service_healthy
 
-  trader-alpaca-gap_and_go:
-    build: .
-    command: python main_gap_and_go.py --config config/settings_gap_and_go_equity.yaml
-    env_file: ./config/.env
-    environment:
-      - TRADING_ENV=${TRADING_ENV:-production}
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=trader
-      - MYSQL_PASSWORD=traderpass
-      - MYSQL_DATABASE=aitrader
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-      - ./config/universe_russell_1000.csv:/app/config/universe_russell_1000.csv:ro
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # trader-alpaca-gap_and_go: DISABLED 2026-08-28 (single-bot SMA-slope only)
+  # trader-alpaca-gap_and_go:
+  #   build: .
+  #   command: python main_gap_and_go.py --config config/settings_gap_and_go_equity.yaml
+  #   env_file: ./config/.env
+  #   environment:
+  #     - TRADING_ENV=${TRADING_ENV:-production}
+  #     - MYSQL_HOST=mysql
+  #     - MYSQL_PORT=3306
+  #     - MYSQL_USER=trader
+  #     - MYSQL_PASSWORD=traderpass
+  #     - MYSQL_DATABASE=aitrader
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ./runtime:/app/runtime
+  #     - ./config/universe_russell_1000.csv:/app/config/universe_russell_1000.csv:ro
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
 
   reconciler-equity:
     build: .

@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 
-_TF_RE = re.compile(r"^(\d+)(Min|Hour)$")
+_TF_RE = re.compile(r"^(\d+)(Min|Hour|Day)$")
 
 
 def parse_timeframe_minutes(tf: str) -> int:
@@ -12,7 +12,11 @@ def parse_timeframe_minutes(tf: str) -> int:
     if not m:
         raise ValueError(f"Unsupported timeframe: {tf!r}")
     n, unit = int(m.group(1)), m.group(2)
-    return n if unit == "Min" else n * 60
+    if unit == "Min":
+        return n
+    if unit == "Hour":
+        return n * 60
+    return n * 1440  # Day — daily timeframes (used by main_daily.py)
 
 
 def next_boundary(now: datetime, timeframe: str, grace_seconds: int = 5) -> datetime:
