@@ -155,6 +155,30 @@ def test_load_skips_malformed_entries_without_failing(tmp_path):
     assert "MSFT" in out
 
 
+def test_load_skips_null_computed_at_without_crashing(tmp_path):
+    """Non-string computed_at (null) must be skipped, not crash the whole load."""
+    p = tmp_path / "b.json"
+    p.write_text('{"BAD": {"atr_14d": 1.0, "avg_or_volume_20d": 1.0,'
+                 ' "avg_daily_volume_20d": 1.0, "computed_at": null},'
+                 ' "GOOD": {"atr_14d": 2.0, "avg_or_volume_20d": 2.0,'
+                 ' "avg_daily_volume_20d": 2.0, "computed_at": "2026-08-27T14:00:00Z"}}')
+    out = load_baselines(p)
+    assert "BAD" not in out
+    assert "GOOD" in out
+
+
+def test_load_skips_numeric_computed_at_without_crashing(tmp_path):
+    """Non-string computed_at (number) must be skipped, not crash the whole load."""
+    p = tmp_path / "b.json"
+    p.write_text('{"BAD": {"atr_14d": 1.0, "avg_or_volume_20d": 1.0,'
+                 ' "avg_daily_volume_20d": 1.0, "computed_at": 42},'
+                 ' "GOOD": {"atr_14d": 2.0, "avg_or_volume_20d": 2.0,'
+                 ' "avg_daily_volume_20d": 2.0, "computed_at": "2026-08-27T14:00:00Z"}}')
+    out = load_baselines(p)
+    assert "BAD" not in out
+    assert "GOOD" in out
+
+
 def test_empty_baselines_are_stale_and_untradeable():
     assert baselines_are_stale({}, NOW, 7) is True
     assert baselines_too_old_to_trade({}, NOW, 7) is True

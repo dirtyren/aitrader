@@ -95,7 +95,7 @@ def load_baselines(path: str | Path) -> dict[str, OpeningDriveBaseline]:
                     entry["computed_at"].replace("Z", "+00:00")
                 ),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
             logger.warning("OD_BASELINE_SKIP symbol=%s error=%s", sym, exc)
     return out
 
