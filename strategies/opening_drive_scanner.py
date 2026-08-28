@@ -158,3 +158,102 @@ def baselines_too_old_to_trade(
     """
     age = baselines_age_p95_days(baselines, now)
     return True if age is None else age > max_age_days * 2
+
+
+@dataclass(frozen=True)
+class OpeningRangeMetrics:
+    """Self-normalized opening-range statistics for one symbol.
+
+    Every ratio here is either symbol-vs-its-own-history or internal to a
+    single feed, so the ~2% IEX volume share cancels. Never add a metric
+    that compares one symbol's raw IEX volume to another's.
+    """
+    symbol: str
+    or_high: float
+    or_low: float
+    or_close: float
+    or_volume: float
+    or_vwap: float
+    prev_close: float
+    atr_14d: float
+    rvol_or: float
+    disp_atr: float
+    or_width_atr: float
+    clv: float
+    rs_atr: float
+    above_vwap: bool
+    bar_coverage: float
+
+
+def or_return(bars: list[Bar] | None, prev_close: float) -> float | None:
+    """Fractional opening-range return, or None when uncomputable.
+
+    Used for both the candidate and the SPY benchmark leg of rs_atr.
+    """
+    if not bars or prev_close <= 0:
+        return None
+    return (bars[-1].close - prev_close) / prev_close
+
+
+def compute_or_metrics(
+    symbol: str,
+    bars: list[Bar] | None,
+    baseline: OpeningDriveBaseline,
+    prev_close: float,
+    spy_or_return: float,
+    or_minutes: int = 30,
+) -> OpeningRangeMetrics | None:
+    """Derive all screening metrics for one symbol from its OR bars.
+
+    Returns None for any unusable input rather than raising: no signal is
+    preferable to a wrong signal, and one bad symbol must never abort a
+    515-symbol cut.
+    """
+    if not bars or prev_close <= 0 or or_minutes <= 0:
+        return None
+    if baseline.atr_14d <= 0 or baseline.avg_or_volume_20d <= 0:
+        return None
+
+    or_high = max(b.high for b in bars)
+    or_low = min(b.low for b in bars)
+    or_close = bars[-1].close
+    or_volume = sum(b.volume for b in bars)
+
+    # VWAP from typical price, matching setup_orb_vwap.py. A zero-volume
+    # window has no VWAP; fall back to the close so above_vwap is False.
+    or_vwap = (
+        sum(b.typical_price * b.volume for b in bars) / or_volume
+        if or_volume > 0 else or_close
+    )
+
+    # A flat 30 minutes has no close location; 0.0 fails the min_clv gate.
+    rng = or_high - or_low
+    clv = ((or_close - or_low) / rng) if rng > 0 else 0.0
+
+    # rs_atr expresses excess return over SPY in units of the symbol's own
+    # daily ATR, so a volatile name is not credited for merely being volatile.
+    atr_frac = baseline.atr_14d / prev_close
+    sym_ret = (or_close - prev_close) / prev_close
+    rs_atr = ((sym_ret - spy_or_return) / atr_frac) if atr_frac > 0 else 0.0
+
+    # Denominator is the EXPECTED bar count, not len(bars): a symbol IEX
+    # printed in 3 of 30 minutes must score 0.1, not 1.0.
+    covered = sum(1 for b in bars if b.volume > 0)
+
+    return OpeningRangeMetrics(
+        symbol=symbol,
+        or_high=or_high,
+        or_low=or_low,
+        or_close=or_close,
+        or_volume=or_volume,
+        or_vwap=or_vwap,
+        prev_close=prev_close,
+        atr_14d=baseline.atr_14d,
+        rvol_or=or_volume / baseline.avg_or_volume_20d,
+        disp_atr=(or_close - prev_close) / baseline.atr_14d,
+        or_width_atr=rng / baseline.atr_14d,
+        clv=clv,
+        rs_atr=rs_atr,
+        above_vwap=or_close > or_vwap,
+        bar_coverage=covered / or_minutes,
+    )

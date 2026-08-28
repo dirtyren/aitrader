@@ -7,13 +7,17 @@ import pytest
 
 from strategies.opening_drive_scanner import (
     OpeningDriveBaseline,
+    OpeningRangeMetrics,
     baselines_are_stale,
     baselines_too_old_to_trade,
+    compute_or_metrics,
     load_baselines,
     load_universe,
+    or_return,
     save_baselines,
 )
 from scripts.build_universe_sp500_ndx100 import _parse_ndx100_df, _parse_sp500_df
+from core.bar import Bar
 
 
 def test_load_universe_maps_symbol_to_sector(tmp_path):
@@ -206,3 +210,133 @@ def test_one_ancient_outlier_does_not_block_trading():
 def test_universally_ancient_baselines_block_trading():
     b = {f"S{i}": _bl(days_old=90) for i in range(100)}
     assert baselines_too_old_to_trade(b, NOW, 7) is True
+
+
+# ---------------------------------------------------------------------------
+# Task 4: opening-range metrics
+# ---------------------------------------------------------------------------
+
+def _bar(minute: int, o: float, h: float, l: float, c: float, v: float) -> Bar:
+    return Bar(
+        symbol="TEST",
+        ts=datetime(2026, 8, 28, 13, 30 + minute, tzinfo=timezone.utc),
+        open=o, high=h, low=l, close=c, volume=v,
+    )
+
+
+def _or_bars() -> list[Bar]:
+    """3 bars: high 105, low 99, close 104, volume 30000."""
+    return [
+        _bar(0, 100.0, 102.0, 99.0, 101.0, 10_000),
+        _bar(1, 101.0, 105.0, 100.5, 103.0, 12_000),
+        _bar(2, 103.0, 104.5, 102.0, 104.0, 8_000),
+    ]
+
+
+def test_metrics_computed_from_bars():
+    m = compute_or_metrics(
+        "TEST", _or_bars(), _bl(avg_or_volume_20d=10_000.0, atr_14d=4.0),
+        prev_close=100.0, spy_or_return=0.0, or_minutes=3,
+    )
+    assert m is not None
+    assert m.or_high == 105.0
+    assert m.or_low == 99.0
+    assert m.or_close == 104.0
+    assert m.or_volume == 30_000
+    assert m.rvol_or == pytest.approx(3.0)          # 30000 / 10000
+    assert m.disp_atr == pytest.approx(1.0)         # (104-100)/4
+    assert m.or_width_atr == pytest.approx(1.5)     # (105-99)/4
+    assert m.clv == pytest.approx((104 - 99) / 6)   # 0.8333
+    assert m.bar_coverage == pytest.approx(1.0)     # 3 of 3 have volume
+
+
+def test_rs_atr_is_relative_to_spy_in_atr_units():
+    """Symbol +4% with SPY +1%, ATR 4% of price -> rs_atr = 0.75."""
+    m = compute_or_metrics(
+        "TEST", _or_bars(), _bl(avg_or_volume_20d=10_000.0, atr_14d=4.0),
+        prev_close=100.0, spy_or_return=0.01, or_minutes=3,
+    )
+    assert m.rs_atr == pytest.approx((0.04 - 0.01) / 0.04)
+
+
+def test_rs_atr_goes_negative_when_spy_outruns_symbol():
+    m = compute_or_metrics(
+        "TEST", _or_bars(), _bl(avg_or_volume_20d=10_000.0, atr_14d=4.0),
+        prev_close=100.0, spy_or_return=0.10, or_minutes=3,
+    )
+    assert m.rs_atr < 0
+
+
+def test_vwap_uses_typical_price_weighted_by_volume():
+    bars = _or_bars()
+    expected = (
+        sum(b.typical_price * b.volume for b in bars)
+        / sum(b.volume for b in bars)
+    )
+    m = compute_or_metrics(
+        "TEST", bars, _bl(avg_or_volume_20d=10_000.0), prev_close=100.0,
+        spy_or_return=0.0, or_minutes=3,
+    )
+    assert m.or_vwap == pytest.approx(expected)
+    assert m.above_vwap is (104.0 > expected)
+
+
+def test_bar_coverage_counts_only_bars_with_volume():
+    bars = _or_bars() + [_bar(3, 104.0, 104.0, 104.0, 104.0, 0.0)]
+    m = compute_or_metrics(
+        "TEST", bars, _bl(avg_or_volume_20d=10_000.0), prev_close=100.0,
+        spy_or_return=0.0, or_minutes=4,
+    )
+    assert m.bar_coverage == pytest.approx(0.75)     # 3 of 4
+
+
+def test_bar_coverage_uses_or_minutes_not_bar_count():
+    """A symbol IEX printed in only 3 of 30 minutes must score 0.1, not 1.0."""
+    m = compute_or_metrics(
+        "TEST", _or_bars(), _bl(avg_or_volume_20d=10_000.0), prev_close=100.0,
+        spy_or_return=0.0, or_minutes=30,
+    )
+    assert m.bar_coverage == pytest.approx(0.1)
+
+
+def test_flat_range_yields_zero_clv_not_a_crash():
+    bars = [_bar(0, 100.0, 100.0, 100.0, 100.0, 5_000)]
+    m = compute_or_metrics(
+        "TEST", bars, _bl(avg_or_volume_20d=10_000.0), prev_close=100.0,
+        spy_or_return=0.0, or_minutes=1,
+    )
+    assert m.clv == 0.0
+
+
+def test_zero_volume_window_falls_back_to_close_for_vwap():
+    bars = [_bar(0, 100.0, 101.0, 99.0, 100.5, 0.0)]
+    m = compute_or_metrics(
+        "TEST", bars, _bl(avg_or_volume_20d=10_000.0), prev_close=100.0,
+        spy_or_return=0.0, or_minutes=1,
+    )
+    assert m.or_vwap == 100.5
+
+
+@pytest.mark.parametrize("bars,prev_close,baseline_kw", [
+    ([], 100.0, {}),                                    # no bars
+    (None, 100.0, {}),                                   # no bars at all
+    ("use_or_bars", 0.0, {}),                            # bad prev_close
+    ("use_or_bars", 100.0, {"atr_14d": 0.0}),            # bad ATR
+    ("use_or_bars", 100.0, {"avg_or_volume_20d": 0.0}),  # no volume baseline
+])
+def test_unusable_inputs_return_none(bars, prev_close, baseline_kw):
+    if bars == "use_or_bars":
+        bars = _or_bars()
+    assert compute_or_metrics(
+        "TEST", bars, _bl(**baseline_kw), prev_close=prev_close,
+        spy_or_return=0.0, or_minutes=3,
+    ) is None
+
+
+def test_or_return_computes_fractional_return():
+    assert or_return(_or_bars(), 100.0) == pytest.approx(0.04)
+
+
+def test_or_return_none_on_bad_input():
+    assert or_return([], 100.0) is None
+    assert or_return(_or_bars(), 0.0) is None
