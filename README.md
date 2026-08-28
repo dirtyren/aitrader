@@ -24,8 +24,6 @@ Autonomous trading platform for **equities, ETFs, and crypto** via Alpaca Market
 
 - **Surfaces operational state** — Streamlit dashboard (behind nginx + basic auth) shows: per-strategy stats, live open positions across all strategies, configuration audit, log tail, reconciliation strikes + heartbeat freshness, and WFO candidates.
 
-- **Halts on emergency drawdowns** — three-tier circuit breaker. L1 cuts size in half; L2 blocks new entries for 24h; L3 writes `lock.file` and exits. The lock-file guard runs before any heavy import, so an unresolved emergency cannot be bypassed.
-
 ---
 
 ## Strategies
@@ -84,7 +82,7 @@ aitrader/
 │   ├── asset_class.py session.py position_manager.py
 ├── strategies/                       # 8 setup state machines + regime detector
 ├── risk/
-│   ├── circuit_breakers.py           # L1/L2/L3 tiered drawdown halts
+│   ├── circuit_breakers.py           # tiered drawdown halts (decommissioned 2026-07-08)
 │   ├── filters.py                    # 8 entry filters + pipeline
 │   ├── sizing.py                     # ATR-based sizing
 │   └── manager.py                    # pipeline → sizing → RiskDecision
@@ -177,7 +175,7 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 
 # Operational tuning
-TRADING_ENV=production               # 'test' bypasses lock.file guard
+TRADING_ENV=production               # paper/live gating lives in each settings YAML (system.trading_env)
 SHADOW_MODE=true                     # Reconciler audits without mutating
 RECONCILE_INTERVAL_S=30
 RECONCILE_STRIKE_THRESHOLD=3
@@ -421,15 +419,11 @@ Three guarantees the system makes:
 
 ---
 
-## Circuit breakers / lock-file recovery
+## Risk management
 
-Three escalating tiers (tunable in each strategy's `risk.circuit_breaker` block):
+Per-entry risk is governed by the risk filters (`risk/filters.py`) — session window, news blackout, volume deficit, consecutive-loss limit, concurrent-position cap, and daily open-risk budget — plus ATR-based sizing (`risk/sizing.py`) and stop/target levels on every position (the "no naked positions" invariant).
 
-- **L1** (default −1.5% intraday) — position sizes halved.
-- **L2** (default −2.5% intraday) — new entries blocked for 24h.
-- **L3** (default −5% peak-to-valley) — `lock.file` written, `sys.exit(1)`.
-
-Recovery: review logs (Logs tab, or `logs/<strategy>.log`), perform post-mortem, then `rm lock.file` and restart. The lock-file guard runs before any heavy import, so an unresolved emergency halt cannot be bypassed by a subsequent code path.
+The tiered **circuit breaker** (L1/L2/L3 emergency drawdown halts and the `lock.file` kill-switch) was **decommissioned 2026-07-08** (commit f427e17): strategies now trade uninterrupted with no automated emergency shutdowns or position-size reductions. The `risk/circuit_breakers.py` file and its tests remain in the tree but are no longer wired into any live path, and the `circuit_breaker` config block no longer exists in any `settings_*.yaml`.
 
 ---
 
