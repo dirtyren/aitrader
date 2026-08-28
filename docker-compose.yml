@@ -373,6 +373,9 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./runtime:/app/runtime
+      # Mount config read-only so the dashboard discovers newly-added strategy
+      # YAML files (e.g. sma_slope_equity) without an image rebuild.
+      - ./config:/app/config:ro
     restart: unless-stopped
     depends_on:
       mysql:
