@@ -55,6 +55,55 @@ _ICB_TO_GICS: dict[str, str] = {
 _UA = {"User-Agent": "aitrader-universe-builder/1.0 (research)"}
 
 
+def _parse_sp500_df(df: "pd.DataFrame") -> dict[str, str]:
+    """Map a raw S&P 500 Wikipedia DataFrame to symbol -> GICS sector.
+
+    Extracted as a pure function so tests can drive it with a synthetic
+    DataFrame without making any HTTP requests.
+    """
+    result: dict[str, str] = {}
+    for _, row in df.iterrows():
+        sym = str(row["Symbol"]).strip().upper().replace(".", "-")
+        # str() on a pandas NaN cell produces "nan" which uppercases to "NAN"
+        # -- truthy, so `if not sym` would pass it through as a real ticker.
+        if sym in ("", "NAN"):
+            continue
+        result[sym] = str(row["GICS Sector"]).strip()
+    return result
+
+
+def _parse_ndx100_df(df: "pd.DataFrame") -> dict[str, str]:
+    """Map a raw Nasdaq-100 Wikipedia DataFrame to symbol -> GICS sector.
+
+    Extracted as a pure function so tests can drive it with a synthetic
+    DataFrame without making any HTTP requests.
+
+    The ICB Industry column is matched by prefix rather than exact name so
+    that Wikipedia footnote renumbering (e.g. [1] -> [2]) does not break
+    the parse silently. If no ICB Industry column exists at all, a
+    RuntimeError is raised with the actual column list so the caller knows
+    the page has changed shape.
+    """
+    # Find the ICB Industry column by prefix -- footnote number may change
+    icb_col = next((c for c in df.columns if str(c).startswith("ICB Industry")), None)
+    if icb_col is None:
+        raise RuntimeError(
+            f"Could not locate ICB Industry column in NDX table. "
+            f"Columns found: {list(df.columns)}"
+        )
+    result: dict[str, str] = {}
+    for _, row in df.iterrows():
+        sym = str(row["Ticker"]).strip().upper().replace(".", "-")
+        # str() on a pandas NaN cell produces "nan" which uppercases to "NAN"
+        if sym in ("", "NAN"):
+            continue
+        icb_sector = str(row[icb_col]).strip()
+        # Normalise ICB -> GICS; pass through already-matching names unchanged
+        gics_sector = _ICB_TO_GICS.get(icb_sector, icb_sector)
+        result[sym] = gics_sector
+    return result
+
+
 def _fetch_sp500() -> dict[str, str]:
     import pandas as pd
     import requests
@@ -62,11 +111,7 @@ def _fetch_sp500() -> dict[str, str]:
     r = requests.get(_SP500_URL, headers=_UA, timeout=30)
     r.raise_for_status()
     tables = pd.read_html(io.StringIO(r.text))
-    df = tables[0]
-    return {
-        str(row["Symbol"]).strip().upper().replace(".", "-"): str(row["GICS Sector"]).strip()
-        for _, row in df.iterrows()
-    }
+    return _parse_sp500_df(tables[0])
 
 
 def _fetch_ndx100() -> dict[str, str]:
@@ -76,19 +121,7 @@ def _fetch_ndx100() -> dict[str, str]:
     r = requests.get(_NDX_URL, headers=_UA, timeout=30)
     r.raise_for_status()
     tables = pd.read_html(io.StringIO(r.text))
-    df = tables[0]
-    # Column is literally "ICB Industry[1]" (Wikipedia footnote notation)
-    icb_col = "ICB Industry[1]"
-    result: dict[str, str] = {}
-    for _, row in df.iterrows():
-        sym = str(row["Ticker"]).strip().upper().replace(".", "-")
-        if not sym:
-            continue
-        icb_sector = str(row[icb_col]).strip() if icb_col in df.columns else "UNKNOWN"
-        # Normalise ICB -> GICS; pass through already-matching names unchanged
-        gics_sector = _ICB_TO_GICS.get(icb_sector, icb_sector)
-        result[sym] = gics_sector
-    return result
+    return _parse_ndx100_df(tables[0])
 
 
 def main() -> int:
