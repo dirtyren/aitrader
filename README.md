@@ -1,6 +1,8 @@
 # aitrader
 
-Autonomous multi-strategy intraday trading platform for **equities, ETFs, and crypto** via Alpaca Markets. Each strategy runs in its own container against a shared MySQL store, with a dedicated reconciler service that owns the broker↔MySQL invariant, a Streamlit dashboard for visibility, and an operator CLI for resolving anomalies.
+Autonomous trading platform for **equities, ETFs, and crypto** via Alpaca Markets. Each strategy runs in its own container against a shared MySQL store, with a dedicated reconciler service that owns the broker↔MySQL invariant, a Streamlit dashboard for visibility, and an operator CLI for resolving anomalies.
+
+> **Current deployment (2026-08-28) — single-bot.** Only the `sma_slope_equity_trader` strategy is active: a long-only, daily-timeframe (1Day) SMA-slope trend-follower on TQQQ, driven by `main_daily.py`. All other trader services are commented out in `docker-compose.yml`. See [SMA-slope strategy](#sma-slope-daily-trend-follower) below.
 
 ---
 
@@ -45,6 +47,25 @@ Strategies are composed at boot from the `setups:` block in `config/settings_*.y
 
 ---
 
+### SMA-slope daily trend-follower
+
+The only active strategy as of 2026-08-28. A long-only, **daily (1Day)** trend-follower on **TQQQ** (3× leveraged Nasdaq ETF) that does not use the intraday engine — it runs its own entry point, `main_daily.py`, because the intraday `SessionContext` resets its bar history every session and the scheduler only accepts `Min`/`Hour` timeframes.
+
+**Rules** (strictly causal — signal computed at close of candle *t*, executed at the open of *t+1*):
+
+- **Indicator:** SMA(N). **Slope:** `SMA(t) − SMA(t−k)`.
+- **Entry (long):** `close(t) > SMA(t)` AND `slope(t) > 0` → buy at next open.
+- **Exit:** `close(t) < SMA(t)` OR `slope(t) < 0` → sell at next open (the SMA flip is the primary exit).
+- **Protection:** every position also carries an ATR-based stop (3.0× daily ATR(14)) and a far target (20R) so no position is ever naked — these are safety floors, not the intended exit.
+
+**Operation:** `main_daily.py` wakes once per trading day just after the NYSE open (`pandas_market_calendars`), keeps a rolling 400-bar daily history, computes the signal on the previous completed bar, and executes at today's open with a synchronous market order. It self-manages the MySQL position lifecycle (`position_opened` / `position_closed`), so it writes `trades` rows directly and feeds the reflection loop without depending on the reconciler.
+
+**Parameters** (`config/settings_sma_slope_equity.yaml`): `period` (SMA N), `slope_lookback` (k), `atr_mult_stop`, `target_R`. A grid sweep (`scripts/sma_slope_sweep.py`, TQQQ 2018–2026 split-adjusted) found **N=250, k=10** optimal: CAGR 33.4%, Sharpe 0.87, max DD −46.8%, 15 trades. Note TQQQ is 3× leveraged, so ~−45% drawdown is inherent to the asset.
+
+Backtest: `python scripts/sma_slope_backtest.py --sma 250 --slope 10`. Sweep: `python scripts/sma_slope_sweep.py`.
+
+---
+
 ## Architecture
 
 ```
@@ -55,6 +76,7 @@ aitrader/
 │   ├── settings_orb_{equity,crypto}.yaml
 │   ├── settings_vwap_bands_{equity,crypto}.yaml
 │   ├── settings_ib_{equity,crypto}.yaml
+│   ├── settings_sma_slope_equity.yaml # Daily SMA-slope TQQQ (single-bot)
 │   ├── wfo.yaml                      # Walk-forward optimizer config
 │   └── .env.example                  # ALPACA_*, TELEGRAM_*, DASH_*, MYSQL_*
 ├── core/                             # Domain primitives shared by live + backtest
@@ -111,10 +133,13 @@ aitrader/
 │   ├── reconcile_resolve.py          # Operator CLI (Plan 4)
 │   ├── strategy_stats.py             # Quick MySQL stats CLI
 │   ├── check_trades.py               # Unreflected-trades audit
+│   ├── sma_slope_backtest.py         # SMA-slope daily backtest (TQQQ, long-only)
+│   ├── sma_slope_sweep.py            # N×k grid sweep for SMA-slope
 │   └── *_sweep.py                    # Per-setup parameter sweeps
 ├── nginx/                            # Reverse proxy + basic auth + TLS
 ├── notifications.py                  # Telegram alerts (positions + reconciliation)
-├── docker-compose.yml                # mysql + 9 trader containers + reconciler + dashboard + nginx
+├── main_daily.py                     # Daily-strategy entry point (SMA-slope TQQQ)
+├── docker-compose.yml                # mysql + 1 trader + reconciler + dashboard + nginx
 ├── Dockerfile                        # Shared image for traders / reconciler / dashboard
 └── tests/                            # 66 test files; ~430 tests, ~10s in docker
 ```
@@ -165,11 +190,10 @@ RECONCILE_HEARTBEAT_STALE_AFTER_S=300
 ### Bring up the stack
 
 ```bash
-docker compose up -d mysql                       # initializes schema from state/schema.sql
-docker compose up -d trader-vwap-wave-equity     # any of the per-asset-class strategy containers
-docker compose up -d trader-rsi-equity
-docker compose up -d reconciler                  # 30s reconciliation loop (shadow mode by default)
-docker compose up -d dashboard nginx             # https://localhost (basic auth)
+docker compose up -d mysql                           # initializes schema from state/schema.sql
+docker compose up -d trader-sma-slope-equity         # the SMA-slope daily TQQQ bot (main_daily.py)
+docker compose up -d reconciler-equity               # 30s reconciliation loop (orphan-adoption safety net)
+docker compose up -d dashboard nginx                 # https://localhost (basic auth)
 ```
 
 Or bring everything up at once:
@@ -178,7 +202,7 @@ Or bring everything up at once:
 docker compose up -d
 ```
 
-The compose file defines 10 trader containers, one per (strategy, asset class) pair: `trader-vwap-wave-equity`, `trader-vwap-wave-crypto`, `trader-rsi-equity`, `trader-rsi-crypto`, `trader-ib-equity`, `trader-ib-crypto`, `trader-vwap-bands-equity`, `trader-vwap-bands-crypto`, `trader-orb-equity`, `trader-orb-crypto`. Each runs `python main.py --config config/settings_<strategy>_<asset_class>.yaml` against the shared MySQL.
+As of 2026-08-28 the compose file runs a **single trader** — `trader-sma-slope-equity` (`python main_daily.py --config config/settings_sma_slope_equity.yaml`). The intraday trader services (`trader-vwap-wave-*`, `trader-rsi-*`, `trader-orb-*`, `trader-vwap-bands-*`, `trader-cmf-equity`, `trader-alpaca-gap_and_go`) are commented out but retained for re-enablement. Intraday strategies run `python main.py --config config/settings_<strategy>_<asset_class>.yaml` against the shared MySQL.
 
 ---
 
