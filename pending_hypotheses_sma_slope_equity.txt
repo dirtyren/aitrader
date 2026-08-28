@@ -1,0 +1,27 @@
+# Pending hypotheses — sma_slope_equity_trader (TQQQ, daily SMA-slope, long-only)
+# One-variable-at-a-time tuning. Baseline: N=250, k=10, atr_mult_stop=3.0, target_R=20.0.
+# Grid-sweep source (2018-2026, split-adjusted): N=250/k=10 won Calmar 0.715, Sharpe 0.873.
+
+H1 — period N: 250 -> 200
+  Rationale: N=200 had lowest max-DD (-44.8% vs -46.8%) with Sharpe 0.73; slightly faster reaction to trend breakdowns may cut drawdown at modest CAGR cost.
+  Risk: more whipsaws (22 vs 15 trades), lower total return.
+
+H2 — slope_lookback k: 10 -> 20
+  Rationale: longer slope horizon filters short-term SMA noise; N=200/k=20 was the lowest-drawdown config in the sweep.
+  Risk: later exits (slower slope confirmation) can give back more profit at trend tops.
+
+H3 — slope_lookback k: 10 -> 3
+  Rationale: faster slope reaction catches reversals earlier; N=250/k=3 posted Sharpe 0.83 (2nd best in sweep).
+  Risk: more false exits on transient SMA flattening.
+
+H4 — atr_mult_stop: 3.0 -> 2.0
+  Rationale: tighter protective stop caps tail loss if the SMA signal lags a sharp breakdown (e.g. leveraged ETF gap).
+  Risk: stop-outs on normal daily volatility before the SMA flip confirms, then re-entry churn.
+
+H5 — atr_mult_stop: 3.0 -> 4.0
+  Rationale: wider stop avoids being shaken out by TQQQ's high daily ATR; let the SMA flip be the only exit in practice.
+  Risk: larger per-trade loss when a genuine breakdown gaps through.
+
+H6 — target_R: 20.0 -> 5.0
+  Rationale: bank outsized trend gains at 5R instead of riding full round-trips; may lift realized R and lower round-trip drawdown.
+  Risk: caps the biggest winners — TQQQ trends can exceed 5R, leaving profit on the table.

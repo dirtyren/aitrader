@@ -1,0 +1,56 @@
+system:
+  name: sma_slope_equity_trader
+  version: "1.0.0"
+  trading_env: paper
+
+scheduler:
+  # Daily timeframe — this strategy uses its own once-per-day loop
+  # (main_daily.py), not the intraday Min/Hour scheduler.
+  bar_timeframe: 1Day
+  wake_grace_seconds: 60
+  # Daily bars to keep in the rolling history (>= N + slope_lookback + buffer).
+  history_bars: 400
+
+setups:
+  sma_slope:
+    enabled: true
+    # Grid-sweep optimum (TQQQ, 2018-2026, split-adjusted): N=250 k=10.
+    period: 250            # SMA period N
+    slope_lookback: 10     # slope lookback k (slope = SMA(t) - SMA(t-k))
+    atr_mult_stop: 3.0     # protective stop distance in daily ATR(14) multiples
+    target_R: 20.0         # far target (effectively "ride the trend"; signal flip is the real exit)
+
+risk:
+  # Long-only, single-symbol (TQQQ). All-in on the signal; risk params are
+  # vestigial for the intraday engine and kept for config-shape compatibility.
+  max_risk_per_trade: 0.02
+  max_notional_per_trade_pct: 0.95
+  max_concurrent_positions: 1
+  max_daily_risk_open: 1.0
+  consecutive_loss_limit: 999
+  loss_filter_scope: per_symbol
+
+position_management:
+  # Trend followers are not time-boxed; the SMA flip is the primary exit.
+  max_hold_bars: 10000
+  breakeven_at_R: 0.0
+
+asset_classes:
+  equity:
+    timezone: America/New_York
+    session_open_local: '09:30'
+    session_close_local: '16:00'
+    slippage_bps: 2
+    commission_per_share: 0.0
+    symbols:
+      - TQQQ
+
+backtest:
+  cache_dir: runtime/bars_cache
+
+broker:
+  paper_trading: true
+
+logging:
+  level: INFO
+  log_file: logs/sma_slope_equity_trader.log
