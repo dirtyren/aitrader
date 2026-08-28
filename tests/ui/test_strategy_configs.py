@@ -111,7 +111,6 @@ def test_load_yaml_configs_parses_single_yaml(tmp_path):
     assert eq.commission_bps is None
 
     assert cfg.risk["max_risk_per_trade"] == 0.005
-    assert cfg.risk[] == 0.015
 
     setups_by_name = {s.name: s for s in cfg.setups}
     assert setups_by_name["breakout"].enabled is True

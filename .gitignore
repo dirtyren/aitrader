@@ -10,3 +10,7 @@ runtime/bars_cache/*
 __pycache__/
 *.pyc
 nginx/certs/
+
+# Local virtualenvs
+.venv/
+.venv-mac/
