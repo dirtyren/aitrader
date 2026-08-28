@@ -2,8 +2,8 @@
 
 Entry point: bar-close scheduler over a watchlist of equities + crypto on
 Alpaca. Live trading is gated behind config (`system.trading_env`); paper by
-default. The lock-file guard runs before any heavy import so an emergency
-drawdown halt cannot be bypassed by a subsequent import error.
+default. Daily-timeframe strategies use `main_daily.py` instead of this entry
+point (the intraday scheduler only supports Min/Hour timeframes).
 """
 from __future__ import annotations
 import logging
