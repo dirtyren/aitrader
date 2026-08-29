@@ -30,6 +30,30 @@ the arithmetic only has to be established once:
       initial risk  102.220440 - 101.00       =   1.220440
       qty           notional cap 7% of 100_000 = 7_000; 7_000 / 102.20
                     = 68.4931 -> floor = 68 shares
+
+THE SHORT SIDE reuses that same session unchanged — the trigger, the
+structural low and therefore ``risk`` (1.20) are identical, because --side
+short inverts the ACTION and not the detection. Only stop and target mirror:
+
+    signal          entry 102.20  stop 102.20 + 1.20 = 103.40
+                    target 102.20 - 2 * 1.20         =  99.80
+    fill            entry 102.20 * (1 - 2bps) = 102.179560   (a SELL, so
+                    slippage moves it DOWN — adverse for a short)
+      initial risk  103.40 - 102.179560       =   1.220440   (same magnitude
+                    as the long's, which is what makes R comparable)
+      qty           size_position takes abs(entry - stop) = 1.20 and the same
+                    7% notional cap, so 68 shares again
+
+REALISTIC COSTS on that session:
+
+    entry penalty   0.05 * trigger bar range = 0.05 * (102.30 - 101.80)
+                  = 0.025  -> long fills 102.245440, short fills 102.154560,
+                    and either way initial risk widens to 1.245440
+    stop penalty    0.10 * mean 1-minute TRUE range of the opening range.
+                    29 bars at TR 0.20 (h-l 0.20 dominates the 0.05/0.15
+                    close gaps) plus the final bar at TR 1.45 (102.00 -
+                    100.55), so (29 * 0.20 + 1.45) / 30 = 0.2416667 and the
+                    penalty is 0.02416667.
 """
 from __future__ import annotations
 
@@ -64,6 +88,19 @@ SLIP = 2 / 10_000.0
 ENTRY_FILL = ENTRY_SIGNAL * (1 + SLIP)          # 102.220440
 INITIAL_RISK = ENTRY_FILL - STOP                # 1.220440
 QTY = 68
+
+# The mirrored short side of the same trigger. RISK is the structural
+# pullback distance and is IDENTICAL to the long's; only its direction flips.
+RISK = ENTRY_SIGNAL - STOP                      # 1.20
+SHORT_STOP = ENTRY_SIGNAL + RISK                # 103.40
+SHORT_TARGET = ENTRY_SIGNAL - 2.0 * RISK        #  99.80
+SHORT_ENTRY_FILL = ENTRY_SIGNAL * (1 - SLIP)    # 102.179560
+SHORT_INITIAL_RISK = SHORT_STOP - SHORT_ENTRY_FILL      # 1.220440
+
+# --realistic-costs constants, derived in the module docstring.
+ENTRY_RANGE_PENALTY = 0.05 * (102.30 - 101.80)          # 0.025
+OR_AVG_MINUTE_TR = (29 * 0.20 + 1.45) / 30              # 0.2416667
+STOP_SLIP = 0.10 * OR_AVG_MINUTE_TR                     # 0.02416667
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -243,13 +280,16 @@ def load_cfg(**overrides: object) -> dict:
 
 def build(source: FakeSource, universe: dict[str, str], cfg: dict,
           *, screen_only: bool = False,
-          baselines: dict | None = None) -> OpeningDriveBacktest:
+          baselines: dict | None = None,
+          side: str = "long",
+          realistic_costs: bool = False) -> OpeningDriveBacktest:
     bl = baselines if baselines is not None else {
         sym: baseline() for sym in universe
     }
     return OpeningDriveBacktest(
         cfg, source, universe, EQUITY,
         baselines_for=lambda day: bl, screen_only=screen_only,
+        side=side, realistic_costs=realistic_costs,
     )
 
 
@@ -820,3 +860,403 @@ def test_cache_can_refuse_to_fetch(tmp_path):
     with pytest.raises(CacheMiss):
         src.get_bars_multi(["AAA"], "equity", "1Min",
                            ny_dt(DAY, 9, 30), ny_dt(DAY, 10, 0))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE SHORT SIDE
+#
+# Every test below runs the SAME synthetic session as the long tests. That is
+# the point: --side short must invert the action taken, not what counts as a
+# trigger, so the screen, the trigger bar and the structural risk (1.20) are
+# untouched and only stop/target placement mirrors.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_short_detection_is_identical_and_only_the_levels_mirror():
+    """Same screen, same trigger, mirrored bracket.
+
+        risk          102.20 - 101.00 (structural low) = 1.20   [UNCHANGED]
+        short stop    102.20 + 1.20                    = 103.40 [above entry]
+        short target  102.20 - 2 * 1.20                =  99.80 [below entry]
+        entry fill    102.20 * (1 - 2bps)              = 102.179560
+        initial risk  103.40 - 102.179560              =   1.220440
+    """
+    src = one_symbol_session(first_managed=(102.30, 103.50, 102.20, 103.30))
+    bt = build(src, UNIVERSE_1, load_cfg(), side="short")
+    out = bt.run_session(DAY)
+
+    # The screen and the trigger are byte-identical to the long run.
+    assert out.kept == 1
+    assert out.triggers == 1
+    assert out.entries == 1
+    assert len(out.trades) == 1
+    t = out.trades[0]
+
+    assert t.side == "short"
+    assert t.entry_px == pytest.approx(SHORT_ENTRY_FILL)
+    assert t.entry_px == pytest.approx(102.179560, abs=1e-6)
+    # The two invariants that define a short bracket.
+    assert t.stop_px > t.entry_px, "a short's stop must sit ABOVE the entry"
+    assert t.target_px < t.entry_px, "a short's target must sit BELOW the entry"
+    assert t.stop_px == pytest.approx(SHORT_STOP)
+    assert t.target_px == pytest.approx(SHORT_TARGET)
+    # Same risk MAGNITUDE as the long side — this is what keeps R comparable
+    # to the decay measurement the hypothesis came from.
+    assert t.risk_per_share == pytest.approx(SHORT_INITIAL_RISK)
+    assert t.risk_per_share == pytest.approx(INITIAL_RISK, abs=1e-9)
+    assert t.qty == QTY
+
+
+def test_winning_short_R_by_arithmetic():
+    """Target exit on the short side.
+
+        entry fill   102.20 * 0.9998        = 102.179560
+        initial risk 103.40 - 102.179560    =   1.220440
+        qty          floor(7_000 / 102.20)  =  68
+        exit         99.80 (resting buy limit, no slippage)
+        R_gross      -(99.80 - 102.179560) / 1.220440
+                   =   2.379560 / 1.220440  =   1.9497476...
+        pnl_gross    2.379560 * 68          = 161.81008
+        commission   0.005 * 68 * 2         =   0.68
+        pnl_net      161.81008 - 0.68       = 161.13008
+        R_net        161.13008 / (1.220440 * 68) = 1.9415...
+    """
+    # low 99.70 trades through the 99.80 target; high 102.40 is nowhere near
+    # the 103.40 stop.
+    src = one_symbol_session(first_managed=(102.30, 102.40, 99.70, 100.00))
+    cfg = load_cfg(**{"asset_classes.equity.commission_per_share": 0.005})
+    bt = build(src, UNIVERSE_1, cfg, side="short")
+    out = bt.run_session(DAY)
+
+    assert len(out.trades) == 1
+    t = out.trades[0]
+    assert t.exit_reason == "target"
+    assert t.exit_px == pytest.approx(SHORT_TARGET)
+
+    expected_gross_R = -(SHORT_TARGET - SHORT_ENTRY_FILL) / SHORT_INITIAL_RISK
+    assert expected_gross_R == pytest.approx(2.379560 / 1.220440, rel=1e-9)
+    assert t.R_gross == pytest.approx(expected_gross_R)
+    assert t.pnl_gross == pytest.approx(
+        (SHORT_ENTRY_FILL - SHORT_TARGET) * QTY,
+    )
+    assert t.pnl_gross == pytest.approx(161.81008, abs=1e-4)
+    assert t.commission == pytest.approx(0.68)
+    assert t.pnl_net == pytest.approx(161.13008, abs=1e-4)
+    assert t.R_net == pytest.approx(161.13008 / (SHORT_INITIAL_RISK * QTY),
+                                    abs=1e-6)
+    # And the mirror is exact: the winning short's R equals the winning
+    # long's, because only the direction changed.
+    assert t.R_gross == pytest.approx((TARGET - ENTRY_FILL) / INITIAL_RISK)
+
+
+def test_losing_short_is_exactly_minus_one_R():
+    """Stop exit on the short side. The stop sits 1.220440 ABOVE the fill, so
+    R_gross is exactly -1.0 by construction:
+
+        R_gross   -(103.40 - 102.179560) / 1.220440 = -1.0
+        pnl_gross -1.220440 * 68                    = -82.98992
+        commission 0.005 * 68 * 2                   =   0.68
+        pnl_net                                     = -83.66992
+    """
+    # high 103.50 trades through the 103.40 stop; low 102.20 is far above the
+    # 99.80 target.
+    src = one_symbol_session(first_managed=(102.30, 103.50, 102.20, 103.30))
+    cfg = load_cfg(**{"asset_classes.equity.commission_per_share": 0.005})
+    bt = build(src, UNIVERSE_1, cfg, side="short")
+    out = bt.run_session(DAY)
+
+    assert len(out.trades) == 1
+    t = out.trades[0]
+    assert t.exit_reason == "stop"
+    assert t.exit_px == pytest.approx(SHORT_STOP)
+    assert t.R_gross == pytest.approx(-1.0)
+    assert t.pnl_gross == pytest.approx(-82.98992, abs=1e-4)
+    assert t.pnl_net == pytest.approx(-83.66992, abs=1e-4)
+    assert t.R_net == pytest.approx(-83.66992 / (SHORT_INITIAL_RISK * QTY),
+                                    abs=1e-6)
+
+
+def test_short_stop_wins_when_one_bar_spans_stop_and_target():
+    """The same self-flattery check, on the short side.
+
+    This bar's high (103.50) is through the 103.40 stop and its low (99.70)
+    is through the 99.80 target. The exit must be the STOP — never the
+    favourable one.
+    """
+    src = one_symbol_session(first_managed=(102.30, 103.50, 99.70, 100.00))
+    bt = build(src, UNIVERSE_1, load_cfg(), side="short")
+    out = bt.run_session(DAY)
+
+    assert len(out.trades) == 1
+    t = out.trades[0]
+    assert t.exit_reason == "stop"
+    assert t.exit_px == pytest.approx(SHORT_STOP)
+    assert t.R_gross == pytest.approx(-1.0)
+
+
+def test_1530_flatten_closes_a_short():
+    """The unconditional flatten must close a short too, and pay slippage in
+    the BUY direction — closing a short is a purchase, so the adverse fill is
+    ABOVE the last close, not below it.
+    """
+    src = one_symbol_session()
+    cfg = load_cfg(**{"position_management.max_hold_bars": 1000})
+    bt = build(src, UNIVERSE_1, cfg, side="short")
+    out = bt.run_session(DAY)
+
+    assert len(out.trades) == 1
+    t = out.trades[0]
+    assert t.side == "short"
+    assert t.exit_reason == "eod_flat"
+    # 15:25 is the last bar ending at or before 15:30; its close is 102.30.
+    assert t.exit_px == pytest.approx(102.30 * (1 + SLIP))
+    assert t.exit_px > 102.30, "closing a short must fill ABOVE the mark"
+    assert t.exit_ts == ny_dt(DAY, 15, 30).isoformat()
+    assert bt.book.count() == 0, "short left open past the flatten"
+    # 102.30 * 1.0002 = 102.320460, which is 0.140900 above the 102.179560
+    # entry, so the flatten is a loss for a short: -0.140900 / 1.220440.
+    assert t.R_gross == pytest.approx(-0.140900 / 1.220440, abs=1e-6)
+    assert t.R_gross < 0
+    assert out.end_equity == pytest.approx(EQUITY + t.pnl_net)
+
+
+def test_short_time_stop_pays_slippage_upward():
+    """time_stop is a market order too, and it is a BUY for a short."""
+    src = one_symbol_session()
+    bt = build(src, UNIVERSE_1, load_cfg(), side="short")
+    out = bt.run_session(DAY)
+
+    assert len(out.trades) == 1
+    t = out.trades[0]
+    assert t.exit_reason == "time_stop"
+    assert t.exit_ts == ny_dt(DAY, 14, 0).isoformat()
+    assert t.exit_px == pytest.approx(102.30 * (1 + SLIP))
+
+
+def test_long_side_is_the_default_and_unchanged():
+    """The default must remain long, so no existing invocation shifts."""
+    src = one_symbol_session(first_managed=(102.30, 104.70, 102.20, 104.50))
+    default = build(src, UNIVERSE_1, load_cfg()).run_session(DAY)
+    assert [t.side for t in default.trades] == ["long"]
+    assert default.trades[0].entry_px == pytest.approx(ENTRY_FILL)
+    assert default.trades[0].stop_px < default.trades[0].entry_px
+    assert default.trades[0].target_px > default.trades[0].entry_px
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# --realistic-costs
+#
+# The whole reason this mode exists is that the optimistic model flatters the
+# result. Every assertion below is a DIRECTIONAL one: realistic must be worse.
+# A cost model that could silently help would invalidate the comparison it is
+# there to make.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _run(first_managed, *, side: str, realistic: bool, **cfg_over):
+    src = one_symbol_session(first_managed=first_managed)
+    bt = build(src, UNIVERSE_1, load_cfg(**cfg_over), side=side,
+               realistic_costs=realistic)
+    out = bt.run_session(DAY)
+    assert len(out.trades) == 1, f"expected exactly one trade, got {out.trades}"
+    return out.trades[0]
+
+
+TARGET_BAR_LONG = (102.30, 104.70, 102.20, 104.50)
+STOP_BAR_LONG = (102.30, 102.40, 100.50, 100.80)
+TARGET_BAR_SHORT = (102.30, 102.40, 99.70, 100.00)
+STOP_BAR_SHORT = (102.30, 103.50, 102.20, 103.30)
+
+
+@pytest.mark.parametrize("side,first_managed,expect_reason", [
+    ("long", TARGET_BAR_LONG, "target"),
+    ("long", STOP_BAR_LONG, "stop"),
+    ("short", TARGET_BAR_SHORT, "target"),
+    ("short", STOP_BAR_SHORT, "stop"),
+])
+def test_realistic_costs_are_strictly_worse_on_both_sides(
+    side, first_managed, expect_reason,
+):
+    """Realistic costs must reduce R_net for a long AND for a short.
+
+    Asserted as a strict inequality rather than against a number, so the
+    cost model can never silently start helping either side — which is the
+    one failure mode that would make the long/short comparison meaningless.
+    """
+    optimistic = _run(first_managed, side=side, realistic=False)
+    realistic = _run(first_managed, side=side, realistic=True)
+
+    assert optimistic.exit_reason == expect_reason
+    assert realistic.exit_reason == expect_reason
+    assert realistic.R_net < optimistic.R_net
+    assert realistic.pnl_net < optimistic.pnl_net
+    # The entry is always worse, and always in the adverse direction.
+    if side == "long":
+        assert realistic.entry_px > optimistic.entry_px
+    else:
+        assert realistic.entry_px < optimistic.entry_px
+    # Widening the entry-to-stop distance is part of that cost: the stop is
+    # set from the signal price, so an adverse fill means more risk per share
+    # for the same structural level.
+    assert realistic.risk_per_share > optimistic.risk_per_share
+
+
+def test_realistic_entry_penalty_is_five_percent_of_the_trigger_bar_range():
+    """Trigger bar range 102.30 - 101.80 = 0.50, so the penalty is 0.025."""
+    long_t = _run(TARGET_BAR_LONG, side="long", realistic=True)
+    short_t = _run(TARGET_BAR_SHORT, side="short", realistic=True)
+
+    assert long_t.entry_px == pytest.approx(ENTRY_FILL + ENTRY_RANGE_PENALTY)
+    assert long_t.entry_px == pytest.approx(102.245440, abs=1e-6)
+    assert short_t.entry_px == pytest.approx(
+        SHORT_ENTRY_FILL - ENTRY_RANGE_PENALTY,
+    )
+    assert short_t.entry_px == pytest.approx(102.154560, abs=1e-6)
+    # Both sides therefore carry the same widened risk per share.
+    assert long_t.risk_per_share == pytest.approx(1.245440, abs=1e-6)
+    assert short_t.risk_per_share == pytest.approx(1.245440, abs=1e-6)
+
+
+def test_realistic_target_still_fills_at_the_target_with_no_slippage():
+    """The target is a resting limit and PositionManager only emits it once
+    the bar has traded through the level, so no slippage is the fair model."""
+    assert _run(TARGET_BAR_LONG, side="long", realistic=True).exit_px == (
+        pytest.approx(TARGET)
+    )
+    assert _run(TARGET_BAR_SHORT, side="short", realistic=True).exit_px == (
+        pytest.approx(SHORT_TARGET)
+    )
+
+
+def test_realistic_stop_slips_by_a_tenth_of_the_opening_range_minute_tr():
+    """The stop penalty comes from the OPENING RANGE's own 1-minute true
+    range, not from atr_14d / 390.
+
+    The opening range here is 29 bars of TR 0.20 plus one bar of TR 1.45, so
+    the mean is 0.2416667 and the penalty is 0.02416667. atr_14d / 390 would
+    be 2.00 / 390 = 0.0051 — five times smaller, and it is the wrong quantity:
+    it spreads a whole day's range across 390 minutes when the opening range
+    is the most volatile stretch of the session.
+    """
+    from scripts.backtest_opening_drive import avg_minute_true_range
+
+    assert avg_minute_true_range(opening_range("AAA")) == pytest.approx(
+        OR_AVG_MINUTE_TR,
+    )
+    assert STOP_SLIP == pytest.approx(0.02416667, abs=1e-8)
+    assert STOP_SLIP > (ATR / 390.0) * 4, "the daily-ATR proxy understates it"
+
+    long_t = _run(STOP_BAR_LONG, side="long", realistic=True)
+    assert long_t.exit_px == pytest.approx(STOP - STOP_SLIP)
+    assert long_t.exit_px < STOP
+
+    short_t = _run(STOP_BAR_SHORT, side="short", realistic=True)
+    assert short_t.exit_px == pytest.approx(SHORT_STOP + STOP_SLIP)
+    assert short_t.exit_px > SHORT_STOP
+
+
+def test_realistic_stop_fills_at_the_bar_open_when_it_gapped_through():
+    """A bar that OPENED beyond the stop fills at the open when that is
+    worse — the gap-through the optimistic model ignores entirely.
+    """
+    # Long: the managed bar opens at 100.00, already below the 101.00 stop.
+    long_t = _run((100.00, 100.50, 99.50, 100.20), side="long",
+                  realistic=True)
+    assert long_t.exit_reason == "stop"
+    assert long_t.exit_px == pytest.approx(100.00)
+    assert long_t.exit_px < STOP - STOP_SLIP, "the open was the worse fill"
+    assert long_t.R_gross < -1.0
+
+    # Short: the managed bar opens at 104.00, already above the 103.40 stop.
+    short_t = _run((104.00, 104.50, 103.90, 104.20), side="short",
+                   realistic=True)
+    assert short_t.exit_reason == "stop"
+    assert short_t.exit_px == pytest.approx(104.00)
+    assert short_t.exit_px > SHORT_STOP + STOP_SLIP
+    assert short_t.R_gross < -1.0
+
+
+def test_optimistic_mode_is_untouched_by_the_new_flag():
+    """Default (no --realistic-costs) must reproduce the pre-existing
+    numbers exactly, or every earlier run stops being comparable."""
+    t = _run(TARGET_BAR_LONG, side="long", realistic=False,
+             **{"asset_classes.equity.commission_per_share": 0.005})
+    assert t.entry_px == pytest.approx(ENTRY_FILL)
+    assert t.exit_px == pytest.approx(TARGET)
+    assert t.pnl_net == pytest.approx(161.13008, abs=1e-4)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Summary statistics the decision rule is stated in
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_summary_reports_standard_error_and_t_of_mean_R():
+    """Two trades of known R: +1.9415... and -1.0 (rounded below).
+
+    With n=2 the sample sd is |a - b| / sqrt(2) and se = sd / sqrt(2) =
+    |a - b| / 2, so t = mean / se is checkable by hand.
+    """
+    cfg_over = {"asset_classes.equity.commission_per_share": 0.005}
+    win = _run(TARGET_BAR_LONG, side="long", realistic=False, **cfg_over)
+    loss = _run(STOP_BAR_LONG, side="long", realistic=False, **cfg_over)
+
+    from scripts.backtest_opening_drive import BacktestOutcome, SessionOutcome
+
+    out = BacktestOutcome(start_equity=EQUITY)
+    out.trades = [win, loss]
+    out.equity_curve = [(DAY, EQUITY + win.pnl_net + loss.pnl_net)]
+    out.sessions = [SessionOutcome(
+        day=DAY, qualifiers=1, kept=1, rejects={}, no_cut_reason=None,
+        triggers=2, entries=2, trades=[win, loss],
+        end_equity=out.equity_curve[0][1],
+    )]
+    s = summarize(out)
+
+    a, b = win.R_net, loss.R_net
+    assert s["mean_R"] == pytest.approx((a + b) / 2)
+    assert s["se_mean_R"] == pytest.approx(abs(a - b) / 2)
+    assert s["t_mean_R"] == pytest.approx(s["mean_R"] / s["se_mean_R"])
+    assert s["se_mean_R"] > 0
+
+
+def test_summary_se_and_t_are_zero_with_fewer_than_two_trades():
+    from scripts.backtest_opening_drive import BacktestOutcome
+    s = summarize(BacktestOutcome(start_equity=EQUITY))
+    assert s["se_mean_R"] == 0.0
+    assert s["t_mean_R"] == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Bar invariants across EVERY fixture in this module
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_every_fixture_bar_satisfies_the_ohlc_invariants():
+    """low <= min(open, close, high) and high >= max(open, close, low) for
+    every bar any test in this module can feed the harness.
+
+    ``core.bar.Bar.__post_init__`` already raises, so this is a check that the
+    fixtures actually exercise that guarantee rather than quietly constructing
+    bars some other way.
+    """
+    src = FakeSource()
+    spy_session(src)
+    daily_bars(src, "AAA", PREV_CLOSE)
+    src.add("1Min", opening_range("AAA"))
+    src.add("1Min", entry_window("AAA", trigger=True, hostile_1100=True))
+    src.add("1Min", entry_window("BBB", trigger=False))
+    for first in (None, TARGET_BAR_LONG, STOP_BAR_LONG, TARGET_BAR_SHORT,
+                  STOP_BAR_SHORT, (100.00, 100.50, 99.50, 100.20),
+                  (104.00, 104.50, 103.90, 104.20),
+                  (102.30, 104.70, 100.50, 103.00),
+                  (102.30, 103.50, 99.70, 100.00)):
+        src.add("5Min", managed_bars("AAA", first=first, count=60))
+
+    checked = 0
+    for bars in src.data.values():
+        for b in bars:
+            assert b.low <= min(b.open, b.close, b.high), b
+            assert b.high >= max(b.open, b.close, b.low), b
+            checked += 1
+    assert checked > 500, f"only checked {checked} bars — fixtures shrank?"

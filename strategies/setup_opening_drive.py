@@ -10,6 +10,16 @@ therefore begins below its own trigger level; the machine only has to wait for
 a post-cut bar to close above it.
 
 States: ARMED -> FILLED (signal emitted) or ARMED -> EXPIRED (deadline passed).
+
+SIDE. ``side`` selects what ACTION the trigger takes; it changes nothing about
+what counts as a trigger. Detection (post-cut close above or_high, volume
+confirmation, close above session VWAP), the structural pullback low, and the
+risk floor / ceiling rules are identical on both sides — only the placement of
+stop and target is mirrored around the entry. ``long`` is the production
+default and the live trader never sets anything else; ``short`` exists so
+scripts/backtest_opening_drive.py --side short can test the inverted
+hypothesis (large-cap opening-range extensions mean-revert) against the exact
+same screen and trigger, with directly comparable R.
 """
 from __future__ import annotations
 
@@ -38,7 +48,10 @@ class OpeningDriveSetup(BaseSetup):
         target_R: float = 2.0,
         min_stop_atr_frac: float = 0.15,
         atr_mult_stop_cap: float = 2.0,
+        side: str = "long",
     ) -> None:
+        if side not in ("long", "short"):
+            raise ValueError(f"side must be 'long' or 'short', got {side!r}")
         super().__init__(symbol)
         self.or_high = or_high
         self.or_low = or_low
@@ -49,6 +62,7 @@ class OpeningDriveSetup(BaseSetup):
         self.target_R = target_R
         self.min_stop_atr_frac = min_stop_atr_frac
         self.atr_mult_stop_cap = atr_mult_stop_cap
+        self.side = side
         self.state = "ARMED"
         self._run_low: float = float("inf")
 
@@ -102,12 +116,19 @@ class OpeningDriveSetup(BaseSetup):
         if stop_floored:
             risk = min_risk
 
-        stop = entry - risk
-        target = entry + self.target_R * risk
+        # ``risk`` above is the SAME magnitude on both sides — the structural
+        # pullback distance after the floor and the ceiling rule. Only the
+        # direction it is applied in flips, so R is directly comparable.
+        if self.side == "short":
+            stop = entry + risk
+            target = entry - self.target_R * risk
+        else:
+            stop = entry - risk
+            target = entry + self.target_R * risk
         self.state = "FILLED"
 
         return SetupSignal(
-            setup=self.name, symbol=self.symbol, side="long",
+            setup=self.name, symbol=self.symbol, side=self.side,
             entry=entry, stop=stop, target=target,
             atr=self.atr_14d, level=self.or_high, ts=bar.ts,
             notes={
