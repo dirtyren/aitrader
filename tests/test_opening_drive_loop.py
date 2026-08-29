@@ -50,15 +50,16 @@ def _or_bars(symbol: str, close: float, volume: float = 30_000.0) -> list[Bar]:
 
 def _build(**kw):
     universe = kw.get("universe", {"AAA": "Tech", "BBB": "Energy"})
+    or_minutes = kw.get("or_minutes", 3)
     baselines = {s: _baseline() for s in list(universe) + ["SPY"]}
     scanner = OpeningDriveScanner(
         universe=universe, baselines=baselines,
-        max_concurrent_positions=2, or_minutes=3,
+        max_concurrent_positions=2, or_minutes=or_minutes,
     )
     cfg = OpeningDriveConfig(
         universe_path="config/universe_sp500_ndx100.csv",
         baselines_path="runtime/opening_drive/baselines.json",
-        or_minutes=3, max_concurrent_positions=2,
+        or_minutes=or_minutes, max_concurrent_positions=2,
     )
     alpaca, data = MagicMock(), MagicMock()
     rm, ex = MagicMock(), MagicMock()
@@ -88,18 +89,38 @@ def _build(**kw):
 
 # ── time helpers ───────────────────────────────────────────────────────
 
-def test_or_window_is_0930_to_1000_ny():
-    loop, *_ = _build()
+def test_or_window_spans_or_minutes_from_0930():
+    """or_window is parameterised: start always 09:30 NY, end = start + or_minutes."""
+    loop, *_ = _build()   # or_minutes=3 by default in _build()
     start, end = loop.or_window(DAY)
-    assert start == datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc)
-    assert end == datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc)
+    assert start == datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc)   # 09:30 NY
+    assert end == datetime(2026, 8, 28, 13, 33, tzinfo=timezone.utc)     # 09:33 NY (09:30 + 3 min)
 
 
 def test_cut_and_window_and_eod_times():
-    loop, *_ = _build()
-    assert loop.cut_time(DAY) == datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc)
-    assert loop.entry_window_end(DAY) == datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
-    assert loop.eod_close_time(DAY) == datetime(2026, 8, 28, 19, 30, tzinfo=timezone.utc)
+    """Time helpers are self-consistent with the configured or_minutes=3."""
+    loop, *_ = _build()   # or_minutes=3
+    assert loop.cut_time(DAY) == datetime(2026, 8, 28, 13, 33, tzinfo=timezone.utc)      # 09:33 NY
+    assert loop.entry_window_end(DAY) == datetime(2026, 8, 28, 14, 33, tzinfo=timezone.utc)  # 10:33 NY
+    assert loop.eod_close_time(DAY) == datetime(2026, 8, 28, 19, 30, tzinfo=timezone.utc)    # 15:30 NY
+
+
+def test_production_time_helpers_or_minutes_30():
+    """Pin the production time values.
+
+    In the deployed config or_minutes=30 yields the expected 09:30-10:00
+    opening range, 10:00 cut, 11:00 entry-window end, and 15:30 EOD close.
+    This is the case that actually ships; the rest of the test suite uses
+    or_minutes=3 to keep fixtures small.
+    """
+    loop, *_ = _build(or_minutes=30)
+    assert loop.or_window(DAY) == (
+        datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc),   # 09:30 NY
+        datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc),    # 10:00 NY
+    )
+    assert loop.cut_time(DAY) == datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc)    # 10:00 NY
+    assert loop.entry_window_end(DAY) == datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)  # 11:00 NY
+    assert loop.eod_close_time(DAY) == datetime(2026, 8, 28, 19, 30, tzinfo=timezone.utc)   # 15:30 NY
 
 
 # ── cut ────────────────────────────────────────────────────────────────

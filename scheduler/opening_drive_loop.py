@@ -106,13 +106,8 @@ class OpeningDriveLoop:
     # ── Time helpers ────────────────────────────────────────────────────
 
     def or_window(self, day: datetime) -> tuple[datetime, datetime]:
-        """Return (09:30, 10:00) in NY timezone as UTC-aware datetimes.
-
-        The opening range is always the fixed 09:30-10:00 NY clock window.
-        cfg.or_minutes controls avg_minute_volume computation only (how many
-        bars are expected in the OR window), not the clock-time boundary.
-        """
-        return _ny_dt(day, 9, 30), _ny_dt(day, 10, 0)
+        start = _ny_dt(day, 9, 30)
+        return start, start + timedelta(minutes=self.cfg.or_minutes)
 
     def cut_time(self, day: datetime) -> datetime:
         return self.or_window(day)[1]
