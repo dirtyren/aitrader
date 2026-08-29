@@ -201,3 +201,23 @@ def test_crypto_close_submission_failure_does_not_flip_flag():
 
     assert book.get("BTC/USD", "vwap_bands").exit_submitted is False
     mysql.mark_exit_submitted.assert_not_called()
+
+
+def test_mark_exit_submitted_is_public_api():
+    """The Opening Drive EOD flatten calls executor.mark_exit_submitted(...) so
+    PositionManager stops managing a flattened position. A MagicMock executor
+    would accept any spelling — this pins the real method on the real class.
+    """
+    client = MagicMock()
+    book = PositionBook()
+    _seed(book)
+    mysql = MagicMock()
+    mysql.strategy_id = 42
+    ex = _make_executor(client, book, mysql_store=mysql)
+
+    ex.mark_exit_submitted("COIN", "price_discovery")
+
+    assert book.get("COIN", "price_discovery").exit_submitted is True
+    mysql.mark_exit_submitted.assert_called_once_with(
+        strategy_id=42, symbol="COIN", setup_name="price_discovery",
+    )

@@ -294,6 +294,34 @@ Reused: bracket OCO submitted at entry (`submit_bracket_order`), then
 `PositionManager` for `breakeven_at_R: 1.0`, `trail_at_R: 1.5`,
 `trail_atr: 1.0`.
 
+**Correction (2026-08-29, final branch review):** trailing is **not** reused,
+because it does not exist. `core/position_manager.py` implements stop, target,
+`breakeven_at_R` and `max_hold_bars` only — there is no trailing logic of any
+kind, so `trail_at_R` and `trail_atr` are read by nothing. They are retained in
+the config for shape-consistency with the other twelve strategy configs (all of
+which carry them, equally inertly) and are now commented `NOT IMPLEMENTED`
+there. Treat the exit stack as: bracket OCO, breakeven at 1R, `max_hold_bars`
+time stop, 15:30 flatten. Nothing locks in an open gain above breakeven.
+
+Two further corrections from the same review:
+
+- **`max_hold_bars` counts distinct bars, and that had to be enforced.** The
+  managed-phase poller wakes every 60 seconds and hands `PositionManager` the
+  latest 5-minute bar, so the same bar arrived about five times and
+  `bars_held` advanced roughly once per minute — `36` fired near 11:37 rather
+  than 14:00. `OpeningDriveLoop.manage_open` now tracks the last bar
+  timestamp per symbol and drops repeats.
+- **The 15:30 cancel must enumerate the broker's open orders, not the book's
+  order ids.** `OrderExecutor.submit` sets `target_order_id = None`
+  unconditionally, so the OCO take-profit leg is never recorded on the
+  position. Cancelling only `(stop_order_id, target_order_id)` left that
+  sell-limit live holding the shares, and Alpaca rejected the market close
+  with `insufficient qty available for order`. The shared helper
+  `broker/safe_close.py:cancel_open_orders_for_symbol` (the same mechanism
+  the reconciler uses on broker-only orphans) is now used by both the 15:30
+  flatten and the `time_stop` exit path, and a `None` return from
+  `close_position` is counted as a FAILED close rather than a success.
+
 `max_hold_bars: 36` on 5-min bars (3 hours), **counted from the position's
 first managed-phase bar at 11:00**, not from entry. Entries occur between 10:00
 and 11:00 on 1-min bars, so counting from entry would make the time stop depend

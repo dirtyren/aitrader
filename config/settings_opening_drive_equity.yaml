@@ -1,0 +1,118 @@
+system:
+  name: opening_drive_equity_trader
+  trading_env: paper
+  version: 1.0.0
+
+broker:
+  handshake_symbol: SPY
+  paper_trading: true
+
+asset_classes:
+  equity:
+    timezone: America/New_York
+    session_open_local: '09:30'
+    session_close_local: '16:00'
+    # NOTE: the 10:00 cut, the 11:00 entry-window end and the 15:30 flatten are
+    # NOT configurable here. They derive from scanner.or_minutes (09:30 + 30m),
+    # setups.opening_drive.entry_window_minutes, and OpeningDriveLoop.
+    # eod_close_time respectively. cut_local / entry_window_end_local /
+    # force_close_local keys were removed: nothing read them, so editing one
+    # changed nothing while looking like it had.
+    commission_per_share: 0.0
+    slippage_bps: 2
+    # symbols list intentionally absent — populated dynamically by the scanner
+
+scanner:
+  universe_file: config/universe_sp500_ndx100.csv
+  baselines_path: runtime/opening_drive/baselines.json
+  baselines_max_age_days: 7
+  or_minutes: 30
+  lookback_sessions: 20
+  benchmark: SPY
+  side: long_only
+  filters:
+    min_price: 5.0
+    # IEX-DENOMINATED — do NOT raise this to 1_000_000. That is a
+    # consolidated-volume figure; against IEX volume (~2% of consolidated)
+    # it would reject substantially the entire universe, every day, and the
+    # scanner would return nothing without erroring. See gap_and_go, which
+    # carries the consolidated figure.
+    min_avg_daily_volume: 100_000
+    min_bar_coverage: 0.90
+    min_rvol_or: 2.0
+    min_disp_atr: 0.5
+    min_or_width_atr: 0.4
+    max_or_width_atr: 2.0
+    min_clv: 0.6
+    min_rs_atr: 0.0
+  ranking:
+    score: rvol_or_x_rs_atr
+    candidate_multiplier: 1.5
+
+setups:
+  opening_drive:
+    enabled: true
+    volume_confirm_mult: 2.0
+    target_R: 2.0
+    min_stop_atr_frac: 0.15
+    atr_mult_stop_cap: 2.0
+    entry_window_minutes: 60
+
+position_management:
+  breakeven_at_R: 1.0
+  # NOT IMPLEMENTED by core/position_manager.py — it has no trailing logic at
+  # all: only stop, target, breakeven_at_R and max_hold_bars are honoured.
+  # These two keys are carried by all 13 strategy configs, so they are kept for
+  # config-shape consistency, but they provide NO protection. Do not size a
+  # position on the assumption that a trail will lock in gains at 1.5R.
+  trail_at_R: 1.5
+  trail_atr: 1.0
+  # 5-min bars counted from the first managed-phase bar at 11:00, NOT from
+  # entry. 11:00->15:30 is 54 bars, so any value >= 54 would be inert.
+  # scheduler/opening_drive_loop.manage_open drops repeated bars so this
+  # counts BARS: the managed poll runs every 60s against 5-minute bars, and
+  # forwarding each repeat made 36 mean 36 minutes (~11:37), not 3 hours.
+  max_hold_bars: 36
+
+risk:
+  max_concurrent_positions: 5
+  max_risk_per_trade: 0.005
+  # LOAD-BEARING LIMIT. sma_slope_equity_trader holds 60% of account notional,
+  # leaving ~40% here; 5 positions x 0.07 = 35%. Intraday stops run 1-2% of
+  # price, so this cap binds BEFORE max_risk_per_trade does — effective risk
+  # is ~0.1% per trade, ~0.5% per day.
+  max_notional_per_trade_pct: 0.07
+  # INERT given the notional cap above; retained for config-shape consistency
+  # with the other strategies. Do not mistake it for active protection.
+  max_daily_risk_open: 0.025
+  max_per_sector: 2
+  consecutive_loss_limit: 2
+  # system_wide, NOT per_symbol: this strategy rotates symbols daily and would
+  # essentially never see the same name twice, so per-symbol counting would
+  # never fire and would be dead config offering false comfort.
+  loss_filter_scope: system_wide
+  # False is only honoured while BOTH system.trading_env == 'paper' AND
+  # broker.paper_trading == true. main_opening_drive.pdt_guard_enabled()
+  # cross-checks them and forces the guard ON otherwise (including when the
+  # two disagree), so flipping this deployment to live cannot silently leave
+  # the guard off. Paper accounts do not enforce PDT, and this guard is the
+  # only thing standing between a sub-$25k margin account and a 90-day
+  # closing-only restriction.
+  pdt_guard_enabled: false
+  pdt_min_equity: 25000
+
+scheduler:
+  # Read by main_opening_drive.build_loop into OpeningDriveConfig:
+  # bar_timeframe drives the 10:00 cut and the entry window,
+  # regular_session_timeframe drives the managed phase.
+  bar_timeframe: 1Min
+  regular_session_timeframe: 5Min
+  # poll_fallback_seconds / wake_grace_seconds are NOT listed here on purpose:
+  # they belong to main.py's boundary scheduler, and this strategy has its own
+  # phase clock in run_day. Nothing would read them.
+
+logging:
+  level: INFO
+  log_file: logs/opening_drive_equity_trader.log
+
+news_blackouts: []

@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from broker.alpaca_client import InsufficientBuyingPowerError, OrderRejectedError
-from broker.safe_close import submit_close_with_drift_recovery
+from broker.safe_close import (
+    cancel_open_orders_for_symbol, submit_close_with_drift_recovery,
+)
 from core.position_manager import PositionAction
 from state.position_book import OpenPosition, PositionBook
 from strategies.base_setup import SetupSignal
@@ -386,7 +388,22 @@ class OrderExecutor:
                     )
                     continue
                 if a.kind == "time_stop":
-                    if parent_order_id:
+                    # Cancel EVERY open order for the symbol before closing —
+                    # the same shared helper the EOD flatten and the
+                    # reconciler use. Cancelling only the bracket parent was
+                    # not enough: the OCO take-profit leg is never recorded on
+                    # the book (submit sets target_order_id = None), and a
+                    # caller with no parent id (the Opening Drive managed
+                    # phase) skipped the cancel entirely, leaving the TP live
+                    # to hold the shares so Alpaca rejected the close with
+                    # "insufficient qty available for order".
+                    cancelled = cancel_open_orders_for_symbol(
+                        self.client, a.symbol, log=self.logger,
+                        log_prefix="TIME_STOP",
+                    )
+                    if parent_order_id and parent_order_id not in cancelled:
+                        # Fallback only: the sweep may have failed or the
+                        # parent may not be listed as open for this symbol.
                         try:
                             self.client.cancel_order(parent_order_id)
                         except Exception as exc:
@@ -436,6 +453,16 @@ class OrderExecutor:
 
             self.logger.warning("UNHANDLED_ACTION symbol=%s kind=%s asset_class=%s",
                                 a.symbol, a.kind, asset_class)
+
+    def mark_exit_submitted(self, symbol: str, setup: str) -> None:
+        """Public entry point for callers that submit a close themselves.
+
+        The Opening Drive 15:30 flatten calls close_position directly (it is
+        not a PositionAction), so it needs the same exit_submitted bookkeeping
+        handle_actions performs — otherwise PositionManager keeps managing a
+        position the broker is already flattening.
+        """
+        self._mark_exit_submitted(symbol, setup)
 
     def _mark_exit_submitted(self, symbol: str, setup: str) -> None:
         """Flip exit_submitted=True on the in-memory book and persist to

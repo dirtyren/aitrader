@@ -470,6 +470,51 @@ class AlpacaClient:
         # Safety bound exceeded — return what we have rather than infinite-loop.
         return all_bars
 
+    def get_stock_bars_multi(self, symbols: list[str], timeframe: str,
+                            start: datetime, end: datetime,
+                            limit: int = 10000,
+                            chunk_size: int = 200) -> dict[str, list[dict]]:
+        """GET /v2/stocks/bars — multi-symbol bars keyed by symbol.
+
+        Unlike the single-symbol endpoint (which returns ``{"bars": [...]}``),
+        this returns ``{"bars": {"AAPL": [...], ...}}``. Pages are merged
+        per symbol.
+
+        The symbol list is chunked so a 500-symbol universe does not produce
+        an unreasonably long query string. Each chunk paginates independently;
+        ``page_token`` must not leak across chunks, which is why ``params`` is
+        rebuilt per chunk.
+        """
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("start and end must be timezone-aware")
+        if not symbols:
+            return {}
+
+        out: dict[str, list[dict]] = {}
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+            params = {
+                "symbols": ",".join(chunk),
+                "timeframe": timeframe,
+                "start": start.isoformat().replace("+00:00", "Z"),
+                "end": end.isoformat().replace("+00:00", "Z"),
+                "limit": limit,
+                "adjustment": "raw",
+                "feed": "iex",
+            }
+            for _ in range(_MAX_BAR_PAGES):
+                response = self._data_request(
+                    "GET", "/v2/stocks/bars", params=params,
+                )
+                body = response.json()
+                for sym, bars in (body.get("bars") or {}).items():
+                    out.setdefault(sym, []).extend(bars or [])
+                token = body.get("next_page_token")
+                if not token:
+                    break
+                params["page_token"] = token
+        return out
+
     def get_crypto_bars(self, symbol: str, timeframe: str,
                         start: datetime, end: datetime,
                         limit: int = 10000) -> list[dict]:
