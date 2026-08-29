@@ -319,6 +319,10 @@ def gate_reason(
         return "min_clv"
     if not m.above_vwap:
         return "above_vwap"
+    # Intentionally <= (not <): a symbol that merely matched the benchmark
+    # does not qualify. Matching the market adds no idiosyncratic signal —
+    # that is the whole failure mode rs_atr exists to prevent. Keep this as
+    # <= so rs_atr == 0.0 (exactly benchmark-neutral) is rejected.
     if m.rs_atr <= f.min_rs_atr:
         return "min_rs_atr"
     return None

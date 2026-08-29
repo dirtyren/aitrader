@@ -403,6 +403,21 @@ def test_negative_displacement_rejected_long_only():
     assert gate_reason(_metrics(disp_atr=-1.0), _bl(), F) == "min_disp_atr"
 
 
+def test_rs_atr_gate_rejects_exactly_zero():
+    """rs_atr == 0.0 is rejected: a symbol that merely matched the market
+    does not qualify. The gate uses strictly-greater-than (<=) so that
+    matching the benchmark does not count as outperforming it. A future
+    editor 'fixing the inconsistency' to < would silently admit candidates
+    that added no idiosyncratic return — the exact failure rs_atr exists to
+    prevent."""
+    assert gate_reason(_metrics(rs_atr=0.0), _bl(), F) == "min_rs_atr"
+
+
+def test_rs_atr_gate_passes_small_positive():
+    """Any outperformance above zero clears the gate."""
+    assert gate_reason(_metrics(rs_atr=0.001), _bl(), F) is None
+
+
 def test_rank_score_is_rvol_times_rs():
     assert rank_score(_metrics(rvol_or=3.0, rs_atr=0.5)) == pytest.approx(1.5)
 
@@ -511,8 +526,15 @@ def test_run_cut_never_returns_spy_as_a_candidate():
 
 
 def test_run_cut_drops_candidates_weaker_than_spy():
-    """AAA up 0.5% while SPY is up 4% -> negative rs_atr -> gated out."""
+    """AAA up 2.5% (disp_atr=0.75, clv=0.667 — passes all gates through
+    above_vwap) while SPY is up 10% -> rs_atr = -1.75 -> gated out at
+    min_rs_atr.
+
+    Prior fixture used close=100.5 for AAA which was rejected at min_disp_atr
+    (disp_atr=0.125 < 0.5) before reaching the rs_atr gate, so a broken
+    rs_atr implementation would not have been caught.
+    """
     s = _scanner()
-    bars = {"AAA": _bars_for(100.5), "SPY": _bars_for(104.0)}
+    bars = {"AAA": _bars_for(103.0), "SPY": _bars_for(110.0)}
     prev = {"AAA": 100.0, "SPY": 100.0}
     assert s.run_cut(bars, prev, NOW) == []
