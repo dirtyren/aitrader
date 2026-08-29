@@ -36,6 +36,11 @@ import csv
 import io
 import sys
 
+# Share-class tickers: Alpaca spells them with a DOT (BRK.B, BF.B), which is
+# also how Wikipedia writes them. Do NOT normalize "." -> "-" (the Yahoo/Nasdaq
+# convention): Alpaca rejects BRK-B with HTTP 400 "invalid symbol", and because
+# one bad symbol fails the whole multi-symbol bars request, that error takes the
+# entire scanner cut down with it — every session.
 _SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 _NDX_URL = "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies"
 
@@ -63,7 +68,7 @@ def _parse_sp500_df(df: "pd.DataFrame") -> dict[str, str]:
     """
     result: dict[str, str] = {}
     for _, row in df.iterrows():
-        sym = str(row["Symbol"]).strip().upper().replace(".", "-")
+        sym = str(row["Symbol"]).strip().upper()
         # str() on a pandas NaN cell produces "nan" which uppercases to "NAN"
         # -- truthy, so `if not sym` would pass it through as a real ticker.
         if sym in ("", "NAN"):
@@ -93,7 +98,7 @@ def _parse_ndx100_df(df: "pd.DataFrame") -> dict[str, str]:
         )
     result: dict[str, str] = {}
     for _, row in df.iterrows():
-        sym = str(row["Ticker"]).strip().upper().replace(".", "-")
+        sym = str(row["Ticker"]).strip().upper()
         # str() on a pandas NaN cell produces "nan" which uppercases to "NAN"
         if sym in ("", "NAN"):
             continue
