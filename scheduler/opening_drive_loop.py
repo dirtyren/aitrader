@@ -28,9 +28,11 @@ from datetime import datetime, time, timedelta, timezone
 
 import pytz
 
+from broker.safe_close import cancel_open_orders_for_symbol
 from core.asset_class import AssetClassConfig
 from core.bar import Bar
 from core.session import SessionContext
+from scheduler.loop import record_exits_to_ledger
 from state.position_book import PositionBook
 from strategies.opening_drive_scanner import OpeningDriveScanner, ScanResult
 from strategies.setup_opening_drive import OpeningDriveSetup
@@ -70,9 +72,19 @@ class OpeningDriveConfig:
 class _DayState:
     cut_done: bool = False
     eod_close_done: bool = False
+    # Guards the 16:10 rebuild to once per day. Without it, every re-entry of
+    # run_day after the post-close phase re-ran a full 20-session x ~519-symbol
+    # bulk fetch AND reset computed_at, which made the staleness check
+    # meaningless (it would always look fresh).
+    post_close_refresh_done: bool = False
     watchlist: list[ScanResult] = field(default_factory=list)
     setups: dict[str, OpeningDriveSetup] = field(default_factory=dict)
     contexts: dict[str, SessionContext] = field(default_factory=dict)
+    # Last managed-phase bar timestamp actually forwarded to PositionManager,
+    # per symbol. The managed poll runs every 60s against 5-minute bars, so
+    # the same bar arrives ~5 times; forwarding all of them made bars_held
+    # count minutes instead of bars (max_hold_bars=36 fired ~11:37, not 14:00).
+    last_managed_bar_ts: dict[str, datetime] = field(default_factory=dict)
 
 
 class OpeningDriveLoop:
@@ -90,6 +102,7 @@ class OpeningDriveLoop:
         book: PositionBook,
         position_manager,
         strategy_name: str,
+        mysql_store=None,
     ) -> None:
         self.cfg = cfg
         self.scanner = scanner
@@ -101,6 +114,7 @@ class OpeningDriveLoop:
         self.book = book
         self.position_manager = position_manager
         self.strategy_name = strategy_name
+        self.mysql = mysql_store
         self.day = _DayState()
 
     # ── Time helpers ────────────────────────────────────────────────────
@@ -176,6 +190,17 @@ class OpeningDriveLoop:
                 or_high=r.metrics.or_high,
                 or_low=r.metrics.or_low,
                 atr_14d=r.metrics.atr_14d,
+                # SPEC MISMATCH (I2, deliberately unresolved): spec 7.2 says
+                # the trigger bar's volume is compared against "the trailing
+                # bar average", i.e. the recent 1-min bars inside the entry
+                # window. This passes the OPENING-RANGE per-minute average
+                # (09:30-10:00) instead, which is normally the highest-volume
+                # window of the session — so volume_confirm_mult: 2.0 against
+                # it is a materially stricter gate than against a 10:00-11:00
+                # trailing average, and may suppress otherwise valid triggers.
+                # Changing the reference or the multiplier is a tuning
+                # decision that needs one paper session of live data to
+                # calibrate; it is NOT changed here on speculation.
                 avg_minute_volume=r.metrics.or_volume / self.cfg.or_minutes,
                 entry_deadline=deadline,
                 volume_confirm_mult=self.cfg.volume_confirm_mult,
@@ -246,56 +271,194 @@ class OpeningDriveLoop:
     # ── Phase: managed ──────────────────────────────────────────────────
 
     def manage_open(self, symbol: str, bar: Bar) -> None:
+        """Feed ONE new 5-minute bar for ``symbol`` through PositionManager.
+
+        Bars already seen are dropped. The managed-phase poller sleeps 60s and
+        hands over ``bars[-1]``, so the same 5-minute bar arrives on roughly
+        five consecutive iterations. PositionManager increments ``bars_held``
+        once per call, so forwarding every repeat made ``max_hold_bars: 36``
+        count MINUTES — the time stop fired around 11:37 instead of the 14:00
+        the config documents, capping winners while stops still ran in full.
+        Repeats were also ingested into the SessionContext, corrupting
+        ctx.atr()/ctx.vwap with duplicate volume.
+        """
+        last_ts = self.day.last_managed_bar_ts.get(symbol)
+        if last_ts is not None and bar.ts <= last_ts:
+            return
+        self.day.last_managed_bar_ts[symbol] = bar.ts
+
         ctx = self.day.contexts.get(symbol)
         if ctx is not None:
             ctx.ingest(bar)
+
+        # Snapshot BEFORE PositionManager mutates/closes the book entry —
+        # record_exits_to_ledger needs the pre-exit position to compute PnL
+        # and R. Same shape as VWAPWaveEngine.tick.
+        positions_before = {p.setup: p for p in self.book.get_all(symbol)}
         actions = self.position_manager.on_bar(symbol, bar)
-        if actions:
-            self.executor.handle_actions(actions, asset_class="equity")
+        if not actions:
+            return
+
+        # Ledger recording is what makes ConsecutiveLossFilter live: it reads
+        # ledger.consec_losses_system, and only DailyLedger.record()
+        # increments that. Without this call, consecutive_loss_limit: 2 with
+        # loss_filter_scope: system_wide could never fire.
+        record_exits_to_ledger(
+            self.risk_manager.ledger, symbol, actions, bar,
+            mysql_store=self.mysql,
+            positions_snapshot=positions_before,
+            asset_class="equity",
+        )
+
+        # The bracket parent id must be passed: OrderExecutor's time_stop
+        # branch cancels open orders for the symbol and falls back to the
+        # parent id. Omitting it used to skip the cancel entirely, orphaning
+        # the OCO legs with hours of session left.
+        parent_order_id = (
+            positions_before[actions[0].setup].order_id
+            if actions[0].setup in positions_before
+            else None
+        )
+        self.executor.handle_actions(
+            actions, asset_class="equity", parent_order_id=parent_order_id,
+        )
+
+    # ── Book refresh ────────────────────────────────────────────────────
+
+    def refresh_book_from_mysql(self) -> bool:
+        """Rebuild the in-memory book from MySQL. Returns True if it happened.
+
+        MySQL is the source of truth: the reconciler closes rows from broker
+        fills, so a book loaded once at boot goes permanently stale. The
+        symptom was severe — after the first 15:30 flatten the process still
+        believed it held five positions, so ConcurrentPositionFilter rejected
+        every subsequent signal and the managed phase submitted market sells
+        against yesterday's stops for shares the account no longer held.
+
+        A MySQL failure keeps the existing book rather than emptying it:
+        an empty book would let the entry window re-enter symbols already
+        held. Same trade-off as main.py's MYSQL_REBUILD_FAILED branch.
+        """
+        if self.mysql is None:
+            return False
+        try:
+            self.book.replace_from(self.mysql.load_open_positions())
+        except Exception as exc:
+            logger.error("OD_MYSQL_REBUILD_FAILED: %s", exc, exc_info=True)
+            return False
+        return True
 
     # ── Phase: EOD flat ─────────────────────────────────────────────────
 
     def force_close_all(self, now: datetime) -> int:
-        """Cancel OCO children, then market-close every Opening Drive position.
+        """Cancel every open order per symbol, then market-close each position.
 
-        Cancelling FIRST is required: OrderExecutor.close_position submits a
-        market close but does not touch the bracket legs, so flattening with
-        live stop/target orders leaves orphaned orders behind — the failure
-        class the reconciler exists to clean up.
+        Returns the number of positions the broker ACCEPTED a close for.
 
-        Cancel failures are tolerated: an already-filled or already-cancelled
-        leg raises, and that must not prevent the close.
+        Two things this must get right, both learned the hard way:
+
+        1. Cancel ALL open orders for the symbol, not the ids the book carries.
+           ``OrderExecutor.submit`` sets ``target_order_id = None``
+           unconditionally, so the OCO take-profit sell-limit is invisible to
+           the book. Leaving it live holds the shares, Alpaca rejects the
+           market close with "insufficient qty available for order", and the
+           position is carried overnight with no stop. Enumerating the
+           broker's own open orders is the only way to find that leg — the
+           same cancel-then-close remediation the reconciler performs.
+
+        2. A ``None`` return from close_position is a FAILURE, not a success.
+           ``submit_close_with_drift_recovery`` returns None when both submit
+           attempts were rejected. Counting it as closed made the log say
+           "closed" for a position still held.
+
+        Cancel failures are tolerated (an already-filled leg raises) and one
+        symbol's failure never aborts the sweep.
         """
         if self.day.eod_close_done:
             return 0
         closed = 0
+        failed = 0
         for pos in list(self.book.all()):
             if pos.setup != OpeningDriveSetup.name:
                 continue
-            for oid in (pos.stop_order_id, pos.target_order_id):
-                if not oid:
-                    continue
-                try:
-                    self.alpaca.cancel_order(oid)
-                except Exception as exc:
-                    logger.warning(
-                        "OD_EOD_CANCEL_FAILED symbol=%s order_id=%s error=%s",
-                        pos.symbol, oid, exc,
-                    )
+            cancelled = cancel_open_orders_for_symbol(
+                self.alpaca, pos.symbol, log=logger, log_prefix="OD_EOD",
+            )
+            if not cancelled:
+                # Fallback only, for when the enumeration itself failed (a 500
+                # on list_orders) — cancel whatever ids the book does know.
+                # Strictly a subset of the sweep: it cannot see the TP leg.
+                self._cancel_known_legs(pos)
             try:
-                self.executor.close_position(
+                result = self.executor.close_position(
                     pos.symbol, pos.side, pos.qty,
                     setup=pos.setup, asset_class="equity",
                 )
-                closed += 1
             except Exception as exc:
+                failed += 1
                 logger.error("OD_EOD_CLOSE_FAILED symbol=%s error=%s",
                              pos.symbol, exc, exc_info=True)
+                continue
+            if result is None:
+                failed += 1
+                logger.error(
+                    "OD_EOD_CLOSE_REJECTED symbol=%s side=%s qty=%s — broker "
+                    "refused the close; the position may be carried overnight "
+                    "WITHOUT a stop. Check for live orders holding the qty.",
+                    pos.symbol, pos.side, pos.qty,
+                )
+                continue
+            closed += 1
+            self._mark_flattened(pos)
         self.day.eod_close_done = True
-        logger.info("OD_EOD_CLOSE_DONE n=%d", closed)
+        logger.info("OD_EOD_CLOSE_DONE closed=%d failed=%d", closed, failed)
         return closed
+
+    def _cancel_known_legs(self, pos) -> None:
+        """Cancel the order ids recorded on the book. Best-effort."""
+        for oid in (pos.stop_order_id, pos.target_order_id):
+            if not oid:
+                continue
+            try:
+                self.alpaca.cancel_order(oid)
+            except Exception as exc:
+                logger.warning(
+                    "OD_EOD_CANCEL_FAILED symbol=%s order_id=%s error=%s",
+                    pos.symbol, oid, exc,
+                )
+
+    def _mark_flattened(self, pos) -> None:
+        """Record that a broker close is in flight for ``pos``.
+
+        exit_submitted is the established contract (OrderExecutor.handle_actions
+        uses it): PositionManager then defers everything for this position, so
+        the managed phase cannot keep managing a flattened one. The row itself
+        is left for the reconciler, which is the writer of record for closes —
+        it applies the real fill price and close_reason, and the next
+        refresh_book_from_mysql drops the row.
+
+        Without MySQL there is no writer of record, so nothing would ever
+        remove the entry; in that case the in-memory book IS the record and we
+        close it here.
+        """
+        try:
+            self.executor.mark_exit_submitted(pos.symbol, pos.setup)
+        except Exception as exc:
+            logger.warning(
+                "OD_EOD_MARK_EXIT_FAILED symbol=%s setup=%s error=%s",
+                pos.symbol, pos.setup, exc,
+            )
+        if self.mysql is None:
+            self.book.close(pos.symbol, pos.setup)
 
     # ── Day reset ───────────────────────────────────────────────────────
 
     def reset_for_new_day(self) -> None:
+        # clear_just_exited matters here: PositionBook.close() (and the no-MySQL
+        # flatten path) records the symbol in _just_exited, and
+        # OrderExecutor.submit refuses to enter a symbol that is in that set.
+        # Nothing else in this strategy clears it — VWAPWaveEngine.tick does it
+        # per cycle — so without this, any symbol that stopped out once could
+        # never be entered again for the container's lifetime.
+        self.book.clear_just_exited()
         self.day = _DayState()

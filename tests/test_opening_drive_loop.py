@@ -6,8 +6,10 @@ import pytest
 
 from core.asset_class import AssetClassConfig
 from core.bar import Bar
+from core.position_manager import PositionAction
 from risk.manager import RiskDecision
 from scheduler.opening_drive_loop import OpeningDriveConfig, OpeningDriveLoop
+from state.daily_ledger import DailyLedger
 from state.position_book import OpenPosition, PositionBook
 from strategies.opening_drive_scanner import (
     OpeningDriveBaseline, OpeningDriveScanner,
@@ -66,7 +68,15 @@ def _build(**kw):
     pm = MagicMock()
     book = PositionBook()
     rm.evaluate.return_value = RiskDecision(approved=True, qty=10, notional=1000)
+    # A REAL ledger: ConsecutiveLossFilter reads ledger.consec_losses_system,
+    # which only DailyLedger.record() increments (I4).
+    rm.ledger = kw.get("ledger", DailyLedger(initial_equity=100_000.0))
     pm.on_bar.return_value = []
+    # close_position returns the broker order dict on success; None is a
+    # FAILED close (submit_close_with_drift_recovery's failure return).
+    ex.close_position.return_value = {"id": "close-1"}
+    # Broker-side open orders for the cancel-all sweep; overridden per test.
+    alpaca.list_orders.return_value = []
 
     or_bars = kw.get("or_bars", {
         "AAA": _or_bars("AAA", 104.0, 60_000),
@@ -82,6 +92,7 @@ def _build(**kw):
         alpaca_client=alpaca, alpaca_data=data, risk_manager=rm,
         executor=ex, book=book, position_manager=pm,
         strategy_name="opening_drive_equity_trader",
+        mysql_store=kw.get("mysql", MagicMock()),
     )
     loop.fetch_prev_closes = MagicMock(return_value=prev_closes)
     return loop, alpaca, ex, rm, book, pm, data
@@ -332,10 +343,17 @@ def test_switch_to_regular_session_bars_resets_contexts():
 
 # ── managed phase ──────────────────────────────────────────────────────
 
+def _pa(kind, symbol="AAA", setup="opening_drive", price=100.0, qty=10,
+        side="long") -> PositionAction:
+    return PositionAction(symbol=symbol, setup=setup, kind=kind, price=price,
+                          qty=qty, side=side)
+
+
 def test_manage_open_routes_position_manager_actions():
-    loop, _, ex, _, _, pm, _ = _build()
+    loop, _, ex, _, book, pm, _ = _build()
     loop.run_cut(NOW)
-    pm.on_bar.return_value = ["action"]
+    book.add(_open_pos())
+    pm.on_bar.return_value = [_pa("time_stop", price=101.0)]
     loop.manage_open("AAA", _reclaim_bar("AAA", minute=90))
     ex.handle_actions.assert_called_once()
     assert ex.handle_actions.call_args.kwargs["asset_class"] == "equity"
@@ -349,48 +367,352 @@ def test_manage_open_with_no_actions_does_not_call_executor():
     assert not ex.handle_actions.called
 
 
+def test_manage_open_passes_bracket_parent_order_id_to_handle_actions():
+    """I1: without a parent id, OrderExecutor's time_stop branch skipped its
+    cancel entirely, so every time-stopped position left live OCO legs."""
+    loop, _, ex, _, book, pm, _ = _build()
+    loop.run_cut(NOW)
+    book.add(_open_pos())            # order_id == "o-AAA"
+    pm.on_bar.return_value = [_pa("time_stop", price=101.0)]
+    loop.manage_open("AAA", _reclaim_bar("AAA", minute=90))
+    assert ex.handle_actions.call_args.kwargs["parent_order_id"] == "o-AAA"
+
+
+def test_manage_open_ignores_a_bar_it_has_already_seen():
+    """I1 — the discriminating case.
+
+    The managed-phase poll runs every 60s but the bars are 5-minute, so the
+    SAME bar is handed to manage_open on ~5 consecutive iterations. The
+    pre-fix code forwarded every one to PositionManager.on_bar, which
+    increments bars_held per call — so max_hold_bars=36 counted MINUTES and
+    fired around 11:37 instead of 14:00.
+    """
+    loop, _, _, _, _, pm, _ = _build()
+    loop.run_cut(NOW)
+    bar = _reclaim_bar("AAA", minute=90)
+    for _ in range(5):
+        loop.manage_open("AAA", bar)
+    assert pm.on_bar.call_count == 1, (
+        "the same 5-minute bar reached PositionManager more than once — "
+        "bars_held would advance once per MINUTE, not once per bar"
+    )
+
+
+def test_manage_open_forwards_each_distinct_bar_exactly_once():
+    """Three distinct 5-minute bars must advance bars_held three times; a
+    repeated or out-of-order bar in between must not."""
+    loop, _, _, _, _, pm, _ = _build()
+    loop.run_cut(NOW)
+    b1 = _reclaim_bar("AAA", minute=90)
+    b2 = _reclaim_bar("AAA", minute=95)
+    b3 = _reclaim_bar("AAA", minute=100)
+    for bar in (b1, b1, b2, b1, b2, b3, b3):
+        loop.manage_open("AAA", bar)
+    forwarded = [c.args[1].ts for c in pm.on_bar.call_args_list]
+    assert forwarded == [b1.ts, b2.ts, b3.ts]
+
+
+def test_manage_open_tracks_last_bar_per_symbol_independently():
+    loop, _, _, _, _, pm, _ = _build()
+    loop.run_cut(NOW)
+    loop.manage_open("AAA", _reclaim_bar("AAA", minute=90))
+    loop.manage_open("BBB", _reclaim_bar("BBB", minute=90))   # same ts
+    assert [c.args[0] for c in pm.on_bar.call_args_list] == ["AAA", "BBB"]
+
+
+def test_manage_open_does_not_double_ingest_a_repeated_bar_into_the_context():
+    loop, *_ = _build()
+    loop.run_cut(NOW)
+    loop.switch_to_regular_session_bars()
+    bar = _reclaim_bar("AAA", minute=90)
+    for _ in range(4):
+        loop.manage_open("AAA", bar)
+    assert loop.day.contexts["AAA"].bar_count == 1
+
+
+def test_reset_for_new_day_clears_the_seen_bar_cursor():
+    """Yesterday's cursor must not suppress today's first managed bar."""
+    loop, _, _, _, _, pm, _ = _build()
+    loop.run_cut(NOW)
+    bar = _reclaim_bar("AAA", minute=90)
+    loop.manage_open("AAA", bar)
+    loop.reset_for_new_day()
+    loop.run_cut(NOW)
+    loop.manage_open("AAA", bar)
+    assert pm.on_bar.call_count == 2
+
+
+# ── managed phase: ledger wiring (I4) ──────────────────────────────────
+
+def test_manage_open_records_a_losing_exit_into_the_ledger():
+    """I4: ConsecutiveLossFilter reads ledger.consec_losses_system, which only
+    DailyLedger.record() increments. Nothing in this strategy called it, so
+    consecutive_loss_limit=2 with scope system_wide could never fire."""
+    ledger = DailyLedger(initial_equity=100_000.0)
+    loop, _, _, _, book, pm, _ = _build(ledger=ledger)
+    loop.run_cut(NOW)
+    book.add(_open_pos())                       # entry 100.0, stop 98.0
+    pm.on_bar.return_value = [_pa("stop", price=98.0)]
+    loop.manage_open("AAA", _reclaim_bar("AAA", minute=90))
+    assert len(ledger.trades_today) == 1
+    rec = ledger.trades_today[0]
+    assert rec.symbol == "AAA"
+    assert rec.setup == "opening_drive"
+    assert rec.exit_px == pytest.approx(98.0)
+    assert rec.pnl_usd == pytest.approx((98.0 - 100.0) * 10)
+    assert rec.R_realized == pytest.approx(-1.0)
+    assert ledger.consec_losses_system == 1
+
+
+def test_two_losing_exits_arm_the_consecutive_loss_brake():
+    """The brake must actually engage: two recorded losses must make
+    ConsecutiveLossFilter(limit=2, scope=system_wide) reject."""
+    from risk.filters import ConsecutiveLossFilter
+
+    ledger = DailyLedger(initial_equity=100_000.0)
+    loop, _, _, _, book, pm, _ = _build(ledger=ledger)
+    loop.run_cut(NOW)
+    for i, sym in enumerate(("AAA", "BBB")):
+        book.add(_open_pos(symbol=sym))
+        pm.on_bar.return_value = [_pa("stop", symbol=sym, price=98.0)]
+        loop.manage_open(sym, _reclaim_bar(sym, minute=90 + i))
+    assert ledger.consec_losses_system == 2
+    signal = MagicMock()
+    signal.symbol = "CCC"
+    verdict = ConsecutiveLossFilter(limit=2, scope="system_wide").check(
+        signal, None, ledger, book,
+    )
+    assert verdict.passed is False
+
+
+def test_manage_open_records_a_winning_exit_and_clears_the_streak():
+    ledger = DailyLedger(initial_equity=100_000.0)
+    ledger.consec_losses_system = 2
+    loop, _, _, _, book, pm, _ = _build(ledger=ledger)
+    loop.run_cut(NOW)
+    book.add(_open_pos())
+    pm.on_bar.return_value = [_pa("target", price=104.0)]
+    loop.manage_open("AAA", _reclaim_bar("AAA", minute=90))
+    assert ledger.consec_losses_system == 0
+    assert ledger.trades_today[0].pnl_usd == pytest.approx(40.0)
+
+
+def test_manage_open_does_not_record_a_breakeven_action():
+    ledger = DailyLedger(initial_equity=100_000.0)
+    loop, _, ex, _, book, pm, _ = _build(ledger=ledger)
+    loop.run_cut(NOW)
+    book.add(_open_pos())
+    pm.on_bar.return_value = [_pa("breakeven", price=100.0)]
+    loop.manage_open("AAA", _reclaim_bar("AAA", minute=90))
+    assert ledger.trades_today == []
+    assert ex.handle_actions.called      # still routed to the broker
+
+
+# ── managed phase: book refresh (C2) ───────────────────────────────────
+
+def test_refresh_book_from_mysql_replaces_stale_entries():
+    """C2: the book was loaded once at boot and never rebuilt, so after the
+    first 15:30 flatten the process believed it still held its positions
+    forever — ConcurrentPositionFilter then rejected every later signal and
+    the managed phase sold shares the account no longer held."""
+    mysql = MagicMock()
+    loop, _, _, _, book, _, _ = _build(mysql=mysql)
+    book.add(_open_pos(symbol="AAA"))
+    fresh = PositionBook()
+    fresh.add(_open_pos(symbol="ZZZ"))
+    mysql.load_open_positions.return_value = fresh
+    assert loop.refresh_book_from_mysql() is True
+    assert [p.symbol for p in book.all()] == ["ZZZ"]
+
+
+def test_refresh_book_from_mysql_is_a_noop_without_persistence():
+    loop, _, _, _, book, _, _ = _build(mysql=None)
+    book.add(_open_pos(symbol="AAA"))
+    assert loop.refresh_book_from_mysql() is False
+    assert [p.symbol for p in book.all()] == ["AAA"]
+
+
+def test_refresh_book_from_mysql_keeps_the_old_book_on_error():
+    """A MySQL blip must not empty the book — that would let the entry window
+    re-enter symbols the strategy already holds."""
+    mysql = MagicMock()
+    mysql.load_open_positions.side_effect = RuntimeError("gone away")
+    loop, _, _, _, book, _, _ = _build(mysql=mysql)
+    book.add(_open_pos(symbol="AAA"))
+    assert loop.refresh_book_from_mysql() is False
+    assert [p.symbol for p in book.all()] == ["AAA"]
+
+
 # ── EOD flatten ────────────────────────────────────────────────────────
 
 def _open_pos(symbol="AAA", setup="opening_drive", **kw) -> OpenPosition:
+    """A position shaped the way the state layer ACTUALLY produces it.
+
+    ``target_order_id`` defaults to None because OrderExecutor.submit sets it
+    to None unconditionally for every asset class — the OCO take-profit leg
+    exists at the broker but is never recorded on the book. The old fixture
+    hardcoded "tgt-1", an impossible state, which is exactly why the
+    cancel-the-book's-ids implementation passed its test while leaving the
+    live sell-limit holding the shares.
+    """
     return OpenPosition(
         symbol=symbol, setup=setup, side="long", qty=10, entry_px=100.0,
         stop_px=98.0, target_px=104.0, opened_at=NOW, order_id=f"o-{symbol}",
         stop_order_id=kw.get("stop_order_id", "stop-1"),
-        target_order_id=kw.get("target_order_id", "tgt-1"),
+        target_order_id=kw.get("target_order_id", None),
     )
 
 
-def test_force_close_cancels_oco_children_before_closing():
-    """Flattening with live stop/target legs leaves orphaned orders."""
+def _broker_open_orders(alpaca, *order_ids):
+    alpaca.list_orders.return_value = [{"id": oid} for oid in order_ids]
+
+
+def test_force_close_cancels_the_take_profit_leg_the_book_never_recorded():
+    """C1 — the discriminating case.
+
+    The broker holds BOTH OCO legs, but the book only knows stop-1
+    (target_order_id is always None). Cancelling only the book's ids leaves
+    the sell-limit live, it holds the shares, and Alpaca rejects the market
+    close with "insufficient qty available for order".
+    """
     loop, alpaca, ex, _, book, _, _ = _build()
     book.add(_open_pos())
+    _broker_open_orders(alpaca, "stop-1", "tp-1")
     calls: list[str] = []
     alpaca.cancel_order.side_effect = lambda oid: calls.append(f"cancel:{oid}")
-    ex.close_position.side_effect = lambda *a, **k: calls.append("close")
+    ex.close_position.side_effect = lambda *a, **k: (
+        calls.append("close") or {"id": "close-1"}
+    )
+
     assert loop.force_close_all(NOW) == 1
+
+    alpaca.list_orders.assert_called_once_with(
+        status="open", symbols=["AAA"], nested=False,
+    )
     assert calls.index("cancel:stop-1") < calls.index("close")
-    assert calls.index("cancel:tgt-1") < calls.index("close")
+    assert calls.index("cancel:tp-1") < calls.index("close"), (
+        "the OCO take-profit leg was never cancelled — it is not on the book, "
+        "so only enumerating the broker's open orders can find it"
+    )
 
 
 def test_force_close_still_closes_when_cancel_fails():
     """An already-filled leg raises on cancel; the close must still happen."""
     loop, alpaca, ex, _, book, _, _ = _build()
     book.add(_open_pos())
+    _broker_open_orders(alpaca, "stop-1", "tp-1")
     alpaca.cancel_order.side_effect = RuntimeError("order not cancelable")
     assert loop.force_close_all(NOW) == 1
     assert ex.close_position.called
 
 
-def test_force_close_ignores_other_strategies_positions():
+def test_force_close_still_closes_when_list_orders_fails():
+    loop, alpaca, ex, _, book, _, _ = _build()
+    book.add(_open_pos())
+    alpaca.list_orders.side_effect = RuntimeError("alpaca 500")
+    assert loop.force_close_all(NOW) == 1
+    assert ex.close_position.called
+
+
+def test_force_close_falls_back_to_the_books_ids_when_the_sweep_fails():
+    """A 500 on list_orders must not mean cancelling nothing at all."""
+    loop, alpaca, ex, _, book, _, _ = _build()
+    book.add(_open_pos(stop_order_id="stop-1"))
+    alpaca.list_orders.side_effect = RuntimeError("alpaca 500")
+    loop.force_close_all(NOW)
+    assert [c.args[0] for c in alpaca.cancel_order.call_args_list] == ["stop-1"]
+
+
+def test_force_close_does_not_double_cancel_when_the_sweep_worked():
+    loop, alpaca, ex, _, book, _, _ = _build()
+    book.add(_open_pos(stop_order_id="stop-1"))
+    _broker_open_orders(alpaca, "stop-1", "tp-1")
+    loop.force_close_all(NOW)
+    assert [c.args[0] for c in alpaca.cancel_order.call_args_list] == [
+        "stop-1", "tp-1",
+    ]
+
+
+def test_force_close_does_not_count_a_rejected_close_as_closed():
+    """C1 second half — the discriminating case.
+
+    submit_close_with_drift_recovery returns None when the close was
+    REJECTED (e.g. the TP leg still holds the qty). The pre-fix code
+    incremented `closed` anyway and logged success, so the operator saw
+    "OD_EOD_CLOSE_DONE n=1" for a position carried overnight with no stop.
+    """
+    loop, alpaca, ex, _, book, _, _ = _build()
+    book.add(_open_pos())
+    ex.close_position.return_value = None
+    assert loop.force_close_all(NOW) == 0, (
+        "a None return from close_position is a FAILED close and must not be "
+        "counted as closed"
+    )
+    assert not ex.mark_exit_submitted.called
+
+
+def test_force_close_logs_a_rejected_close_at_error_level(caplog):
     loop, _, ex, _, book, _, _ = _build()
+    book.add(_open_pos())
+    ex.close_position.return_value = None
+    with caplog.at_level("ERROR", logger="scheduler.opening_drive_loop"):
+        loop.force_close_all(NOW)
+    assert any(r.levelname == "ERROR" and "AAA" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_force_close_summary_distinguishes_closed_from_failed(caplog):
+    loop, _, ex, _, book, _, _ = _build()
+    book.add(_open_pos(symbol="AAA"))
+    book.add(_open_pos(symbol="BBB"))
+    ex.close_position.side_effect = [None, {"id": "close-1"}]
+    with caplog.at_level("INFO", logger="scheduler.opening_drive_loop"):
+        assert loop.force_close_all(NOW) == 1
+    summary = [r.getMessage() for r in caplog.records
+               if "OD_EOD_CLOSE_DONE" in r.getMessage()]
+    assert summary and "closed=1" in summary[0] and "failed=1" in summary[0]
+
+
+def test_force_close_marks_exit_submitted_so_the_book_stops_acting_on_it():
+    """C2: the flatten submitted broker closes but never marked the book, so
+    the managed phase kept managing flattened positions."""
+    loop, _, ex, _, book, _, _ = _build()
+    book.add(_open_pos())
+    loop.force_close_all(NOW)
+    ex.mark_exit_submitted.assert_called_once_with("AAA", "opening_drive")
+
+
+def test_force_close_drops_the_book_entry_when_there_is_no_mysql():
+    """With no MySQL there is no writer of record for closes, so nothing
+    would ever remove the row — the in-memory book is the only record."""
+    loop, _, _, _, book, _, _ = _build(mysql=None)
+    book.add(_open_pos())
+    loop.force_close_all(NOW)
+    assert book.count() == 0
+
+
+def test_force_close_leaves_the_row_for_the_reconciler_when_mysql_is_present():
+    """The reconciler is the writer of record: it closes the MySQL row from
+    the broker fill and the next book refresh drops it. Deleting the row here
+    would race that and lose the realised fill."""
+    loop, _, _, _, book, _, _ = _build(mysql=MagicMock())
+    book.add(_open_pos())
+    loop.force_close_all(NOW)
+    assert book.count() == 1
+
+
+def test_force_close_ignores_other_strategies_positions():
+    loop, alpaca, ex, _, book, _, _ = _build()
     book.add(_open_pos(symbol="TQQQ", setup="sma_slope"))
     assert loop.force_close_all(NOW) == 0
     assert not ex.close_position.called
+    assert not alpaca.list_orders.called
 
 
 def test_force_close_handles_positions_without_oco_ids():
     loop, alpaca, ex, _, book, _, _ = _build()
     book.add(_open_pos(stop_order_id=None, target_order_id=None))
+    _broker_open_orders(alpaca)          # broker reports nothing open
     assert loop.force_close_all(NOW) == 1
     assert not alpaca.cancel_order.called
     assert ex.close_position.called
@@ -413,7 +735,29 @@ def test_force_close_continues_after_one_symbol_fails():
     assert ex.close_position.call_count == 2
 
 
+def test_force_close_continues_the_sweep_after_a_cancel_sweep_failure():
+    """One symbol's list_orders failure must not abort the other symbols."""
+    loop, alpaca, ex, _, book, _, _ = _build()
+    book.add(_open_pos(symbol="AAA"))
+    book.add(_open_pos(symbol="BBB"))
+    alpaca.list_orders.side_effect = [RuntimeError("boom"), [{"id": "tp-b"}]]
+    assert loop.force_close_all(NOW) == 2
+    assert [c.args[0] for c in ex.close_position.call_args_list] == ["AAA", "BBB"]
+
+
 # ── day reset ──────────────────────────────────────────────────────────
+
+def test_reset_for_new_day_clears_the_just_exited_guard():
+    """OrderExecutor.submit refuses a symbol in book._just_exited, and nothing
+    else in this strategy clears it — so a symbol that stopped out once could
+    never be entered again for the container's lifetime."""
+    loop, _, _, _, book, _, _ = _build()
+    book.add(_open_pos(symbol="AAA"))
+    book.close("AAA", "opening_drive")
+    assert book.was_just_exited("AAA") is True
+    loop.reset_for_new_day()
+    assert book.was_just_exited("AAA") is False
+
 
 def test_reset_clears_day_state():
     loop, *_ = _build()
