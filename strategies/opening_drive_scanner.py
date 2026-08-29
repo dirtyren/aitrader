@@ -257,3 +257,199 @@ def compute_or_metrics(
         above_vwap=or_close > or_vwap,
         bar_coverage=covered / or_minutes,
     )
+
+
+@dataclass(frozen=True)
+class OpeningDriveFilters:
+    """Gate thresholds. These are unvalidated priors, not tuned values --
+    starting points for scripts/sweep_equity_strategy.py.
+
+    min_avg_daily_volume is IEX-DENOMINATED. gap_and_go uses 1_000_000,
+    which reads as a consolidated-volume figure; against IEX volume (~2% of
+    consolidated) that threshold rejects substantially the entire universe
+    and the scanner returns nothing, every day, without erroring.
+    """
+    min_price: float = 5.0
+    min_avg_daily_volume: float = 100_000.0
+    min_bar_coverage: float = 0.90
+    min_rvol_or: float = 2.0
+    min_disp_atr: float = 0.5
+    min_or_width_atr: float = 0.4
+    max_or_width_atr: float = 2.0
+    min_clv: float = 0.6
+    min_rs_atr: float = 0.0
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    symbol: str
+    sector: str
+    metrics: OpeningRangeMetrics
+    score: float
+    cut_ts: datetime
+    side: str = "long"
+
+
+def gate_reason(
+    m: OpeningRangeMetrics,
+    baseline: OpeningDriveBaseline,
+    f: OpeningDriveFilters,
+) -> str | None:
+    """Return the name of the first failing gate, or None if all pass.
+
+    Returns the gate NAME rather than a bool so rejections are diagnosable:
+    answering "why did the scanner return nothing today" from logs is
+    otherwise guesswork.
+    """
+    if m.or_close < f.min_price:
+        return "min_price"
+    if baseline.avg_daily_volume_20d < f.min_avg_daily_volume:
+        return "min_avg_daily_volume"
+    if m.bar_coverage < f.min_bar_coverage:
+        return "min_bar_coverage"
+    if m.rvol_or < f.min_rvol_or:
+        return "min_rvol_or"
+    if m.disp_atr < f.min_disp_atr:
+        return "min_disp_atr"
+    if m.or_width_atr < f.min_or_width_atr:
+        return "min_or_width_atr"
+    if m.or_width_atr > f.max_or_width_atr:
+        return "max_or_width_atr"
+    if m.clv < f.min_clv:
+        return "min_clv"
+    if not m.above_vwap:
+        return "above_vwap"
+    if m.rs_atr <= f.min_rs_atr:
+        return "min_rs_atr"
+    return None
+
+
+def rank_score(m: OpeningRangeMetrics) -> float:
+    """Two-factor rank: participation x idiosyncratic strength.
+
+    Deliberately mirrors GapScanner's gap_atr_mult * rvol shape so the
+    existing sweep harness applies unchanged and no new overfitting surface
+    is introduced. Everything else is a gate, not a rank term.
+    """
+    return m.rvol_or * m.rs_atr
+
+
+class OpeningDriveScanner:
+    """Holds the universe, baselines, and gate configuration.
+
+    run_cut is PURE: it takes already-fetched bars and prev-closes and
+    returns results. All network I/O lives in OpeningDriveLoop, which is
+    what makes the entire screen testable from fixtures.
+    """
+
+    BENCHMARK = "SPY"
+
+    def __init__(
+        self,
+        universe: dict[str, str],
+        baselines: dict[str, OpeningDriveBaseline],
+        filters: OpeningDriveFilters = OpeningDriveFilters(),
+        max_concurrent_positions: int = 5,
+        candidate_multiplier: float = 1.5,
+        baselines_max_age_days: int = 7,
+        or_minutes: int = 30,
+    ) -> None:
+        if not universe:
+            raise ValueError("OpeningDriveScanner universe is empty")
+        self.universe = dict(universe)
+        self.baselines = dict(baselines)
+        self.filters = filters
+        self.max_concurrent_positions = max_concurrent_positions
+        self.candidate_multiplier = candidate_multiplier
+        self.baselines_max_age_days = baselines_max_age_days
+        self.or_minutes = or_minutes
+
+    def request_symbols(self) -> list[str]:
+        """Universe plus the benchmark. SPY is not an index constituent, so
+        it must be appended explicitly or rs_atr is uncomputable."""
+        return sorted(self.universe) + [self.BENCHMARK]
+
+    def _spy_or_return(
+        self, bars_by_symbol: dict[str, list[Bar]],
+        prev_closes: dict[str, float],
+    ) -> float | None:
+        """Benchmark return, or None if the benchmark is unusable.
+
+        None must propagate to an empty watchlist. Substituting 0.0 would
+        turn a market-wide rally into five 'independent' stock signals --
+        precisely the failure rs_atr exists to prevent.
+        """
+        spy_bars = bars_by_symbol.get(self.BENCHMARK)
+        spy_prev = prev_closes.get(self.BENCHMARK, 0.0)
+        if not spy_bars or spy_prev <= 0:
+            return None
+        covered = sum(1 for b in spy_bars if b.volume > 0)
+        if covered / self.or_minutes < self.filters.min_bar_coverage:
+            return None
+        return or_return(spy_bars, spy_prev)
+
+    def run_cut(
+        self,
+        bars_by_symbol: dict[str, list[Bar]],
+        prev_closes: dict[str, float],
+        now: datetime,
+    ) -> list[ScanResult]:
+        """Apply gates and ranking; return the day's ranked watchlist."""
+        if baselines_too_old_to_trade(
+            self.baselines, now, self.baselines_max_age_days,
+        ):
+            logger.error(
+                "OD_BASELINES_TOO_STALE p95_age_days=%.1f max=%d "
+                "— refusing to cut",
+                baselines_age_p95_days(self.baselines, now) or float("inf"),
+                self.baselines_max_age_days * 2,
+            )
+            return []
+
+        spy_ret = self._spy_or_return(bars_by_symbol, prev_closes)
+        if spy_ret is None:
+            logger.error(
+                "OD_BENCHMARK_UNAVAILABLE symbol=%s — refusing to cut "
+                "(an unbenchmarked ranking would mistake a market-wide move "
+                "for independent stock signals)", self.BENCHMARK,
+            )
+            return []
+
+        candidates: list[ScanResult] = []
+        rejects: dict[str, int] = {}
+        for symbol, sector in self.universe.items():
+            baseline = self.baselines.get(symbol)
+            if baseline is None:
+                rejects["no_baseline"] = rejects.get("no_baseline", 0) + 1
+                continue
+            m = compute_or_metrics(
+                symbol,
+                bars_by_symbol.get(symbol),
+                baseline,
+                prev_closes.get(symbol, 0.0),
+                spy_ret,
+                or_minutes=self.or_minutes,
+            )
+            if m is None:
+                rejects["no_metrics"] = rejects.get("no_metrics", 0) + 1
+                continue
+            reason = gate_reason(m, baseline, self.filters)
+            if reason is not None:
+                rejects[reason] = rejects.get(reason, 0) + 1
+                continue
+            candidates.append(ScanResult(
+                symbol=symbol, sector=sector, metrics=m,
+                score=rank_score(m), cut_ts=now, side="long",
+            ))
+
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        top_n = max(1, math.ceil(
+            self.max_concurrent_positions * self.candidate_multiplier,
+        ))
+        kept = candidates[:top_n]
+        logger.info(
+            "OD_CUT_DONE qualifiers=%d kept=%d spy_or_return=%.4f rejects=%s",
+            len(candidates), len(kept), spy_ret,
+            dict(sorted(rejects.items(), key=lambda kv: -kv[1])),
+        )
+        return kept

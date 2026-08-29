@@ -7,13 +7,18 @@ import pytest
 
 from strategies.opening_drive_scanner import (
     OpeningDriveBaseline,
+    OpeningDriveFilters,
+    OpeningDriveScanner,
     OpeningRangeMetrics,
+    ScanResult,
     baselines_are_stale,
     baselines_too_old_to_trade,
     compute_or_metrics,
+    gate_reason,
     load_baselines,
     load_universe,
     or_return,
+    rank_score,
     save_baselines,
 )
 from scripts.build_universe_sp500_ndx100 import _parse_ndx100_df, _parse_sp500_df
@@ -340,3 +345,174 @@ def test_or_return_computes_fractional_return():
 def test_or_return_none_on_bad_input():
     assert or_return([], 100.0) is None
     assert or_return(_or_bars(), 0.0) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 5: gates, ranking, and run_cut
+# ---------------------------------------------------------------------------
+
+def _metrics(**kw) -> OpeningRangeMetrics:
+    """A candidate that passes every gate unless overridden."""
+    defaults = dict(
+        symbol="TEST", or_high=105.0, or_low=99.0, or_close=104.0,
+        or_volume=30_000.0, or_vwap=102.0, prev_close=100.0, atr_14d=4.0,
+        rvol_or=3.0, disp_atr=1.0, or_width_atr=1.5, clv=0.83, rs_atr=0.75,
+        above_vwap=True, bar_coverage=1.0,
+    )
+    defaults.update(kw)
+    return OpeningRangeMetrics(**defaults)
+
+
+F = OpeningDriveFilters()
+
+
+def test_clean_candidate_passes_all_gates():
+    assert gate_reason(_metrics(), _bl(), F) is None
+
+
+@pytest.mark.parametrize("field,value,expected_gate", [
+    ("or_close", 4.99, "min_price"),
+    ("bar_coverage", 0.80, "min_bar_coverage"),
+    ("rvol_or", 1.9, "min_rvol_or"),
+    ("disp_atr", 0.4, "min_disp_atr"),
+    ("or_width_atr", 0.39, "min_or_width_atr"),
+    ("or_width_atr", 2.01, "max_or_width_atr"),
+    ("clv", 0.59, "min_clv"),
+    ("above_vwap", False, "above_vwap"),
+    ("rs_atr", -0.01, "min_rs_atr"),
+])
+def test_each_gate_rejects_independently(field, value, expected_gate):
+    """One test per gate: a candidate failing ONLY that gate is rejected
+    naming that gate."""
+    reason = gate_reason(_metrics(**{field: value}), _bl(), F)
+    assert reason == expected_gate
+
+
+def test_adv_gate_rejects_on_baseline_not_metrics():
+    reason = gate_reason(_metrics(), _bl(avg_daily_volume_20d=99_999.0), F)
+    assert reason == "min_avg_daily_volume"
+
+
+def test_adv_gate_default_is_iex_denominated():
+    """Regression guard: 1_000_000 (a consolidated-volume figure) would
+    reject the entire universe on an IEX feed."""
+    assert F.min_avg_daily_volume == 100_000.0
+
+
+def test_negative_displacement_rejected_long_only():
+    assert gate_reason(_metrics(disp_atr=-1.0), _bl(), F) == "min_disp_atr"
+
+
+def test_rank_score_is_rvol_times_rs():
+    assert rank_score(_metrics(rvol_or=3.0, rs_atr=0.5)) == pytest.approx(1.5)
+
+
+# ── run_cut ────────────────────────────────────────────────────────────
+
+def _scanner(**kw) -> OpeningDriveScanner:
+    universe = {"AAA": "Tech", "BBB": "Tech", "CCC": "Energy"}
+    baselines = {s: _bl(avg_or_volume_20d=10_000.0, atr_14d=4.0)
+                 for s in list(universe) + ["SPY"]}
+    return OpeningDriveScanner(
+        universe=kw.get("universe", universe),
+        baselines=kw.get("baselines", baselines),
+        max_concurrent_positions=kw.get("max_concurrent_positions", 2),
+        or_minutes=3,
+    )
+
+
+def _bars_for(close: float, volume: float = 30_000.0) -> list[Bar]:
+    """3 one-minute bars ending at `close`, spanning a ~6-point range.
+
+    The third bar's low is clamped to min(102.0, close) so the bar remains
+    valid when close < 102.0 (e.g. SPY at 100.5). Bar.__post_init__ rejects
+    low > close, which the brief's literal 102.0 would trigger.
+    """
+    return [
+        _bar(0, 100.0, 102.0, 99.0, 101.0, volume / 3),
+        _bar(1, 101.0, max(105.0, close + 1), 100.5, 103.0, volume / 3),
+        _bar(2, 103.0, max(105.0, close + 1), min(102.0, close), close, volume / 3),
+    ]
+
+
+def test_run_cut_ranks_and_truncates_to_candidate_multiplier():
+    s = _scanner()          # max_concurrent 2 * 1.5 -> top 3
+    bars = {
+        "AAA": _bars_for(104.0, 60_000),   # highest rvol
+        "BBB": _bars_for(104.0, 30_000),
+        "CCC": _bars_for(104.0, 20_000),
+        "SPY": _bars_for(100.5, 30_000),
+    }
+    prev = {"AAA": 100.0, "BBB": 100.0, "CCC": 100.0, "SPY": 100.0}
+    out = s.run_cut(bars, prev, NOW)
+    assert [r.symbol for r in out] == ["AAA", "BBB", "CCC"]
+    assert out[0].score > out[1].score > out[2].score
+    assert all(isinstance(r, ScanResult) for r in out)
+    assert out[0].sector == "Tech"
+    assert out[0].side == "long"
+    assert out[0].cut_ts == NOW
+
+
+def test_run_cut_truncates_below_qualifier_count():
+    s = _scanner(max_concurrent_positions=1)      # ceil(1*1.5) -> 2
+    bars = {s_: _bars_for(104.0, 60_000 - i * 1000)
+            for i, s_ in enumerate(["AAA", "BBB", "CCC"])}
+    bars["SPY"] = _bars_for(100.5, 30_000)
+    prev = {s_: 100.0 for s_ in ["AAA", "BBB", "CCC", "SPY"]}
+    assert len(s.run_cut(bars, prev, NOW)) == 2
+
+
+def test_run_cut_returns_empty_when_spy_bars_missing():
+    """Load-bearing: no benchmark means no ranking, not an unbenchmarked one."""
+    s = _scanner()
+    bars = {"AAA": _bars_for(104.0), "BBB": _bars_for(104.0)}
+    prev = {"AAA": 100.0, "BBB": 100.0, "SPY": 100.0}
+    assert s.run_cut(bars, prev, NOW) == []
+
+
+def test_run_cut_returns_empty_when_spy_prev_close_missing():
+    s = _scanner()
+    bars = {"AAA": _bars_for(104.0), "SPY": _bars_for(100.5)}
+    assert s.run_cut(bars, {"AAA": 100.0}, NOW) == []
+
+
+def test_run_cut_returns_empty_when_spy_coverage_too_low():
+    s = _scanner()
+    spy = [_bar(0, 100.0, 100.6, 99.9, 100.5, 0.0)]   # zero-volume bar
+    bars = {"AAA": _bars_for(104.0), "SPY": spy}
+    prev = {"AAA": 100.0, "SPY": 100.0}
+    assert s.run_cut(bars, prev, NOW) == []
+
+
+def test_run_cut_refuses_when_baselines_too_stale():
+    s = _scanner(baselines={
+        k: _bl(days_old=900, avg_or_volume_20d=10_000.0)
+        for k in ["AAA", "BBB", "CCC", "SPY"]
+    })
+    bars = {"AAA": _bars_for(104.0), "SPY": _bars_for(100.5)}
+    prev = {"AAA": 100.0, "SPY": 100.0}
+    assert s.run_cut(bars, prev, NOW) == []
+
+
+def test_run_cut_skips_symbols_without_baselines():
+    s = _scanner(baselines={"SPY": _bl(avg_or_volume_20d=10_000.0),
+                            "AAA": _bl(avg_or_volume_20d=10_000.0)})
+    bars = {"AAA": _bars_for(104.0), "BBB": _bars_for(104.0),
+            "SPY": _bars_for(100.5)}
+    prev = {"AAA": 100.0, "BBB": 100.0, "SPY": 100.0}
+    assert [r.symbol for r in s.run_cut(bars, prev, NOW)] == ["AAA"]
+
+
+def test_run_cut_never_returns_spy_as_a_candidate():
+    s = _scanner()
+    bars = {"AAA": _bars_for(104.0), "SPY": _bars_for(120.0, 90_000)}
+    prev = {"AAA": 100.0, "SPY": 100.0}
+    assert "SPY" not in [r.symbol for r in s.run_cut(bars, prev, NOW)]
+
+
+def test_run_cut_drops_candidates_weaker_than_spy():
+    """AAA up 0.5% while SPY is up 4% -> negative rs_atr -> gated out."""
+    s = _scanner()
+    bars = {"AAA": _bars_for(100.5), "SPY": _bars_for(104.0)}
+    prev = {"AAA": 100.0, "SPY": 100.0}
+    assert s.run_cut(bars, prev, NOW) == []
