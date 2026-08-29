@@ -30,21 +30,50 @@ Only three things are simulated, and they are all confined to this file:
   3. ``RecordingExecutor`` — a transparent shim around the real
      ``OrderExecutor`` that records trade rows. It makes no decisions.
 
-FILL MODEL (every one of these is stated in the report, with the direction
-it biases the result):
+SIDE. ``--side short`` inverts the ACTION, not the trigger: the screen, the
+gates and the trigger test are untouched, ``OpeningDriveSetup`` mirrors stop
+and target around the entry, and ``PositionManager`` already manages both
+sides. Default ``long``, so existing behaviour is byte-identical.
+
+FILL MODEL. Two modes. The optimistic one is the default and is what every
+earlier run used; ``--realistic-costs`` is the honest one. Every assumption
+is stated in the report with the direction it biases the result.
+
+  OPTIMISTIC (default):
 
   * Entry: the trigger bar's CLOSE, moved adversely by ``slippage_bps``.
     Live the entry is a market order sent after the bar closes, so the real
     fill is the next print — optimistic by roughly a spread.
   * Stop: fills exactly at the stop price. Optimistic: real stops gap
     through, especially on the intraday momentum names this screen selects.
-  * Target: fills exactly at the target price (it is a resting sell limit,
-    so this one is fair).
-  * Stop-before-target when one bar spans both. This is not a harness
-    choice: ``PositionManager._check_position`` tests the stop first, and
-    that is the production code path.
+  * Target: fills exactly at the target price (it is a resting limit, so
+    this one is fair).
   * time_stop / 15:30 flatten: the bar's close, moved adversely by
     ``slippage_bps`` (market orders).
+
+  --realistic-costs, additionally:
+
+  * Entry: adverse by ``slippage_bps`` PLUS 0.05 x the trigger bar's range.
+    A market order sent on the close of a bar that just travelled that range
+    does not get the close.
+  * Stop: adverse by 0.10 x the average 1-minute TRUE RANGE over that
+    symbol's own opening range — a per-bar figure, deliberately not
+    ``atr_14d / 390``, which would understate an opening-range gap by an
+    order of magnitude. And if the bar OPENED already beyond the stop, the
+    fill is the open when that is worse. This is the gap-through the
+    optimistic model ignores entirely.
+  * Target: still exactly at the target, still only when the bar actually
+    traded through it (``PositionManager`` checks ``high >= target`` /
+    ``low <= target`` before emitting). A resting limit, so this is fair.
+  * Short borrow: modelled as ZERO. Every position is intraday-only, so
+    there is no overnight borrow — but a hard-to-borrow name would break
+    that assumption and this harness cannot see borrow rates.
+
+  BOTH MODES:
+
+  * Stop-before-target when one bar spans both. Not a harness choice:
+    ``PositionManager._check_position`` tests the stop first, and that is
+    the production code path. The favourable side is never taken.
   * ``commission_per_share`` charged on both legs.
 
 BOUNDARY RULE. Alpaca's ``end`` is inclusive, so every window request
@@ -64,6 +93,10 @@ Usage:
 
     # parameter override for sweeps (repeatable)
     ... --set scanner.filters.min_avg_daily_volume=50000
+
+    # the inverted hypothesis, honest costs, on the hold-out
+    ... --start 2020-07-27 --end 2023-08-31 \
+        --side short --realistic-costs --equity 100000
 """
 from __future__ import annotations
 
@@ -121,6 +154,34 @@ def ny_dt(day: date, hh: int, mm: int) -> datetime:
 
 def ny_date(ts: datetime) -> date:
     return ts.astimezone(_NY).date()
+
+
+def avg_minute_true_range(bars: Sequence[Bar]) -> float:
+    """Mean 1-minute TRUE range over ``bars``.
+
+    True range, not high-low: a 1-minute bar that gapped from the previous
+    close is exactly the case a stop-slippage estimate has to capture, and
+    high-low alone would miss it.
+
+    This is the per-bar volatility figure the realistic stop model needs.
+    ``atr_14d / 390`` is NOT a substitute — it spreads a whole day's range
+    evenly across 390 minutes, whereas the opening range is by far the most
+    volatile stretch of the session, so it would understate stop slippage on
+    precisely the bars where stops actually fire.
+    """
+    if not bars:
+        return 0.0
+    trs: list[float] = []
+    prev_close: float | None = None
+    for b in bars:
+        if prev_close is None:
+            trs.append(b.high - b.low)
+        else:
+            trs.append(max(b.high - b.low,
+                           abs(b.high - prev_close),
+                           abs(b.low - prev_close)))
+        prev_close = b.close
+    return sum(trs) / len(trs)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -296,16 +357,26 @@ class BacktestBroker:
     the real ``OrderExecutor`` then stamps onto the ``OpenPosition``. Buys
     fill above the mark and sells below it by ``slippage_bps`` — never the
     favourable direction.
+
+    ``extra_adverse`` is an absolute per-share penalty applied on top, in the
+    same adverse direction. The driver sets it only on the trigger bar in the
+    entry window (0.05 x bar range under ``--realistic-costs``); every other
+    ``set_mark`` call resets it to zero, which is why it cannot leak into an
+    exit. Exit prices are in any case recorded by ``TradeRecorder``, not read
+    back off this object.
     """
 
     def __init__(self, slippage_bps: float) -> None:
         self.slip = float(slippage_bps) / 10_000.0
         self.marks: dict[str, float] = {}
+        self.extra_adverse: dict[str, float] = {}
         self._seq = 0
         self.orders: list[dict] = []
 
-    def set_mark(self, symbol: str, price: float) -> None:
+    def set_mark(self, symbol: str, price: float,
+                 extra_adverse: float = 0.0) -> None:
         self.marks[symbol] = float(price)
+        self.extra_adverse[symbol] = float(extra_adverse)
 
     def _next(self, prefix: str) -> str:
         self._seq += 1
@@ -319,7 +390,13 @@ class BacktestBroker:
         mark = self.marks.get(symbol)
         if mark is None:
             raise RuntimeError(f"no mark set for {symbol}")
-        fill = mark * (1 + self.slip) if side == "buy" else mark * (1 - self.slip)
+        extra = self.extra_adverse.get(symbol, 0.0)
+        # Adverse means worse for the position being taken: higher when
+        # buying, lower when selling. Never the favourable direction.
+        if side == "buy":
+            fill = mark * (1 + self.slip) + extra
+        else:
+            fill = max(mark * (1 - self.slip) - extra, 0.0)
         order = {
             "id": self._next("ord"), "status": "filled",
             "filled_avg_price": fill, "symbol": symbol, "qty": qty,
@@ -373,6 +450,7 @@ class BacktestBroker:
 class TradeRow:
     session: str
     symbol: str
+    side: str
     sector: str
     rank: int
     score: float
@@ -406,6 +484,7 @@ class TradeRow:
 class _Live:
     pos_symbol: str
     setup: str
+    side: str
     entry_px: float
     qty: float
     initial_stop: float
@@ -420,15 +499,24 @@ class TradeRecorder:
     """Records trade rows. Makes no decisions and never mutates the book."""
 
     def __init__(self, slippage_bps: float,
-                 commission_per_share: float) -> None:
+                 commission_per_share: float,
+                 realistic_costs: bool = False) -> None:
         self.slip = float(slippage_bps) / 10_000.0
         self.commission_per_share = float(commission_per_share)
+        self.realistic_costs = bool(realistic_costs)
         self.rows: list[TradeRow] = []
         self.live: dict[tuple[str, str], _Live] = {}
         self.current_ts: datetime | None = None
         self.session: date | None = None
         self.scan_by_symbol: dict[str, tuple[ScanResult, int]] = {}
         self.marks: dict[str, float] = {}
+        # Absolute per-share stop-slippage budget per symbol for this session:
+        # 0.10 x the mean 1-minute true range of that symbol's own opening
+        # range. Populated by the driver only under --realistic-costs.
+        self.stop_slip: dict[str, float] = {}
+        # The bar currently being processed. Needed for the realistic stop
+        # rule's "if the bar OPENED beyond the stop, fill at the open".
+        self.current_bar: Bar | None = None
         self.unpriced_flattens = 0
 
     def on_open(self, pos) -> None:
@@ -436,7 +524,8 @@ class TradeRecorder:
         if scan is None:
             return
         self.live[(pos.symbol, pos.setup)] = _Live(
-            pos_symbol=pos.symbol, setup=pos.setup, entry_px=pos.entry_px,
+            pos_symbol=pos.symbol, setup=pos.setup, side=pos.side,
+            entry_px=pos.entry_px,
             qty=pos.qty, initial_stop=float(pos.initial_stop_px),
             target=float(pos.target_px), opened_at=pos.opened_at,
             scan=scan, rank=rank,
@@ -447,15 +536,39 @@ class TradeRecorder:
         if live is not None:
             live.breakeven_moved = True
 
-    def exit_price_for(self, kind: str, action_price: float) -> float:
-        """Apply the fill model to an exit.
+    def exit_price_for(self, kind: str, action_price: float,
+                       side: str = "long", symbol: str | None = None,
+                       bar: Bar | None = None) -> float:
+        """Apply the fill model to an exit. Direction-mirrored by ``side``.
 
-        stop / target rest at the broker and fill at their level (the stop
-        assumption is optimistic and is called out in the report).
-        time_stop and eod_flat are market orders and pay slippage.
+        target
+            Fills exactly at its level in both modes. It is a resting limit,
+            and ``PositionManager`` only emits it once the bar has actually
+            traded through the level, so this is fair rather than optimistic.
+        time_stop / eod_flat
+            Market orders: the bar close moved adversely by
+            ``slippage_bps`` — down when closing a long, UP when closing a
+            short (closing a short is a buy).
+        stop
+            Optimistic mode fills exactly at the stop level, which real
+            stops do not do. Realistic mode fills adverse by
+            ``stop_slip[symbol]`` and, if the bar OPENED already beyond the
+            stop, takes the open when that is worse of the two.
         """
         if kind in ("time_stop", "eod_flat"):
-            return action_price * (1 - self.slip)
+            return (action_price * (1 - self.slip) if side == "long"
+                    else action_price * (1 + self.slip))
+        if kind == "stop" and self.realistic_costs:
+            slip = self.stop_slip.get(symbol or "", 0.0)
+            if side == "long":
+                px = action_price - slip
+                if bar is not None:
+                    px = min(px, bar.open)
+                return px
+            px = action_price + slip
+            if bar is not None:
+                px = max(px, bar.open)
+            return px
         return action_price
 
     def on_exit(self, symbol: str, setup: str, kind: str,
@@ -464,14 +577,23 @@ class TradeRecorder:
         if live is None:
             return
         exit_ts = ts or self.current_ts or live.opened_at
-        exit_px = self.exit_price_for(kind, action_price)
-        risk = live.entry_px - live.initial_stop
-        gross = (exit_px - live.entry_px) * live.qty
+        bar = self.current_bar
+        if bar is not None and bar.symbol != symbol:
+            bar = None
+        exit_px = self.exit_price_for(kind, action_price, side=live.side,
+                                      symbol=symbol, bar=bar)
+        # abs(): a short's initial stop sits ABOVE its entry. The magnitude is
+        # the same structural distance either way, which is what makes R
+        # comparable across the two sides.
+        risk = abs(live.entry_px - live.initial_stop)
+        sign = 1.0 if live.side == "long" else -1.0
+        gross = sign * (exit_px - live.entry_px) * live.qty
         commission = self.commission_per_share * live.qty * 2.0
         net = gross - commission
         m = live.scan.metrics
         self.rows.append(TradeRow(
-            session=str(self.session), symbol=symbol, sector=live.scan.sector,
+            session=str(self.session), symbol=symbol, side=live.side,
+            sector=live.scan.sector,
             rank=live.rank, score=live.scan.score,
             rvol_or=m.rvol_or, disp_atr=m.disp_atr,
             or_width_atr=m.or_width_atr, clv=m.clv, rs_atr=m.rs_atr,
@@ -483,7 +605,7 @@ class TradeRecorder:
             exit_ts=exit_ts.isoformat(), exit_px=exit_px, exit_reason=kind,
             breakeven_moved=live.breakeven_moved,
             hold_minutes=(exit_ts - live.opened_at).total_seconds() / 60.0,
-            R_gross=((exit_px - live.entry_px) / risk) if risk > 0 else 0.0,
+            R_gross=(sign * (exit_px - live.entry_px) / risk) if risk > 0 else 0.0,
             R_net=(net / (risk * live.qty)) if risk > 0 and live.qty > 0 else 0.0,
             pnl_gross=gross, commission=commission, pnl_net=net,
         ))
@@ -717,11 +839,17 @@ class OpeningDriveBacktest:
         *,
         baselines_for: Callable[[date], dict[str, OpeningDriveBaseline]],
         screen_only: bool = False,
+        side: str = "long",
+        realistic_costs: bool = False,
     ) -> None:
+        if side not in ("long", "short"):
+            raise ValueError(f"side must be 'long' or 'short', got {side!r}")
         self.cfg = cfg
         self.source = source
         self.universe = universe
         self.screen_only = screen_only
+        self.side = side
+        self.realistic_costs = bool(realistic_costs)
         self.start_equity = float(equity)
 
         eq_raw = cfg["asset_classes"]["equity"]
@@ -766,11 +894,13 @@ class OpeningDriveBacktest:
             candidate_multiplier=scan_cfg["ranking"]["candidate_multiplier"],
             premarket_bar_timeframe=cfg["scheduler"]["bar_timeframe"],
             regular_bar_timeframe=cfg["scheduler"]["regular_session_timeframe"],
+            side=side,
         )
 
         self.broker = BacktestBroker(self.slippage_bps)
         self.recorder = TradeRecorder(self.slippage_bps,
-                                      self.commission_per_share)
+                                      self.commission_per_share,
+                                      realistic_costs=self.realistic_costs)
         self.book = PositionBook()
         self.ledger = DailyLedger(initial_equity=self.start_equity)
 
@@ -874,6 +1004,8 @@ class OpeningDriveBacktest:
         self.recorder.scan_by_symbol = {}
         self.recorder.marks = {}
         self.recorder.live = {}
+        self.recorder.stop_slip = {}
+        self.recorder.current_bar = None
         self.loop.executor.reset_cycle()
 
         baselines = self.baselines_for(day)
@@ -907,6 +1039,24 @@ class OpeningDriveBacktest:
 
         symbols = [r.symbol for r in watchlist]
 
+        if self.realistic_costs:
+            # Per-symbol stop-slippage budget for this session: 0.10 x the
+            # mean 1-minute true range of that symbol's OWN opening range.
+            # This re-reads the exact window run_cut just requested (same
+            # timeframe/start/end, so the same CachedBarSource window), for a
+            # subset of its symbols — a cache hit, never an extra API call.
+            or_start, or_end = self.loop.or_window(cut_t)
+            or_bars = self._filter_lt(
+                self.source.get_bars_multi(symbols, "equity",
+                                           self.od_cfg.premarket_bar_timeframe,
+                                           or_start, or_end),
+                or_end,
+            )
+            self.recorder.stop_slip = {
+                sym: 0.10 * avg_minute_true_range(bars)
+                for sym, bars in or_bars.items()
+            }
+
         # ── entry window 10:00-11:00 on 1-minute bars ──────────────────
         entry_bars = self._filter_lt(
             self.source.get_bars_multi(
@@ -927,6 +1077,7 @@ class OpeningDriveBacktest:
                 if bar is None or not self.book.get_all(sym):
                     continue
                 self.recorder.marks[sym] = bar.close
+                self.recorder.current_bar = bar
                 snapshot = {p.setup: p for p in self.book.get_all(sym)}
                 actions = self.entry_position_manager.on_bar(sym, bar)
                 if actions:
@@ -942,7 +1093,14 @@ class OpeningDriveBacktest:
                 if bar is None:
                     continue
                 self.recorder.marks[sym] = bar.close
-                self.broker.set_mark(sym, bar.close)
+                self.recorder.current_bar = bar
+                # The trigger-bar entry penalty. Only the entry window sets a
+                # non-zero extra; every other set_mark call clears it.
+                self.broker.set_mark(
+                    sym, bar.close,
+                    extra_adverse=(0.05 * (bar.high - bar.low)
+                                   if self.realistic_costs else 0.0),
+                )
                 setup = self.loop.day.setups.get(sym)
                 before = setup.state if setup else None
                 n_pos = self.book.count()
@@ -979,6 +1137,7 @@ class OpeningDriveBacktest:
                     if bar is None:
                         continue
                     self.recorder.marks[pos.symbol] = bar.close
+                    self.recorder.current_bar = bar
                     self.broker.set_mark(pos.symbol, bar.close)
                     self.loop.manage_open(pos.symbol, bar)
 
@@ -987,6 +1146,9 @@ class OpeningDriveBacktest:
         # 15:30 (bar timestamps are bar-open), so nothing after the flatten
         # decision informs its price.
         self.recorder.current_ts = eod_t
+        # The flatten is priced off recorder.marks, not off a bar; clear the
+        # bar so no stale one can influence a fill.
+        self.recorder.current_bar = None
         self.loop.force_close_all(eod_t)
         # Anything the flatten could not price (no bars at all) must not be
         # left silently open in the recorder's view.
@@ -1061,6 +1223,10 @@ def summarize(out: BacktestOutcome) -> dict:
     reasons = {k: 0 for k in EXIT_REASONS}
     for r in out.trades:
         reasons[r.exit_reason] = reasons.get(r.exit_reason, 0) + 1
+    se_mean_R = (
+        statistics.stdev(r_net) / (len(r_net) ** 0.5) if len(r_net) > 1
+        else 0.0
+    )
 
     return {
         **base,
@@ -1075,6 +1241,15 @@ def summarize(out: BacktestOutcome) -> dict:
         "entries": sum(s.entries for s in out.sessions),
         "median_R": statistics.median(r_net) if r_net else 0.0,
         "mean_R": statistics.fmean(r_net) if r_net else 0.0,
+        # Standard error of the mean R and its t-statistic against zero. This
+        # is the number the pre-registered decision rule is stated in, so it
+        # is computed here rather than in a notebook: sd / sqrt(n), with the
+        # sample (n-1) standard deviation.
+        "sd_R": statistics.stdev(r_net) if len(r_net) > 1 else 0.0,
+        "se_mean_R": se_mean_R,
+        "t_mean_R": (
+            statistics.fmean(r_net) / se_mean_R if se_mean_R > 0 else 0.0
+        ),
         "total_return_pct": (
             (end_equity / out.start_equity - 1.0) * 100.0
             if out.start_equity else 0.0
@@ -1111,7 +1286,9 @@ def print_summary(label: str, summary: dict, equity: float,
               f"{summary['entries']}")
         print(f"  trades                   : {summary['trades']}")
         print(f"  win rate                 : {summary['win_rate'] * 100:.1f}%")
-        print(f"  mean R (net)             : {summary['mean_R']:+.3f}")
+        print(f"  mean R (net)             : {summary['mean_R']:+.3f}"
+              f"  (se {summary['se_mean_R']:.3f}, "
+              f"t {summary['t_mean_R']:+.2f})")
         print(f"  median R (net)           : {summary['median_R']:+.3f}")
         print(f"  total return             : {summary['total_return_pct']:+.2f}%"
               f"  (${summary['net_pnl']:+,.2f})")
@@ -1200,6 +1377,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--equity", type=float, default=100_000.0,
                     help="backtest equity; the live account is NOT read")
     ap.add_argument("--screen-only", action="store_true")
+    ap.add_argument("--side", choices=("long", "short"), default="long",
+                    help="which way to trade the trigger. Detection is "
+                         "identical either way; only stop/target placement "
+                         "mirrors. Default long — existing behaviour.")
+    ap.add_argument("--realistic-costs", action="store_true",
+                    help="entry pays 0.05 x trigger-bar range on top of "
+                         "slippage_bps; stops slip 0.10 x the mean 1-minute "
+                         "true range of the opening range and fill at the "
+                         "bar open when it gapped through. Short borrow is "
+                         "modelled as zero (intraday only).")
     ap.add_argument("--set", action="append", default=[], dest="overrides",
                     metavar="KEY=VALUE")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
@@ -1257,6 +1444,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("no trading sessions in range")
     print(f"sessions: {len(sessions)}  ({sessions[0]} .. {sessions[-1]})")
     print(f"equity used: ${args.equity:,.2f}")
+    print(f"side: {args.side}   cost model: "
+          f"{'realistic' if args.realistic_costs else 'optimistic'}")
 
     prev_of: dict[date, date] = {}
     all_days = sorted({
@@ -1287,12 +1476,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     bt = OpeningDriveBacktest(
         cfg, source, universe, args.equity,
         baselines_for=baselines_for, screen_only=args.screen_only,
+        side=args.side, realistic_costs=args.realistic_costs,
     )
     out = bt.run(sessions)
     summary = summarize(out)
+    summary["side"] = args.side
+    summary["realistic_costs"] = args.realistic_costs
 
     label = args.tag or (
-        f"{args.start}_{args.end}"
+        f"{args.start}_{args.end}_{args.side}"
+        + ("_realistic" if args.realistic_costs else "_optimistic")
         + ("_screen" if args.screen_only else "")
     )
     print_summary(label, summary, args.equity, args.screen_only)

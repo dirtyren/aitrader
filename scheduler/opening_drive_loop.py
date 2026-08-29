@@ -66,6 +66,10 @@ class OpeningDriveConfig:
     premarket_bar_timeframe: str = "1Min"
     regular_bar_timeframe: str = "5Min"
     lookback_sessions: int = 20
+    # Which way the trigger is traded. Detection is identical either way — see
+    # OpeningDriveSetup's SIDE note. The live trader leaves this at "long";
+    # "short" is used by scripts/backtest_opening_drive.py --side short.
+    side: str = "long"
 
 
 @dataclass
@@ -219,6 +223,7 @@ class OpeningDriveLoop:
                 target_R=self.cfg.target_R,
                 min_stop_atr_frac=self.cfg.min_stop_atr_frac,
                 atr_mult_stop_cap=self.cfg.atr_mult_stop_cap,
+                side=self.cfg.side,
             )
             # Seed the context with the OR bars so ctx.vwap is SESSION VWAP
             # from 09:30, not the VWAP of post-cut bars only. Without this
