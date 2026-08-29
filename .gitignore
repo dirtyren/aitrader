@@ -11,6 +11,13 @@ __pycache__/
 *.pyc
 nginx/certs/
 
+# Emergency halt lock file (risk/circuit_breakers.py writes LOCK_FILE_PATH,
+# default ./lock.file). It must NEVER be committed: SystemHaltedFilter
+# rejects every entry while it exists, so a stray `git add -A` would halt a
+# live strategy on the next deploy.
+lock.file
+lock.file.tmp
+
 # Local virtualenvs
 .venv/
 .venv-mac/

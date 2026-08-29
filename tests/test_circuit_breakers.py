@@ -1,6 +1,8 @@
 """Tests for risk.circuit_breakers.CircuitBreaker."""
 
 import os
+import pathlib
+
 import pytest
 
 os.environ.setdefault("TRADING_ENV", "test")
@@ -38,10 +40,23 @@ class TestCircuitBreakerLevels:
         assert result["multiplier"] == 0.0
         assert result["trading_suspended"]
 
-    def test_level3_emergency_shutdown(self):
+    def test_level3_emergency_shutdown(self, tmp_path, monkeypatch):
+        """The halt writes LOCK_FILE_PATH (default ./lock.file) and exits.
+
+        Pointed at tmp_path on purpose: the default drops an untracked
+        lock.file in the repo root, and SystemHaltedFilter rejects every entry
+        while such a file exists — so one `git add -A` would ship a file that
+        halts a live strategy.
+        """
+        lock_path = tmp_path / "lock.file"
+        monkeypatch.setenv("LOCK_FILE_PATH", str(lock_path))
         cb = self._make(peak=100_000.0)
         with pytest.raises(SystemExit):
             cb.check(89_000.0, daily_pnl_pct=0.0)
+        assert lock_path.exists()
+        assert not (pathlib.Path.cwd() / "lock.file").exists(), (
+            "the halt wrote lock.file into the repo root"
+        )
 
     def test_level1_boundary_not_triggered(self):
         cb = self._make()
