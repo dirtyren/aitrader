@@ -42,14 +42,15 @@ from risk.filters import (
     RiskBudgetFilter, SectorExposureFilter,
 )
 from risk.manager import RiskManager
-from risk.pdt_guard import check_pdt_headroom
+from risk.pdt_guard import PDTViolation, check_pdt_headroom
 from risk.sizing import SizingConfig
 from scheduler.opening_drive_loop import OpeningDriveConfig, OpeningDriveLoop
 from state.daily_ledger import DailyLedger
 from state.mysql_store import MySQLStore
 from state.position_book import PositionBook
 from strategies.opening_drive_scanner import (
-    OpeningDriveFilters, OpeningDriveScanner, load_baselines, load_universe,
+    OpeningDriveFilters, OpeningDriveScanner, baselines_age_p95_days,
+    baselines_are_stale, load_baselines, load_universe,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,10 +71,16 @@ def _ny_dt(day: datetime, hh: int, mm: int) -> datetime:
     return _NY_TZ.localize(naive).astimezone(timezone.utc)
 
 
+def _now() -> datetime:
+    """Current UTC time. One indirection so run_day is testable on a fake
+    clock without patching datetime globally."""
+    return datetime.now(timezone.utc)
+
+
 def _sleep_until(target: datetime, sleeper) -> None:
     """Sleep in 1-second chunks until ``target``, honoring ``_shutdown``."""
     while not _shutdown:
-        remaining = (target - datetime.now(timezone.utc)).total_seconds()
+        remaining = (target - _now()).total_seconds()
         if remaining <= 0:
             return
         sleeper(min(remaining, 1.0))
@@ -127,6 +134,70 @@ def build_pipeline(cfg: dict, sector_map: dict[str, str], alpaca=None,
     return FilterPipeline(filters)
 
 
+def pdt_guard_enabled(cfg: dict) -> bool:
+    """Whether the PDT boot precondition must run, cross-checked against env.
+
+    ``risk.pdt_guard_enabled`` alone is a comment with a colon: nothing tied
+    it to ``system.trading_env`` / ``broker.paper_trading``, both already in
+    the same file, so flipping the strategy to live while leaving the flag
+    false would silently ship without the only guard standing between a
+    sub-$25k margin account and a 90-day closing-only restriction.
+
+    Rule: the guard runs unless BOTH env markers say paper. A disagreement
+    between them is treated as live (fail safe) and logged.
+    """
+    configured = bool(cfg.get("risk", {}).get("pdt_guard_enabled", True))
+    env = str(cfg.get("system", {}).get("trading_env", "")).strip().lower()
+    paper_flag = bool(cfg.get("broker", {}).get("paper_trading", False))
+    env_is_paper = env == "paper"
+    if env_is_paper != paper_flag:
+        logger.warning(
+            "PDT_GUARD_ENV_MISMATCH trading_env=%r paper_trading=%r — "
+            "treating this as LIVE and forcing the PDT guard on",
+            env, paper_flag,
+        )
+    is_paper = env_is_paper and paper_flag
+    if not is_paper and not configured:
+        logger.warning(
+            "PDT_GUARD_FORCED_ON trading_env=%r paper_trading=%r — "
+            "risk.pdt_guard_enabled is false but this is not a paper "
+            "configuration; the guard cannot be disabled here",
+            env, paper_flag,
+        )
+    return configured or not is_paper
+
+
+def _halt_forever(reason: str) -> None:
+    """Report a fatal boot precondition and stop, WITHOUT crash-looping.
+
+    The compose service is ``restart: unless-stopped``, which restarts the
+    container on every exit code — so exiting on a PDT violation produces an
+    infinite restart loop that hides the message rather than surfacing it.
+    Instead we log the reason, refuse to trade, and stay parked (re-logging
+    every 15 minutes) until an operator stops the container. SIGTERM/SIGINT
+    still exit immediately because the handlers are installed before boot.
+    """
+    logger.critical("FATAL_BOOT_PRECONDITION halted=true reason=%s", reason)
+    logger.critical(
+        "OPENING_DRIVE_HALTED — no orders will be placed. Fix the condition "
+        "and restart the container; this process will not trade.",
+    )
+    while not _shutdown:
+        _time.sleep(60)
+        _halt_heartbeat(reason)
+
+
+_HALT_HEARTBEAT_EVERY = 15
+_halt_ticks = 0
+
+
+def _halt_heartbeat(reason: str) -> None:
+    global _halt_ticks
+    _halt_ticks += 1
+    if _halt_ticks % _HALT_HEARTBEAT_EVERY == 0:
+        logger.critical("OPENING_DRIVE_STILL_HALTED reason=%s", reason)
+
+
 def refresh_equity_and_cash(alpaca, risk_manager) -> None:
     """Push broker equity AND available cash into the risk manager.
 
@@ -169,6 +240,46 @@ def refresh_baselines_post_close(loop, now: datetime) -> int:
     logger.info("OD_BASELINE_REFRESH_DONE n=%d path=%s",
                 len(built), loop.cfg.baselines_path)
     return len(built)
+
+
+def refresh_baselines_if_stale(loop, now: datetime) -> int:
+    """Boot-time (pre-cut) staleness fallback. Returns symbols written, or 0.
+
+    Spec 5 puts a staleness check with refresh-as-fallback in the 09:00 boot
+    phase; main_gap_and_go.py does the same thing in its own run_day. Without
+    a caller, ``baselines_are_stale`` existed only in tests and
+    ``baselines_max_age_days: 7`` was inert config — baselines aged 7-14 days
+    were used silently, with no refresh and no warning, until they crossed the
+    2x hard floor where the scanner refuses to cut at all.
+
+    This is a FALLBACK, not the primary build: the 16:10 post-close phase is.
+    It fires when baselines are missing (a fresh deploy) or older than
+    ``baselines_max_age_days``, which is what lets a container started at
+    09:15 with no baselines file trade the same day.
+    """
+    baselines = loop.scanner.baselines
+    max_age = loop.cfg.baselines_max_age_days
+    if not baselines_are_stale(baselines, now, max_age):
+        logger.info(
+            "OD_BASELINES_FRESH n=%d p95_age_days=%.2f max=%d",
+            len(baselines), baselines_age_p95_days(baselines, now) or 0.0,
+            max_age,
+        )
+        return 0
+    age = baselines_age_p95_days(baselines, now)
+    logger.warning(
+        "OD_BASELINES_STALE_REFRESHING n=%d p95_age_days=%s max=%d — running "
+        "the post-close rebuild now as a boot-time fallback",
+        len(baselines), "none" if age is None else f"{age:.2f}", max_age,
+    )
+    written = refresh_baselines_post_close(loop, now)
+    if written == 0:
+        logger.error(
+            "OD_BASELINES_STALE_REFRESH_FAILED — the cut will run against "
+            "stale or absent baselines (the scanner refuses to cut past 2x "
+            "max_age_days)",
+        )
+    return written
 
 
 def build_loop(cfg: dict, log: logging.Logger):
@@ -227,7 +338,7 @@ def build_loop(cfg: dict, log: logging.Logger):
     check_pdt_headroom(
         account,
         min_equity=float(cfg["risk"].get("pdt_min_equity", 25_000)),
-        enabled=bool(cfg["risk"].get("pdt_guard_enabled", True)),
+        enabled=pdt_guard_enabled(cfg),
     )
 
     mysql = MySQLStore(strategy_name=system_name, logger=log)
@@ -295,6 +406,9 @@ def build_loop(cfg: dict, log: logging.Logger):
         alpaca_client=alpaca, alpaca_data=data,
         risk_manager=risk_manager, executor=executor, book=book,
         position_manager=pm, strategy_name=system_name,
+        # MySQL is the writer of record for closes: the loop rebuilds the book
+        # from it each managed-phase iteration and before each cut.
+        mysql_store=mysql,
     )
     # Seed cash/equity immediately so the very first sizing call is correct.
     refresh_equity_and_cash(alpaca, risk_manager)
@@ -319,7 +433,7 @@ def _fetch_entry_bars(loop: OpeningDriveLoop, now: datetime,
         sym = r.symbol
         try:
             bars = loop.data.get_bars(
-                sym, "equity", "1Min",
+                sym, "equity", loop.cfg.premarket_bar_timeframe,
                 start=since, end=now, use_cache=False,
             )
         except Exception as exc:
@@ -341,28 +455,50 @@ def run_day(
     """Drive a single Opening Drive trading day through all phases.
 
     Phase sequence (America/New_York):
-        sleep → 10:00  refresh equity/cash
-        10:00          run_cut → watchlist + armed setups
-        10:00–11:00    1-min bar window; on_bar per watchlist symbol
-        11:00          switch_to_regular_session_bars()
-        11:00–15:30    managed phase on 5-min bars; refresh equity/cash each loop
-        15:30          force_close_all()
-        16:10          refresh_baselines_post_close()  (in-process, no restart)
+        boot (pre-cut)  reset_cycle, book refresh, baseline staleness fallback
+        sleep → 10:00
+        10:00           refresh equity/cash, run_cut → watchlist + setups
+        10:00–11:00     1-min bar window; per iteration: reset_cycle,
+                        refresh equity/cash, on_bar per watchlist symbol
+        11:00           switch_to_regular_session_bars()
+        11:00–15:30     managed phase on 5-min bars; per iteration: refresh
+                        equity/cash and rebuild the book from MySQL
+        15:30           force_close_all()
+        16:10           refresh_baselines_post_close()  (once per day)
+        tail            sleep until the NEXT session's boot window
 
-    Mirrors main_gap_and_go.py's run_day scheduling shape. Three deliberate
+    Mirrors main_gap_and_go.py's run_day scheduling shape. Deliberate
     differences: (a) switch_to_regular_session_bars at 11:00 (not 09:30),
-    (b) refresh_equity_and_cash is called — gap_and_go omits it, (c)
+    (b) refresh_equity_and_cash is called — gap_and_go omits it, (c) the
     in-process baseline refresh at 16:10 so no separate compose service is
-    needed.
+    needed, (d) the tail sleeps to the next session instead of returning
+    immediately, which is what previously let main() re-run the entire day
+    (cut + full baseline rebuild) every ~10 minutes from 16:10 to midnight.
     """
     if sleeper is None:
         sleeper = _time.sleep
 
-    now = day_anchor or datetime.now(timezone.utc)
+    now = day_anchor or _now()
     cut_t = loop.cut_time(now)
     entry_end_t = loop.entry_window_end(now)
     eod_t = loop.eod_close_time(now)
     baseline_t = _ny_dt(now, 16, 10)
+    # 09:00 NY the following calendar day. Weekends/holidays fall through as
+    # a day whose cut simply finds nothing to trade — the same shape
+    # gap_and_go has — but at one pass per day instead of ~47.
+    next_boot_t = _ny_dt(now + timedelta(days=1), 9, 0)
+
+    # ── boot / pre-cut ────────────────────────────────────────────────
+    # reset_cycle clears OrderExecutor._dtbp_exhausted, which latches on a
+    # single day-trading-buying-power rejection and otherwise stops every
+    # entry for the container's lifetime.
+    loop.executor.reset_cycle()
+    # MySQL is the source of truth for closes. Without this, yesterday's
+    # flattened positions are still in the in-memory book and
+    # ConcurrentPositionFilter rejects every signal today.
+    loop.refresh_book_from_mysql()
+    # Spec 5's 09:00 staleness check, with refresh as the fallback.
+    refresh_baselines_if_stale(loop, _now())
 
     # ── sleep to 10:00 (OR window forms 09:30-10:00; no requests) ─────
     _sleep_until(cut_t, sleeper)
@@ -371,16 +507,23 @@ def run_day(
 
     # ── 10:00 cut ─────────────────────────────────────────────────────
     refresh_equity_and_cash(alpaca, risk_manager)
-    loop.run_cut(datetime.now(timezone.utc))
+    loop.run_cut(_now())
 
     # ── 10:00–11:00  1-min bar entry window ───────────────────────────
     # _fetch_entry_bars fetches ALL symbols from the same since-cursor before
     # any cursor advance. Advancing last_bar_ts inside the per-symbol loop
     # would silently drop bars for later-ranked symbols (see docstring).
     last_bar_ts = cut_t - timedelta(minutes=2)
-    while not _shutdown and datetime.now(timezone.utc) < entry_end_t:
+    while not _shutdown and _now() < entry_end_t:
         sleeper(60)
-        now = datetime.now(timezone.utc)
+        # Per-iteration, not per-day: a DTBP rejection at 10:05 must not
+        # suppress the 10:40 trigger, and all five entries in this hour must
+        # not be sized against the single 10:00 cash snapshot (sma_slope can
+        # open its own position inside this window, which moves
+        # non_marginable_buying_power in the unsafe direction).
+        loop.executor.reset_cycle()
+        refresh_equity_and_cash(alpaca, risk_manager)
+        now = _now()
         bars_per_sym = _fetch_entry_bars(loop, now, last_bar_ts)
         for sym, bars in bars_per_sym.items():
             for bar in bars:
@@ -396,14 +539,18 @@ def run_day(
     loop.switch_to_regular_session_bars()
 
     # ── 11:00–15:30  managed phase (5-min bars) ───────────────────────
-    while not _shutdown and datetime.now(timezone.utc) < eod_t:
+    while not _shutdown and _now() < eod_t:
         sleeper(60)
         refresh_equity_and_cash(alpaca, risk_manager)
-        now = datetime.now(timezone.utc)
+        # Rebuild from MySQL each iteration, exactly as main.py does: the
+        # reconciler closes rows from broker fills, and without this the
+        # process manages positions the account no longer holds.
+        loop.refresh_book_from_mysql()
+        now = _now()
         for pos in list(loop.book.all()):
             try:
                 bars = loop.data.get_bars(
-                    pos.symbol, "equity", "5Min",
+                    pos.symbol, "equity", loop.cfg.regular_bar_timeframe,
                     start=entry_end_t, end=now, use_cache=False,
                 )
             except Exception as exc:
@@ -411,20 +558,32 @@ def run_day(
                              pos.symbol, exc)
                 continue
             if bars:
+                # manage_open drops bars it has already seen: this poll runs
+                # every 60s against 5-minute bars, so the same bar arrives
+                # ~5 times and bars_held would otherwise count minutes.
                 loop.manage_open(pos.symbol, bars[-1])
 
     # ── 15:30 EOD flat ─────────────────────────────────────────────────
-    loop.force_close_all(datetime.now(timezone.utc))
+    loop.force_close_all(_now())
 
-    # ── 16:10 in-process baseline refresh ─────────────────────────────
+    # ── 16:10 in-process baseline refresh (once per day) ──────────────
     # The process is already running and holds a broker connection; a
     # scheduled service would add failure surface for no gain. An empty
     # rebuild does NOT overwrite existing baselines — refresh_baselines_post_close
     # guards that. On success it live-reloads loop.scanner.baselines so the
     # next cut uses current baselines without a restart.
+    #
+    # The day flag is load-bearing: run_day is re-entered after any mid-day
+    # exception, and a 20-session x ~519-symbol bulk rebuild per re-entry
+    # would burn the free-plan quota and reset computed_at (making the
+    # staleness check above permanently believe the file is fresh).
     _sleep_until(baseline_t, sleeper)
-    if not _shutdown:
-        refresh_baselines_post_close(loop, datetime.now(timezone.utc))
+    if not _shutdown and not loop.day.post_close_refresh_done:
+        loop.day.post_close_refresh_done = True
+        refresh_baselines_post_close(loop, _now())
+
+    # ── idle until the next session ───────────────────────────────────
+    _sleep_until(next_boot_t, sleeper)
 
 
 def main() -> None:
@@ -444,16 +603,26 @@ def main() -> None:
     _signal.signal(_signal.SIGTERM, _handle_shutdown)
     _signal.signal(_signal.SIGINT, _handle_shutdown)
 
-    loop, risk_manager, alpaca = build_loop(cfg, logger)
+    # check_pdt_headroom runs inside build_loop and raises PDTViolation. It
+    # must NOT propagate: an uncaught raise exits the process, and
+    # `restart: unless-stopped` then restarts it forever — a restart loop that
+    # buries the message instead of signalling it.
+    try:
+        loop, risk_manager, alpaca = build_loop(cfg, logger)
+    except PDTViolation as exc:
+        _halt_forever(f"PDT_VIOLATION: {exc}")
+        return
     logger.info("OPENING_DRIVE_BOOTED strategy=%s universe=%d",
                 cfg["system"]["name"], len(loop.scanner.universe))
 
     while not _shutdown:
         try:
+            # run_day's tail already sleeps until the next session's boot
+            # window, so there is no idle respin here: the old 600s loop
+            # re-ran the whole day (cut + full baseline rebuild) ~47 times
+            # between 16:10 and midnight.
             run_day(loop, risk_manager, alpaca)
             loop.reset_for_new_day()
-            # Idle between day sessions — sleep ~10 minutes between checks.
-            _time.sleep(600)
         except Exception as exc:
             logger.error("DAY_LOOP_ERROR: %s", exc, exc_info=True)
             _time.sleep(60)
