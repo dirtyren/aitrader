@@ -164,6 +164,51 @@ class ConcurrentPositionFilter(EntryFilter):
         return FilterResult.ok()
 
 
+class SectorExposureFilter(EntryFilter):
+    """Cap concurrent positions per sector.
+
+    Without this, "top-N at full risk each" silently becomes one leveraged
+    sector bet: five semiconductor longs are one risk, not five. This is the
+    filter that makes the portfolio-level risk claim actually true.
+
+    ``setup_name`` scopes counting to this strategy's own positions. The
+    PositionBook may hold several setups' positions, and an unrelated
+    strategy's holding in the same sector must not consume this strategy's
+    sector budget. Pass None to count every setup.
+
+    Symbols missing from ``sector_map`` fall into an "UNKNOWN" bucket, which
+    is capped like any other sector -- exempting unknowns would let a stale
+    universe file quietly bypass the cap.
+    """
+    name = "sector_exposure"
+
+    def __init__(self, sector_map: dict[str, str], max_per_sector: int = 2,
+                 setup_name: str | None = None):
+        self.sector_map = dict(sector_map)
+        self.max_per_sector = max_per_sector
+        self.setup_name = setup_name
+
+    def _sector_of(self, symbol: str) -> str:
+        return self.sector_map.get(symbol.upper(), "UNKNOWN")
+
+    def check(self, signal, ctx, ledger, book: PositionBook | None) -> FilterResult:
+        if book is None:
+            return FilterResult.ok()
+        target = self._sector_of(signal.symbol)
+        held = 0
+        for pos in book.all():
+            if self.setup_name is not None and pos.setup != self.setup_name:
+                continue
+            if self._sector_of(pos.symbol) == target:
+                held += 1
+        if held >= self.max_per_sector:
+            return FilterResult.reject(
+                f"sector {target} already has {held} open "
+                f"(max {self.max_per_sector})"
+            )
+        return FilterResult.ok()
+
+
 class BrokerPositionFilter(EntryFilter):
     """Reject entries when the broker already holds inventory on the symbol,
     even if this strategy's PositionBook is empty.
