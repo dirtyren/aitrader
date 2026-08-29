@@ -30,7 +30,8 @@ risk:
   max_concurrent_positions: 4
   max_daily_risk_open: 0.02
   consecutive_loss_limit: 2
-  loss_filter_scope: per_symbolfilters:
+  loss_filter_scope: per_symbol
+filters:
   opening_blackout_min: 15
   volume_deficit_pct: 0.3
 position_management:
