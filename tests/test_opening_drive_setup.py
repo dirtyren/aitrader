@@ -128,6 +128,29 @@ def test_stop_floored_at_min_stop_atr_frac():
     sig = _feed(s, [tight])
     assert sig is not None
     assert sig.stop == pytest.approx(105.5 - 2.0)
+    # M1: structural_low must equal the trigger bar's actual low (105.3), not inf.
+    # Catches an implementation that never updates _run_low for the trigger bar.
+    assert sig.notes["structural_low"] == pytest.approx(105.3)
+    # M3: target must use the POST-floor risk (2.0), not the raw risk (0.2).
+    # Catches an implementation that computes target before applying the floor.
+    assert sig.target == pytest.approx(sig.entry + 2.0 * 2.0)  # 105.5 + 4.0 = 109.5
+
+
+def test_running_low_includes_trigger_bar():
+    """_run_low must be updated with the trigger bar's own low, not just prior bars.
+
+    prior.low=104.0; trigger.low=103.0 (strictly below prior).
+    An implementation that excludes the trigger bar from _run_low computation would
+    produce structural_low=104.0 and stop=104.0; the correct answer is 103.0.
+    """
+    s = _setup()
+    prior = _bar(0, 104.0, 104.5, 104.0, 104.0, 1_000)       # low 104.0, no trigger
+    trigger = _bar(1, 104.0, 106.0, 103.0, 105.5, 3_000)      # low 103.0 < prior low
+    sig = _feed(s, [prior, trigger])
+    assert sig is not None
+    # structural_low must be trigger bar's low (103.0), not the prior bar's low (104.0).
+    assert sig.notes["structural_low"] == pytest.approx(103.0)
+    assert sig.stop == pytest.approx(103.0)   # entry(105.5) - risk(2.5)
 
 
 def test_rejects_trigger_when_structural_stop_exceeds_cap():
