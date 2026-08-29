@@ -15,6 +15,7 @@ better than discovering the problem mid-session with positions open.
 from __future__ import annotations
 
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,11 @@ def check_pdt_headroom(
             f"could not parse account 'equity' value {raw!r} — refusing to "
             f"start rather than assume PDT headroom exists"
         ) from None
+
+    if not math.isfinite(equity):
+        raise PDTViolation(
+            f"account 'equity' parsed to non-finite value {equity!r} — refusing to start"
+        )
 
     if equity < min_equity:
         raise PDTViolation(

@@ -61,3 +61,21 @@ def test_missing_equity_key_raises_rather_than_assuming_safe():
 def test_unparseable_equity_raises():
     with pytest.raises(PDTViolation, match="equity"):
         check_pdt_headroom(_account(equity="not-a-number"))
+
+
+def test_equity_nan_raises():
+    """NaN is non-finite and must be rejected to prevent fail-open."""
+    with pytest.raises(PDTViolation, match="equity"):
+        check_pdt_headroom(_account(equity="nan"))
+
+
+def test_equity_positive_infinity_raises():
+    """Positive infinity is non-finite and must be rejected to prevent fail-open."""
+    with pytest.raises(PDTViolation, match="equity"):
+        check_pdt_headroom(_account(equity="inf"))
+
+
+def test_equity_negative_infinity_raises():
+    """Negative infinity is non-finite and must be rejected to prevent fail-open."""
+    with pytest.raises(PDTViolation, match="equity"):
+        check_pdt_headroom(_account(equity="-inf"))
