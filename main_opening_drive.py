@@ -31,6 +31,7 @@ import pytz
 import yaml
 
 from broker.alpaca_client import AlpacaClient
+from ui.logging_setup import setup_logging
 from broker.alpaca_data import AlpacaData
 from broker.order_executor import OrderExecutor
 from core.asset_class import AssetClassConfig
@@ -300,6 +301,35 @@ def build_loop(cfg: dict, log: logging.Logger):
     return loop, risk_manager, alpaca
 
 
+def _fetch_entry_bars(loop: OpeningDriveLoop, now: datetime,
+                      since: datetime) -> dict:
+    """Pull 1-min bars for every watchlist symbol from ``since`` to ``now``.
+
+    All symbols use the SAME ``since`` cursor. Advancing the cursor inside the
+    per-symbol loop would cause symbol N to be fetched from the timestamp
+    advanced by symbol N-1, silently dropping its earliest bars in that
+    iteration. With a 7-symbol watchlist, only the top-ranked symbol would
+    reliably receive its full entry-window history; the others would lose the
+    first iteration's bars and never trigger.
+
+    Mirrors gap_and_go's _fetch_premarket_bars pattern.
+    """
+    out: dict = {}
+    for r in list(loop.day.watchlist):
+        sym = r.symbol
+        try:
+            bars = loop.data.get_bars(
+                sym, "equity", "1Min",
+                start=since, end=now, use_cache=False,
+            )
+        except Exception as exc:
+            logger.error("OD_ENTRY_BARS_FAILED symbol=%s: %s", sym, exc)
+            continue
+        if bars:
+            out[sym] = bars
+    return out
+
+
 def run_day(
     loop: OpeningDriveLoop,
     risk_manager,
@@ -344,20 +374,15 @@ def run_day(
     loop.run_cut(datetime.now(timezone.utc))
 
     # ── 10:00–11:00  1-min bar entry window ───────────────────────────
+    # _fetch_entry_bars fetches ALL symbols from the same since-cursor before
+    # any cursor advance. Advancing last_bar_ts inside the per-symbol loop
+    # would silently drop bars for later-ranked symbols (see docstring).
     last_bar_ts = cut_t - timedelta(minutes=2)
     while not _shutdown and datetime.now(timezone.utc) < entry_end_t:
         sleeper(60)
         now = datetime.now(timezone.utc)
-        for r in list(loop.day.watchlist):
-            sym = r.symbol
-            try:
-                bars = loop.data.get_bars(
-                    sym, "equity", "1Min",
-                    start=last_bar_ts, end=now, use_cache=False,
-                )
-            except Exception as exc:
-                logger.error("OD_ENTRY_BARS_FAILED symbol=%s: %s", sym, exc)
-                continue
+        bars_per_sym = _fetch_entry_bars(loop, now, last_bar_ts)
+        for sym, bars in bars_per_sym.items():
             for bar in bars:
                 if bar.ts > last_bar_ts:
                     loop.on_bar(sym, bar)
@@ -409,9 +434,11 @@ def main() -> None:
     args = ap.parse_args()
     cfg = load_config(args.config)
 
-    logging.basicConfig(
-        level=getattr(logging, cfg["logging"]["level"]),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    system_name = cfg["system"]["name"]
+    global logger
+    logger = setup_logging(
+        log_file=cfg["logging"]["log_file"],
+        logger_name=system_name,
     )
 
     _signal.signal(_signal.SIGTERM, _handle_shutdown)

@@ -1,8 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-import yaml
-
 from strategies.opening_drive_scanner import OpeningDriveBaseline
 
 NOW_UTC = datetime(2026, 8, 28, 20, 10, tzinfo=timezone.utc)   # 16:10 NY
@@ -133,3 +131,53 @@ def test_successful_rebuild_writes_and_live_reloads(tmp_path):
         assert refresh_baselines_post_close(loop, NOW_UTC) == 1
     assert path.exists()
     assert loop.scanner.baselines == built     # no restart required
+
+
+def test_entry_bar_fetch_uses_consistent_start_across_symbols():
+    """All watchlist symbols must be fetched from the same ``since`` cursor in
+    one _fetch_entry_bars call.
+
+    The pre-fix bug: last_bar_ts was mutated inside the per-symbol loop, so
+    symbol N's get_bars received the cursor already advanced by symbol N-1.
+    With AAA returning bars through T1, BBB would have been fetched from T1
+    instead of T0 — permanently dropping its T0-to-T1 bars and making it
+    unable to trigger during that window.
+
+    This test fails against the pre-fix inline code (BBB start = T1 ≠ T0)
+    and passes against _fetch_entry_bars (BBB start = T0 = AAA start).
+    """
+    from main_opening_drive import _fetch_entry_bars
+
+    T0 = datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc)   # 10:00 NY as UTC
+    T1 = T0 + timedelta(minutes=5)   # latest bar returned by AAA
+
+    calls: dict[str, list] = {}
+
+    class FakeData:
+        def get_bars(self, sym, asset_class, timeframe, start, end,
+                     use_cache=True):
+            calls.setdefault(sym, []).append(start)
+            if sym == "AAA":
+                bar = MagicMock()
+                bar.ts = T1
+                return [bar]
+            return []  # BBB returns no bars
+
+    loop = MagicMock()
+    r_aaa = MagicMock(); r_aaa.symbol = "AAA"
+    r_bbb = MagicMock(); r_bbb.symbol = "BBB"
+    loop.day.watchlist = [r_aaa, r_bbb]
+    loop.data = FakeData()
+
+    fetch_start = T0 - timedelta(minutes=2)
+    _fetch_entry_bars(loop, T0 + timedelta(minutes=1), fetch_start)
+
+    # Both symbols must be called with the same start.
+    assert "AAA" in calls, "AAA was not fetched at all"
+    assert "BBB" in calls, "BBB was not fetched at all"
+    assert calls["AAA"] == [fetch_start]
+    assert calls["BBB"] == [fetch_start], (
+        f"BBB was fetched from {calls['BBB'][0]!r}, expected {fetch_start!r} — "
+        "mutating the cursor inside the per-symbol loop drops BBB's "
+        f"bars between {fetch_start} and {T1}"
+    )
