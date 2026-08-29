@@ -176,6 +176,85 @@ def test_run_cut_is_idempotent():
     assert data.get_bars_multi.call_count == 1
 
 
+# ── fetch_prev_closes (real implementation) ────────────────────────────
+#
+# _build() monkey-patches fetch_prev_closes so the cut tests stay network-
+# free.  These tests call OpeningDriveLoop.fetch_prev_closes(loop, ...) —
+# the unbound class method — which bypasses the instance mock and exercises
+# the real filtering logic.
+
+def _daily_bar(symbol: str, ts: datetime, close: float) -> Bar:
+    """Minimal valid daily bar: OHLC all equal to close."""
+    return Bar(symbol=symbol, ts=ts, open=close, high=close, low=close,
+               close=close, volume=100_000)
+
+
+def test_fetch_prev_closes_excludes_today_bar():
+    """Returns prior[-1].close, not bars[-1].close.
+
+    The broker can return a partial bar for today as the last element.
+    The two code paths give numerically different answers here (100.0 vs
+    999.0), so a regression to bars[-1] is immediately visible.
+    """
+    loop, _, _, _, _, _, data = _build()
+    today_ts = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)  # 08:00 NY today
+    yest_ts  = datetime(2026, 8, 27, 20, 0, tzinfo=timezone.utc)  # 16:00 NY yesterday
+    data.get_bars_multi.return_value = {
+        "AAA": [
+            _daily_bar("AAA", yest_ts,  close=100.0),   # yesterday — correct answer
+            _daily_bar("AAA", today_ts, close=999.0),   # today partial — must be excluded
+        ],
+    }
+    result = OpeningDriveLoop.fetch_prev_closes(loop, ["AAA"], NOW)
+    assert result["AAA"] == pytest.approx(100.0)
+
+
+def test_fetch_prev_closes_symbol_with_only_today_bar_is_absent():
+    """A symbol whose only broker bar is today's partial bar is absent."""
+    loop, _, _, _, _, _, data = _build()
+    today_ts = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+    data.get_bars_multi.return_value = {
+        "AAA": [_daily_bar("AAA", today_ts, close=105.0)],
+    }
+    result = OpeningDriveLoop.fetch_prev_closes(loop, ["AAA"], NOW)
+    assert "AAA" not in result
+
+
+def test_fetch_prev_closes_absent_symbol_is_absent():
+    """A symbol not present in the broker response is absent from the result."""
+    loop, _, _, _, _, _, data = _build()
+    data.get_bars_multi.return_value = {}
+    result = OpeningDriveLoop.fetch_prev_closes(loop, ["AAA"], NOW)
+    assert "AAA" not in result
+
+
+def test_fetch_prev_closes_requests_1day_timeframe():
+    """The third positional arg to get_bars_multi must be '1Day'."""
+    loop, _, _, _, _, _, data = _build()
+    data.get_bars_multi.return_value = {}
+    OpeningDriveLoop.fetch_prev_closes(loop, ["AAA"], NOW)
+    assert data.get_bars_multi.call_args.args[2] == "1Day"
+
+
+def test_fetch_prev_closes_uses_ny_date_not_utc_date():
+    """A bar at 03:00 UTC on 2026-08-28 is 23:00 EDT on 2026-08-27.
+
+    Its NY date is 2026-08-27 (yesterday), so it is a valid prior-day bar
+    and MUST be included.  A filter that uses b.ts.date() (UTC) would see
+    the UTC date 2026-08-28 == today and incorrectly exclude the bar,
+    leaving the symbol absent.  This case separates the correct NY-date
+    filter from a wrong UTC-date filter.
+    """
+    loop, _, _, _, _, _, data = _build()
+    # 2026-08-28 03:00 UTC  ==  2026-08-27 23:00 EDT  (NY date: yesterday)
+    boundary_ts = datetime(2026, 8, 28, 3, 0, tzinfo=timezone.utc)
+    data.get_bars_multi.return_value = {
+        "AAA": [_daily_bar("AAA", boundary_ts, close=95.0)],
+    }
+    result = OpeningDriveLoop.fetch_prev_closes(loop, ["AAA"], NOW)
+    assert result.get("AAA") == pytest.approx(95.0)
+
+
 # ── entry ──────────────────────────────────────────────────────────────
 
 def _reclaim_bar(symbol: str, minute: int = 1) -> Bar:
@@ -187,7 +266,10 @@ def test_on_bar_submits_when_trigger_and_risk_approve():
     loop, _, ex, rm, *_ = _build()
     loop.run_cut(NOW)
     loop.on_bar("AAA", _reclaim_bar("AAA"))
-    assert rm.evaluate.called
+    signal_arg = rm.evaluate.call_args.args[0]
+    assert signal_arg.symbol == "AAA"
+    assert signal_arg.side == "long"
+    assert rm.evaluate.call_args.args[2] == "equity"
     assert ex.submit.called
     assert ex.submit.call_args.kwargs["asset_class"] == "equity"
 
