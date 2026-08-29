@@ -338,15 +338,67 @@ class OpeningDriveLoop:
         A MySQL failure keeps the existing book rather than emptying it:
         an empty book would let the entry window re-enter symbols already
         held. Same trade-off as main.py's MYSQL_REBUILD_FAILED branch.
+
+        Managed state that MySQL does not round-trip is carried forward — see
+        _carry_forward_managed_state. Without that the rebuild silently
+        reverted every PositionManager mutation once per minute.
         """
         if self.mysql is None:
             return False
+        prior = {
+            (p.symbol.replace("/", ""), p.setup): p for p in self.book.all()
+        }
         try:
             self.book.replace_from(self.mysql.load_open_positions())
         except Exception as exc:
             logger.error("OD_MYSQL_REBUILD_FAILED: %s", exc, exc_info=True)
             return False
+        self._carry_forward_managed_state(prior)
         return True
+
+    def _carry_forward_managed_state(self, prior: dict) -> None:
+        """Re-apply in-memory managed state onto the freshly loaded rows.
+
+        ``replace_from`` installs brand-new OpenPosition objects built by
+        ``MySQLStore._dict_to_pos`` from the row's columns. Three of the fields
+        ``PositionManager._check_position`` mutates are never written back to
+        the row by this strategy — ``sync_position_state`` /
+        ``update_position_state`` have no caller in main_opening_drive.py or
+        this module (main.py:623 is the only call site in the repo) — so a
+        plain rebuild resets them once per managed-phase iteration (~60s):
+
+          * ``bars_held`` — written once at entry by ``position_opened`` and
+            never again, so the rebuild pinned it at 0. Each iteration then
+            incremented it to 1 and the next rebuild reset it, so
+            ``max_hold_bars: 36`` could NEVER be reached and the 14:00 time
+            stop silently became the 15:30 flatten (~1.5h of extra exposure).
+          * ``breakeven_moved`` / ``stop_px`` — a breakeven move made in
+            memory was lost, so PositionManager re-emitted ``breakeven`` on
+            every later distinct bar and ``_move_equity_stop_to_breakeven``
+            kept calling ``replace_order`` on a superseded stop leg.
+
+        ``exit_submitted_at`` is not a column at all;
+        ``load_open_positions`` re-seeds it to *now* for rows with
+        ``exit_submitted``, which restarted PositionManager's 2h stuck-close
+        timeout on every rebuild. Carried forward for the same reason.
+
+        Keyed on the entry ``order_id`` as well as (symbol, setup): a NEW
+        position on a symbol previously traded must not inherit the old
+        position's bar count (at the 09:00 boot the prior book still holds
+        yesterday's flattened rows).
+        """
+        for pos in self.book.all():
+            old = prior.get((pos.symbol.replace("/", ""), pos.setup))
+            if old is None or old.order_id != pos.order_id:
+                continue
+            # max(): if a persisted value is ever higher, trust the row.
+            pos.bars_held = max(pos.bars_held, old.bars_held)
+            if old.breakeven_moved and not pos.breakeven_moved:
+                pos.breakeven_moved = True
+                if old.stop_px is not None:
+                    pos.stop_px = old.stop_px
+            if pos.exit_submitted and old.exit_submitted_at is not None:
+                pos.exit_submitted_at = old.exit_submitted_at
 
     # ── Phase: EOD flat ─────────────────────────────────────────────────
 

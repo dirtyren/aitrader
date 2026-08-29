@@ -1,4 +1,5 @@
 # tests/test_opening_drive_loop.py
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -65,13 +66,18 @@ def _build(**kw):
     )
     alpaca, data = MagicMock(), MagicMock()
     rm, ex = MagicMock(), MagicMock()
-    pm = MagicMock()
-    book = PositionBook()
+    # position_manager/book are injectable so a test can combine a REAL
+    # PositionManager with a REAL rebuild (see the max_hold_bars test): the
+    # MagicMock default is exactly what hid the bars_held reset.
+    pm = kw.get("position_manager")
+    book = kw.get("book") or PositionBook()
+    if pm is None:
+        pm = MagicMock()
+        pm.on_bar.return_value = []
     rm.evaluate.return_value = RiskDecision(approved=True, qty=10, notional=1000)
     # A REAL ledger: ConsecutiveLossFilter reads ledger.consec_losses_system,
     # which only DailyLedger.record() increments (I4).
     rm.ledger = kw.get("ledger", DailyLedger(initial_equity=100_000.0))
-    pm.on_bar.return_value = []
     # close_position returns the broker order dict on success; None is a
     # FAILED close (submit_close_with_drift_recovery's failure return).
     ex.close_position.return_value = {"id": "close-1"}
@@ -768,3 +774,154 @@ def test_reset_clears_day_state():
     assert loop.day.watchlist == []
     assert loop.day.cut_done is False
     assert loop.day.eod_close_done is False
+
+
+# ── managed phase: rebuild must not reset PositionManager state (FIX 1) ──
+
+class _RoundTripMySQL:
+    """A store that returns exactly what it was last told to persist.
+
+    ``load_open_positions`` builds BRAND-NEW OpenPosition objects out of the
+    stored row values — which is precisely what
+    ``MySQLStore.load_open_positions`` -> ``_dict_to_pos`` does. Nothing in
+    this strategy ever calls ``sync_position_state``, so a stored row's
+    ``bars_held`` / ``breakeven_moved`` / ``stop_px`` stay at whatever
+    ``position_opened`` wrote at entry, forever.
+    """
+
+    def __init__(self, *positions: OpenPosition) -> None:
+        self.rows = {(p.symbol, p.setup): replace(p) for p in positions}
+
+    def load_open_positions(self) -> PositionBook:
+        book = PositionBook()
+        for row in self.rows.values():
+            book.add(replace(row))
+        return book
+
+
+def _managed_bar(symbol: str, i: int, **kw) -> Bar:
+    """One DISTINCT 5-minute managed-phase bar that triggers nothing.
+
+    low 99.5 clears the 98.0 stop; high 101.0 is under both the 104.0 target
+    and the 102.0 breakeven trigger (entry 100 + 1R of 2.0). Only
+    max_hold_bars can end a position fed these bars.
+    """
+    return Bar(
+        symbol=symbol, ts=DAY + timedelta(hours=1, minutes=5 * i),
+        open=100.5, high=kw.get("high", 101.0), low=kw.get("low", 99.5),
+        close=kw.get("close", 100.5), volume=50_000,
+    )
+
+
+def _real_pm_loop(mysql, *, max_hold_bars, breakeven_at_R=1.0):
+    """A loop wired with a REAL PositionManager over a REAL PositionBook.
+
+    No existing test combined the two: the run_day tests stub
+    refresh_book_from_mysql and the loop tests use a MagicMock position
+    manager, so nothing ever exercised a real rebuild against real
+    PositionManager mutations — which is why this whole class of bug survived.
+    """
+    from core.position_manager import PositionManager
+
+    book = PositionBook()
+    pm = PositionManager(book, max_hold_bars=max_hold_bars,
+                         breakeven_at_R=breakeven_at_R)
+    loop, _, ex, _, _, _, _ = _build(book=book, position_manager=pm,
+                                     mysql=mysql)
+    loop.run_cut(NOW)
+    loop.switch_to_regular_session_bars()
+    return loop, book, ex
+
+
+def _action_kinds(ex) -> list[str]:
+    return [a.kind for c in ex.handle_actions.call_args_list for a in c.args[0]]
+
+
+def test_max_hold_bars_fires_despite_the_per_iteration_book_rebuild():
+    """FIX 1 — the discriminating case for the time stop.
+
+    refresh_book_from_mysql runs once per managed-phase iteration (~60s) and
+    replaces the book with brand-new objects carrying the row's bars_held.
+    Nothing writes bars_held back to the row, so it is frozen at 0 and the
+    counter oscillated 0 -> 1 -> 0 -> 1 for all ~270 iterations of a session:
+    max_hold_bars: 36 could never be reached, and a position that never
+    touched its stop or target rode to the 15:30 flatten instead of exiting
+    at 14:00.
+    """
+    pos = _open_pos()
+    pos.fill_confirmed = True                 # past PositionManager's fill gate
+    mysql = _RoundTripMySQL(pos)
+    loop, book, ex = _real_pm_loop(mysql, max_hold_bars=3)
+
+    progression = []
+    for i in range(4):
+        loop.refresh_book_from_mysql()        # exactly what run_day does
+        loop.manage_open("AAA", _managed_bar("AAA", i))
+        live = book.get("AAA", "opening_drive")
+        progression.append(live.bars_held if live is not None else None)
+
+    assert "time_stop" in _action_kinds(ex), (
+        "max_hold_bars never fired across the rebuilds; bars_held progression "
+        f"was {progression} (expected [1, 2, 3, None])"
+    )
+    # None on the last step: PositionManager closed the book entry on exit.
+    assert progression == [1, 2, 3, None]
+
+
+def test_rebuild_preserves_a_breakeven_move_so_it_is_emitted_once():
+    """FIX 1, same root cause — breakeven_moved/stop_px were also reset.
+
+    Losing the flag made PositionManager re-emit `breakeven` on every later
+    distinct bar, and OrderExecutor._move_equity_stop_to_breakeven then called
+    replace_order against a stop_order_id the broker had already superseded.
+    """
+    pos = _open_pos()
+    pos.fill_confirmed = True
+    mysql = _RoundTripMySQL(pos)
+    loop, book, ex = _real_pm_loop(mysql, max_hold_bars=50)
+
+    # high 103.0 clears the 102.0 breakeven trigger; low 100.5 stays above the
+    # post-move stop of 100.0 so the position survives every bar.
+    for i in range(4):
+        loop.refresh_book_from_mysql()
+        loop.manage_open("AAA", _managed_bar("AAA", i, high=103.0, low=100.5,
+                                             close=101.0))
+
+    assert _action_kinds(ex).count("breakeven") == 1
+    live = book.get("AAA", "opening_drive")
+    assert live.breakeven_moved is True
+    assert live.stop_px == pytest.approx(100.0)     # entry, not the row's 98.0
+
+
+def test_rebuild_does_not_carry_bars_held_onto_a_new_position():
+    """A NEW position on a symbol traded before must start at zero bars.
+
+    At the 09:00 boot the in-memory book still holds yesterday's flattened
+    rows, so carrying state forward on (symbol, setup) alone would time-stop
+    today's fresh entry almost immediately. The entry order_id is the guard.
+    """
+    stale = _open_pos()
+    stale.bars_held = 40
+    book = PositionBook()
+    book.add(stale)
+
+    fresh = _open_pos()                      # same (symbol, setup)...
+    fresh.order_id = "o-AAA-today"           # ...but a different entry order
+    loop, *_ = _build(book=book, mysql=_RoundTripMySQL(fresh))
+
+    assert loop.refresh_book_from_mysql() is True
+    assert book.get("AAA", "opening_drive").bars_held == 0
+
+
+def test_rebuild_failure_keeps_the_in_memory_managed_state():
+    """A MySQL error must not silently zero bars_held either."""
+    pos = _open_pos()
+    pos.bars_held = 12
+    book = PositionBook()
+    book.add(pos)
+    mysql = MagicMock()
+    mysql.load_open_positions.side_effect = RuntimeError("boom")
+    loop, *_ = _build(book=book, mysql=mysql)
+
+    assert loop.refresh_book_from_mysql() is False
+    assert book.get("AAA", "opening_drive").bars_held == 12
