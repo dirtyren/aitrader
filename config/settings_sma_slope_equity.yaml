@@ -21,10 +21,16 @@ setups:
     target_R: 20.0         # far target (effectively "ride the trend"; signal flip is the real exit)
 
 risk:
-  # Long-only, single-symbol (TQQQ). All-in on the signal; risk params are
-  # vestigial for the intraday engine and kept for config-shape compatibility.
+  # Long-only, single-symbol (TQQQ). Risk params are vestigial for the
+  # intraday engine and kept for config-shape compatibility.
   max_risk_per_trade: 0.02
-  max_notional_per_trade_pct: 0.95
+  # Reduced from 0.95 to share the account with opening_drive_equity_trader.
+  # This strategy holds TQQQ for days; at 0.95 the account's
+  # non_marginable_buying_power went near zero and size_position returned
+  # qty=0 for the other strategy, which then silently took no trades while
+  # appearing to find no candidates. See
+  # docs/superpowers/specs/2026-08-28-opening-drive-equity-design.md §3.
+  max_notional_per_trade_pct: 0.60
   max_concurrent_positions: 1
   max_daily_risk_open: 1.0
   consecutive_loss_limit: 999

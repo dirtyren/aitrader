@@ -43,6 +43,27 @@ services:
       mysql:
         condition: service_healthy
 
+  trader-opening-drive-equity:
+    build: .
+    container_name: trader-opening-drive-equity
+    command: python main_opening_drive.py --config config/settings_opening_drive_equity.yaml
+    env_file: ./config/.env
+    environment:
+      - TRADING_ENV=${TRADING_ENV:-production}
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=trader
+      - MYSQL_PASSWORD=traderpass
+      - MYSQL_DATABASE=aitrader
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+
   # trader-vwap-wave-equity: DISABLED 2026-08-28 (single-bot SMA-slope only)
   # trader-vwap-wave-equity:
   #   build: .
