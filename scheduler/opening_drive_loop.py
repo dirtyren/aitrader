@@ -505,7 +505,7 @@ class OpeningDriveLoop:
 
     # ── Day reset ───────────────────────────────────────────────────────
 
-    def reset_for_new_day(self) -> None:
+    def reset_for_new_day(self, now: datetime | None = None) -> None:
         # clear_just_exited matters here: PositionBook.close() (and the no-MySQL
         # flatten path) records the symbol in _just_exited, and
         # OrderExecutor.submit refuses to enter a symbol that is in that set.
@@ -513,4 +513,35 @@ class OpeningDriveLoop:
         # per cycle — so without this, any symbol that stopped out once could
         # never be entered again for the container's lifetime.
         self.book.clear_just_exited()
+        self._roll_ledger_day(now or datetime.now(timezone.utc))
         self.day = _DayState()
+
+    def _roll_ledger_day(self, now: datetime) -> None:
+        """Reset the per-day ledger counters at the day boundary.
+
+        ``DailyLedger.roll_day`` had no live caller anywhere in production
+        (only backtest/intraday_replay.py), and ``consec_losses_system`` is
+        cleared ONLY by a recorded win. Now that losing exits actually reach
+        the ledger, the counter accumulates across sessions: once it hits
+        ``consecutive_loss_limit: 2``, ConsecutiveLossFilter(scope=
+        "system_wide") rejects every entry — and with no entries there can be
+        no win to clear it. The strategy latched off for the container's
+        lifetime behind nothing but a SIGNAL_REJECTED line, the same failure
+        class as the _dtbp_exhausted latch.
+
+        Safe here specifically because this is the day boundary
+        (main_opening_drive.py calls reset_for_new_day only after run_day's
+        tail has slept to the next session's 09:00 boot — a mid-day exception
+        retries run_day WITHOUT this reset). roll_day clears day_pnl,
+        trades_today and both loss counters but preserves ``equity``, and
+        nothing in this strategy reads day_pnl or trades_today across a day.
+        """
+        ledger = getattr(self.risk_manager, "ledger", None)
+        if ledger is None:
+            return
+        try:
+            ledger.roll_day(now)
+        except Exception as exc:
+            logger.error("OD_LEDGER_ROLL_FAILED: %s", exc, exc_info=True)
+            return
+        logger.info("OD_LEDGER_DAY_ROLLED at=%s", now.isoformat())

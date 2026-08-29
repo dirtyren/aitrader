@@ -776,6 +776,58 @@ def test_reset_clears_day_state():
     assert loop.day.eod_close_done is False
 
 
+def test_reset_for_new_day_rolls_the_ledger_day():
+    """FIX 2 — the consecutive-loss brake must not latch across sessions.
+
+    DailyLedger.roll_day had no live caller in production (only
+    backtest/intraday_replay.py), and consec_losses_system is cleared ONLY by
+    a recorded win. Once two losing exits arm ConsecutiveLossFilter(limit=2,
+    scope="system_wide"), every entry is rejected — so no win can ever be
+    recorded and the strategy stays blocked for the container's lifetime.
+    """
+    from risk.filters import ConsecutiveLossFilter
+
+    ledger = DailyLedger(initial_equity=100_000.0)
+    loop, _, _, _, book, pm, _ = _build(ledger=ledger)
+    loop.run_cut(NOW)
+
+    # Two real losing exits through the managed phase arm the brake.
+    for i, sym in enumerate(("AAA", "BBB")):
+        book.add(_open_pos(symbol=sym))
+        pm.on_bar.return_value = [_pa("stop", symbol=sym, price=98.0)]
+        loop.manage_open(sym, _reclaim_bar(sym, minute=90 + i))
+    assert ledger.consec_losses_system == 2
+
+    brake = ConsecutiveLossFilter(limit=2, scope="system_wide")
+    signal = MagicMock()
+    signal.symbol = "CCC"
+    assert brake.check(signal, None, ledger, book).passed is False
+
+    next_day = DAY + timedelta(days=1)
+    loop.reset_for_new_day(next_day)
+
+    assert ledger.consec_losses_system == 0
+    assert ledger.consecutive_losses_for("AAA") == 0
+    assert ledger.day_pnl == 0.0
+    assert ledger.trades_today == []
+    assert ledger.day_started_at == next_day
+    # And the brake is actually open again — this is the property that matters.
+    assert brake.check(signal, None, ledger, book).passed is True
+
+
+def test_reset_for_new_day_preserves_ledger_equity():
+    """roll_day must not discard realised equity — only the per-day counters."""
+    ledger = DailyLedger(initial_equity=100_000.0)
+    loop, _, _, _, book, pm, _ = _build(ledger=ledger)
+    loop.run_cut(NOW)
+    book.add(_open_pos())
+    pm.on_bar.return_value = [_pa("target", price=104.0)]
+    loop.manage_open("AAA", _reclaim_bar("AAA", minute=90))
+    assert ledger.equity == pytest.approx(100_040.0)
+    loop.reset_for_new_day(DAY + timedelta(days=1))
+    assert ledger.equity == pytest.approx(100_040.0)
+
+
 # ── managed phase: rebuild must not reset PositionManager state (FIX 1) ──
 
 class _RoundTripMySQL:
