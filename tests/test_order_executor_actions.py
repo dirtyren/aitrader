@@ -96,6 +96,7 @@ def test_equity_target_submits_market_close():
 
 def test_equity_time_stop_cancels_parent_then_market_close():
     ex, client = _make_executor()
+    client.list_orders.return_value = []
     ex.handle_actions([_action("time_stop", side="long", qty=10)],
                       asset_class="equity", parent_order_id="parent-6")
     client.cancel_order.assert_called_once_with("parent-6")
@@ -103,6 +104,53 @@ def test_equity_time_stop_cancels_parent_then_market_close():
     kwargs = client.submit_order.call_args.kwargs
     assert kwargs["side"] == "sell"
     assert kwargs["qty"] == 10
+
+
+def test_equity_time_stop_cancels_every_open_order_for_the_symbol():
+    """I1 — the discriminating case.
+
+    The OCO take-profit leg is NEVER recorded on the book (submit sets
+    target_order_id = None unconditionally), and the Opening Drive managed
+    phase reached handle_actions with no parent id at all — so the old
+    `if parent_order_id:` branch cancelled nothing and the live sell-limit
+    held the shares. Alpaca then rejects the close with "insufficient qty
+    available for order", leaving the position open with no stop.
+    """
+    ex, client = _make_executor()
+    client.list_orders.return_value = [{"id": "sl-1"}, {"id": "tp-1"}]
+    client.submit_order.return_value = {"id": "close-1"}
+
+    ex.handle_actions([_action("time_stop", side="long", qty=10)],
+                      asset_class="equity", parent_order_id=None)
+
+    client.list_orders.assert_called_once_with(
+        status="open", symbols=["AAPL"], nested=False,
+    )
+    assert [c.args[0] for c in client.cancel_order.call_args_list] == [
+        "sl-1", "tp-1",
+    ]
+    client.submit_order.assert_called_once()
+
+
+def test_equity_time_stop_does_not_cancel_the_parent_twice():
+    """The parent id is a fallback, not a second mechanism."""
+    ex, client = _make_executor()
+    client.list_orders.return_value = [{"id": "parent-7"}]
+    client.submit_order.return_value = {"id": "close-1"}
+    ex.handle_actions([_action("time_stop", side="long", qty=10)],
+                      asset_class="equity", parent_order_id="parent-7")
+    assert [c.args[0] for c in client.cancel_order.call_args_list] == [
+        "parent-7",
+    ]
+
+
+def test_equity_time_stop_closes_even_when_the_cancel_sweep_fails():
+    ex, client = _make_executor()
+    client.list_orders.side_effect = RuntimeError("alpaca 500")
+    client.submit_order.return_value = {"id": "close-1"}
+    ex.handle_actions([_action("time_stop", side="long", qty=10)],
+                      asset_class="equity", parent_order_id=None)
+    client.submit_order.assert_called_once()
 
 
 # ---- breakeven: state-only on both classes --------------------------------

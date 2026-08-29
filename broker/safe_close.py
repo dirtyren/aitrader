@@ -28,6 +28,7 @@ import logging
 from typing import Any
 
 log = logging.getLogger(__name__)
+log_ = log   # alias: `log` is also a keyword arg below
 
 # 1 part in 10^6 — well above crypto fee drift between snapshot and submit
 # (~0.1% over a position's lifetime, but only a few microseconds elapse here),
@@ -70,6 +71,80 @@ def _broker_qty_for(client: Any, symbol: str) -> float | None:
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def cancel_open_orders_for_symbol(
+    client: Any,
+    symbol: str,
+    *,
+    log: Any = None,
+    log_prefix: str = "CANCEL_OPEN_ORDERS",
+) -> list[str]:
+    """Cancel EVERY open order for ``symbol`` on the broker. Best-effort.
+
+    Why this exists as one shared helper rather than "cancel the ids the book
+    happens to carry": ``OrderExecutor.submit`` records ``stop_order_id`` from
+    the OCO response but sets ``target_order_id = None`` unconditionally, so
+    the take-profit leg of an equity OCO is INVISIBLE to the position book.
+    A close that only cancels the book's ids leaves that sell-limit live,
+    holding the shares, and Alpaca rejects the market close with
+    "insufficient qty available for order (requested: N, available: 0)" —
+    which silently carries the position past the intended flatten with no
+    stop attached.
+
+    Enumerating the broker's own open orders for the symbol is the only
+    mechanism that cannot miss a leg the book never recorded. This is the
+    same cancel-then-close remediation the reconciler already performs on
+    broker-only orphans (``reconciler/main.py``), lifted here so every caller
+    shares one implementation.
+
+    Individual cancel failures are tolerated and logged: an already-filled or
+    already-cancelled leg raises, and that must never prevent the close.
+
+    Returns the list of order IDs actually cancelled. Never raises.
+    """
+    logger = log if log is not None else log_
+    try:
+        open_orders = client.list_orders(
+            status="open", symbols=[symbol], nested=False,
+        )
+    except Exception as exc:
+        logger.error(
+            "%s_LIST_ORDERS_FAILED symbol=%s error=%s",
+            log_prefix, symbol, exc, exc_info=True,
+        )
+        return []
+
+    if not open_orders:
+        return []
+    if not isinstance(open_orders, (list, tuple)):
+        logger.error(
+            "%s_LIST_ORDERS_UNUSABLE symbol=%s type=%s",
+            log_prefix, symbol, type(open_orders).__name__,
+        )
+        return []
+
+    cancelled: list[str] = []
+    for order in open_orders:
+        # `nested=False` flattens bracket children into the top level — they
+        # carry parent_id but otherwise behave like any cancellable order.
+        order_id = order.get("id") if isinstance(order, dict) else None
+        if not order_id:
+            continue
+        try:
+            client.cancel_order(order_id)
+            cancelled.append(order_id)
+        except Exception as exc:
+            logger.warning(
+                "%s_CANCEL_FAILED symbol=%s order_id=%s error=%s",
+                log_prefix, symbol, order_id, exc,
+            )
+    if cancelled:
+        logger.info(
+            "%s_CANCELLED symbol=%s n=%d order_ids=%s",
+            log_prefix, symbol, len(cancelled), cancelled,
+        )
+    return cancelled
 
 
 def submit_close_with_drift_recovery(

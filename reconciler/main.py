@@ -24,7 +24,10 @@ from sqlalchemy.orm import Session
 
 from broker.alpaca_client import AlpacaClient
 from broker.client_order_id import Role, make_client_order_id, parse_client_order_id
-from broker.safe_close import DEFAULT_DRIFT_MARGIN, submit_close_with_drift_recovery
+from broker.safe_close import (
+    DEFAULT_DRIFT_MARGIN, cancel_open_orders_for_symbol,
+    submit_close_with_drift_recovery,
+)
 from notifications import send_reconcile_alert, send_reconcile_heartbeat_stale
 from reconciler.config import ReconcilerConfig
 from reconciler.events import emit_event
@@ -103,42 +106,17 @@ def _broker_price(broker_pos: dict) -> float | None:
 def _cancel_open_orders_for_symbol(alpaca: Any, symbol: str) -> list[str]:
     """Cancel every open order for ``symbol`` on the broker. Best-effort.
 
-    Why: a position whose qty is locked by open bracket children (stop /
-    target legs from the original entry) cannot be market-closed — Alpaca
-    returns "insufficient qty available for order (requested: N,
-    available: 0)". Cancel-then-close is the standard remediation; if any
-    individual cancel fails we log and continue (the close itself will
-    fail loudly and the next reconciler cycle retries).
+    Thin wrapper over ``broker.safe_close.cancel_open_orders_for_symbol`` —
+    the cancel-then-close remediation now lives in one place so the EOD
+    flatten and time-stop exit paths share this exact mechanism instead of
+    re-implementing it (and missing the OCO take-profit leg, which the
+    position book never records).
 
     Returns the list of order IDs that were cancelled. Does not raise.
     """
-    try:
-        open_orders = alpaca.list_orders(
-            status="open", symbols=[symbol], nested=False,
-        )
-    except Exception as exc:
-        log.error(
-            "AUTO_CLOSE_LIST_ORDERS_FAILED symbol=%s error=%s",
-            symbol, exc, exc_info=True,
-        )
-        return []
-
-    cancelled: list[str] = []
-    for order in open_orders or []:
-        # `nested=False` flattens bracket children into the top level — they
-        # carry parent_id but otherwise behave like any cancellable order.
-        order_id = order.get("id")
-        if not order_id:
-            continue
-        try:
-            alpaca.cancel_order(order_id)
-            cancelled.append(order_id)
-        except Exception as exc:
-            log.warning(
-                "AUTO_CLOSE_CANCEL_FAILED symbol=%s order_id=%s error=%s",
-                symbol, order_id, exc,
-            )
-    return cancelled
+    return cancel_open_orders_for_symbol(
+        alpaca, symbol, log=log, log_prefix="AUTO_CLOSE",
+    )
 
 
 def auto_close_broker_only(
