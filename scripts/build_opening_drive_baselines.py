@@ -99,7 +99,11 @@ def build_baselines(
                            day, exc)
             continue
         for sym, bars in minute_bars.items():
-            total = sum(b.volume for b in bars)
+            # Alpaca's `end` is inclusive, so drop the bar AT the cut: it
+            # belongs to the entry window. Counting it would inflate every
+            # avg_or_volume_20d by roughly one bar, and that average is the
+            # denominator of rvol_or -- the screen's primary ranking factor.
+            total = sum(b.volume for b in bars if b.ts < end)
             if total > 0:
                 or_totals.setdefault(sym, []).append(total)
 

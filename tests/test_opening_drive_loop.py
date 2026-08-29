@@ -977,3 +977,57 @@ def test_rebuild_failure_keeps_the_in_memory_managed_state():
 
     assert loop.refresh_book_from_mysql() is False
     assert book.get("AAA", "opening_drive").bars_held == 12
+
+
+# ── Inclusive-end boundary: the cut-time bar is NOT part of the range ──
+
+def test_run_cut_excludes_the_bar_at_the_cut():
+    """Alpaca's `end` is inclusive, so a 09:30->10:00 request returns 31 bars.
+
+    The 10:00 bar is the first bar of the ENTRY window. Including it is a real
+    lookahead: or_high/or_close would incorporate a price the strategy has not
+    seen at decision time, and bar_coverage would compute to 31/30 = 1.03.
+    """
+    loop, _, _, _, _, _, data = _build()
+    _, or_end = loop.or_window(NOW)
+
+    # Three in-range bars plus one stamped exactly at the cut, priced far above
+    # the range so its inclusion would be unmistakable in or_high.
+    def with_cut_bar(symbol, close, volume):
+        bars = list(_or_bars(symbol, close, volume))
+        bars.append(Bar(symbol=symbol, ts=or_end, open=close, high=close + 50.0,
+                        low=close, close=close + 50.0, volume=volume))
+        return bars
+
+    data.get_bars_multi.return_value = {
+        "AAA": with_cut_bar("AAA", 104.0, 60_000),
+        "BBB": with_cut_bar("BBB", 104.0, 30_000),
+        "SPY": with_cut_bar("SPY", 100.5, 30_000),
+    }
+    watchlist = loop.run_cut(NOW)
+    assert watchlist, "expected candidates"
+    for r in watchlist:
+        assert r.metrics.or_high < 150.0, (
+            f"{r.symbol}: or_high={r.metrics.or_high} includes the cut-time bar"
+        )
+        assert r.metrics.bar_coverage <= 1.0, (
+            f"{r.symbol}: bar_coverage={r.metrics.bar_coverage} exceeds 1.0"
+        )
+
+
+def test_run_cut_seeded_context_also_excludes_the_cut_bar():
+    """The seeded SessionContext must not carry the post-cut bar either, or
+    session VWAP is computed from a price the range never saw."""
+    loop, _, _, _, _, _, data = _build()
+    _, or_end = loop.or_window(NOW)
+    bars = list(_or_bars("AAA", 104.0, 60_000))
+    bars.append(Bar(symbol="AAA", ts=or_end, open=104.0, high=154.0,
+                    low=104.0, close=154.0, volume=60_000))
+    data.get_bars_multi.return_value = {
+        "AAA": bars,
+        "SPY": list(_or_bars("SPY", 100.5, 30_000)),
+    }
+    loop.run_cut(NOW)
+    ctx = loop.day.contexts["AAA"]
+    assert ctx.bar_count == 3, f"expected 3 seeded bars, got {ctx.bar_count}"
+    assert ctx.day_high < 150.0, f"context day_high={ctx.day_high} took the cut bar"

@@ -177,6 +177,18 @@ class OpeningDriveLoop:
             symbols, "equity", self.cfg.premarket_bar_timeframe,
             or_start, or_end,
         )
+        # Alpaca's `end` is INCLUSIVE, so a 09:30->10:00 request returns 31
+        # bars: the 10:00 bar is the first bar of the entry window, not part
+        # of the opening range. Left in, it feeds post-cut information into
+        # or_high / or_close (a real lookahead — the range would incorporate
+        # a price the strategy has not seen at decision time) and pushes
+        # bar_coverage to 31/30 = 1.03. Filter on the timestamp rather than
+        # trimming the request, so the invariant holds no matter what the
+        # API's boundary semantics do later.
+        bars_by_symbol = {
+            sym: [b for b in bars if b.ts < or_end]
+            for sym, bars in bars_by_symbol.items()
+        }
         prev_closes = self.fetch_prev_closes(symbols, now)
 
         watchlist = self.scanner.run_cut(bars_by_symbol, prev_closes, now)
