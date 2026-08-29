@@ -70,9 +70,19 @@ def test_parse_sp500_df_nan_ticker_skipped():
     assert set(result.keys()) == {"AAPL", "MSFT"}
 
 
-def test_parse_sp500_df_dot_normalised():
+def test_parse_sp500_df_preserves_dotted_share_class():
+    """Share classes keep Alpaca's dot: BRK.B, not BRK-B.
+
+    This test previously asserted the opposite, pinning a `.` -> `-`
+    normalization (the Yahoo/Nasdaq convention) as correct. Alpaca rejects
+    BRK-B with HTTP 400 "invalid symbol", and because the scanner fetches its
+    opening range in ONE multi-symbol request, a single bad symbol fails the
+    whole request and the cut raises every session. Do not reintroduce the
+    dash normalization to make some other tool happy — see
+    tests/test_universe_symbols_valid.py.
+    """
     df = pd.DataFrame({"Symbol": ["BRK.B"], "GICS Sector": ["Financials"]})
-    assert _parse_sp500_df(df) == {"BRK-B": "Financials"}
+    assert _parse_sp500_df(df) == {"BRK.B": "Financials"}
 
 
 def test_parse_ndx100_df_basic():
