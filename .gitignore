@@ -21,3 +21,7 @@ lock.file.tmp
 # Local virtualenvs
 .venv/
 .venv-mac/
+
+# Agent scratch: SDD ledgers, task briefs, review packages, reports.
+# Never committed — the git history is the record.
+.superpowers/
