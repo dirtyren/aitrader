@@ -69,7 +69,7 @@ def test_builds_baseline_per_symbol():
     out = build_baselines(data, ["AAA", "SPY"], NOW,
                           or_minutes=3, lookback_sessions=3, atr_window=2)
     assert set(out) == {"AAA", "SPY"}
-    assert out["AAA"].atr_14d > 0
+    assert out["AAA"].atr_14d == pytest.approx(3.0)
     assert out["AAA"].avg_daily_volume_20d == pytest.approx(400_000.0)
     # 3 bars x 1000 per session, averaged over 3 sessions
     assert out["AAA"].avg_or_volume_20d == pytest.approx(3_000.0)
@@ -131,3 +131,41 @@ def test_issues_one_daily_request_plus_one_per_session():
     timeframes = [c.args[2] for c in data.get_bars_multi.call_args_list]
     assert timeframes.count("1Day") == 1
     assert timeframes.count("1Min") == 3
+
+
+def test_per_session_fetch_failure_skips_that_session():
+    """A transient exception on one session's 1Min fetch must be skipped.
+
+    The build must still complete with baselines for all symbols that have
+    enough data from the remaining sessions. avg_or_volume_20d must reflect
+    only the sessions that succeeded — denominator = 2, not 3 — so a wrong
+    denominator returns 4000.0 while the correct one returns 6000.0.
+    """
+    call_count = {"n": 0}
+
+    def _get_with_failure(syms, asset_class, timeframe, start, end):
+        if timeframe == "1Day":
+            return {
+                s: [_daily(s, d, 100.0 + i, 400_000.0)
+                    for i, d in enumerate(DAYS)]
+                for s in ("AAA", "SPY")
+            }
+        # Fail the first per-session 1Min call; succeed for the other two.
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("transient network error")
+        day = start.date()
+        return {
+            s: [_minute(s, day, m, 2_000.0) for m in range(3)]
+            for s in ("AAA", "SPY")
+        }
+
+    data = MagicMock()
+    data.get_bars_multi.side_effect = _get_with_failure
+    out = build_baselines(data, ["AAA", "SPY"], NOW,
+                          or_minutes=3, lookback_sessions=3, atr_window=2)
+    # Build must still succeed despite one failed session.
+    assert set(out) == {"AAA", "SPY"}
+    # 2 successful sessions x (3 bars x 2000) = 6000 each; avg over 2 = 6000.0.
+    # Wrong denominator (3 requested sessions) would give 4000.0.
+    assert out["AAA"].avg_or_volume_20d == pytest.approx(6_000.0)

@@ -19,12 +19,15 @@ from __future__ import annotations
 import argparse
 import logging
 from datetime import date, datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import pytz
 import yaml
 
 from core.atr import atr as compute_atr
-from core.bar import Bar
+
+if TYPE_CHECKING:
+    from core.bar import Bar
 from strategies.opening_drive_scanner import (
     OpeningDriveBaseline, load_universe, save_baselines,
 )
