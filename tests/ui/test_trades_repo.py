@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import text
 
 from ui.data.db import get_engine
-from ui.data.trades_repo import get_closed_trades
+from ui.data.trades_repo import get_closed_trades, list_strategies
 
 
 pytestmark = pytest.mark.skipif(
@@ -84,3 +84,16 @@ def test_get_closed_trades_unknown_strategy_returns_empty():
     df = get_closed_trades("does_not_exist_xyz", datetime(2026, 1, 1, tzinfo=timezone.utc),
                                                    datetime(2026, 12, 31, tzinfo=timezone.utc))
     assert df.empty
+
+
+def test_list_strategies_excludes_system_strategies():
+    """`reconciler` and `operator` are registered for FK attribution but are
+    not trading strategies — they must not show up as cards/options."""
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(text("INSERT IGNORE INTO strategies (name) VALUES ('reconciler')"))
+        conn.execute(text("INSERT IGNORE INTO strategies (name) VALUES ('operator')"))
+
+    names = list_strategies()
+    assert "reconciler" not in names
+    assert "operator" not in names
