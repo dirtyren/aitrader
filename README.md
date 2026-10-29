@@ -64,6 +64,35 @@ Backtest: `python scripts/sma_slope_backtest.py --sma 250 --slope 10`. Sweep: `p
 
 ---
 
+### Dual-Momentum Tactical ETF Rotation Strategy
+
+A long-only, tactical rotation strategy across tradeable UCITS ETFs (or US equivalents) with a **200-day SMA macro regime filter**, **CBOE VIX volatility circuit breaker**, and **turnover buffer rules**. Driven by `main_etf_rotation.py`.
+
+**Universe:**
+- **Momentum Candidates (High-Beta Satellites):** `SMGB` (Semiconductors), `QDVE` (US Info Tech), `EQQQ` (Nasdaq-100), `ISPY` (Cybersecurity), `XUFN` (US Financials), `SXLE` (US Energy), `XUIN` (Industrials).
+- **Safe Harbor Asset (Risk-Off Liquidity):** `CSH2` / `FEDF` / `XEON` (USD/EUR overnight rate UCITS ETFs) or Cash.
+- **Macro References:** S&P 500 Index (`SPY` / `CSPX`) vs. 200-day SMA; Volatility via CBOE VIX (`VIX`).
+
+**Rules & Position Sizing Matrix:**
+- **Momentum Score:** $0.60 \times R_{12W} + 0.40 \times R_{24W}$ (60-day ~3m and 120-day ~6m returns).
+- **Normal Bull Mode ($P_{\text{SP500}} > \text{SMA}_{200}$ and $\text{VIX} < 22$):** 90% Equity, 10% Cash.
+  - Top 1 ETF: 35%, Top 2 ETF: 35%, Top 3 ETF: 20%, Cash: 10%.
+- **Defensive De-Risking ($P_{\text{SP500}} > \text{SMA}_{200}$ and $22 \le \text{VIX} < 32$):** 50% Equity, 50% Cash.
+  - Top 1 ETF: 25%, Top 2 ETF: 25%, Cash: 50%.
+- **Preservation / Bear Market ($P_{\text{SP500}} \le \text{SMA}_{200}$ OR $\text{VIX} \ge 32$):** 100% Cash / Safe Harbor (`CSH2`/`XEON`).
+
+**Operational Execution:**
+- **Cadence 1 (Trimester Rebalance):** Last Friday of March, June, September, December at market close or following morning.
+- **Cadence 2 (Weekly Risk-Off Check):** Every Friday at 3:45 PM EST. S&P 500 closed below 200d SMA for 2 consecutive trading sessions OR VIX $\ge 32$ triggers immediate rotation to 100% Cash.
+- **Re-Entry Hysteresis Rule:** Requires S&P 500 to close above 200d SMA for 3 consecutive days AND VIX $< 25$ before re-entering equities.
+- **Turnover Buffer Rule:** If the #3 and #4 ranked ETFs differ by $< 1.0\%$ (0.01 in score), keep incumbent holding.
+- **Execution Protocol:** Limit orders placed at the bid/ask midpoint 15–30 minutes after open (10:00 AM EST).
+
+Backtest: `python scripts/backtest_etf_rotation.py --synthetic` (or `--start 2018-01-01 --end 2026-08-28 --use-us-proxies`).
+Config: `config/settings_etf_rotation.yaml`. Entrypoint: `python main_etf_rotation.py --config config/settings_etf_rotation.yaml`.
+
+---
+
 ## Architecture
 
 ```

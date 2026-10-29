@@ -1,0 +1,110 @@
+system:
+  name: etf_rotation_trader
+  version: "1.0.0"
+  trading_env: paper
+
+scheduler:
+  # Daily timeframe evaluation
+  bar_timeframe: 1Day
+  wake_grace_seconds: 60
+  # Rolling history bars (>= 200 SMA + buffer)
+  history_bars: 300
+  # Order execution schedule (10:00 EST — 30 min after open to avoid opening spread widening)
+  execution_minute_offset: 30
+
+setups:
+  dual_momentum_etf:
+    enabled: true
+    # Momentum lookback periods (60 days ~ 12 weeks / 3 months; 120 days ~ 24 weeks / 6 months)
+    lookback_12w: 60
+    lookback_24w: 120
+    weight_12w: 0.60
+    weight_24w: 0.40
+    # Macro trend filter
+    sma_period: 200
+    # Volatility regime circuit breakers
+    vix_defensive_threshold: 22.0
+    vix_crisis_threshold: 32.0
+    vix_reentry_threshold: 25.0
+    # Consecutive days rules
+    consecutive_below_sma_exit: 2
+    consecutive_above_sma_reenter: 3
+    # Turnover buffer rule: retain incumbent if #3 and #4 differ by < 1.0% (0.01)
+    turnover_buffer_threshold: 0.01
+    # Trimester rebalance months: March, June, September, December
+    rebalance_months:
+      - 3
+      - 6
+      - 9
+      - 12
+
+universe:
+  satellites:
+    - SMGB   # VanEck Semiconductor UCITS (LSE/Xetra)
+    - QDVE   # iShares S&P 500 Info Tech UCITS (Xetra/LSE)
+    - EQQQ   # Nasdaq-100 UCITS (LSE/Xetra)
+    - ISPY   # L&G Cyber Security UCITS (LSE)
+    - XUFN   # iShares S&P 500 Financials UCITS
+    - SXLE   # SPDR S&P US Energy Select Sector UCITS
+    - XUIN   # iShares S&P 500 Industrials UCITS
+  safe_harbor: CSH2       # USD/EUR Overnight rate UCITS
+  benchmark: SPY          # S&P 500 reference index ETF
+  vix: VIX                # CBOE Volatility index
+
+risk:
+  max_risk_per_trade: 0.05
+  max_notional_per_trade_pct: 0.35
+  max_concurrent_positions: 4
+  max_daily_risk_open: 1.0
+  consecutive_loss_limit: 999
+  loss_filter_scope: per_symbol
+  weights:
+    normal:
+      top_1: 0.35
+      top_2: 0.35
+      top_3: 0.20
+      cash: 0.10
+    defensive:
+      top_1: 0.25
+      top_2: 0.25
+      cash: 0.50
+    risk_off:
+      cash: 1.00
+
+execution:
+  order_protocol: limit_midpoint
+  execution_hour_et: 10
+  execution_minute_et: 0
+  limit_offset_bps: 2.0
+
+position_management:
+  max_hold_bars: 10000
+  breakeven_at_R: 0.0
+
+asset_classes:
+  equity:
+    timezone: America/New_York
+    session_open_local: '09:30'
+    session_close_local: '16:00'
+    slippage_bps: 2.0
+    commission_per_share: 0.0
+    symbols:
+      - SMGB
+      - QDVE
+      - EQQQ
+      - ISPY
+      - XUFN
+      - SXLE
+      - XUIN
+      - CSH2
+      - SPY
+
+backtest:
+  cache_dir: runtime/bars_cache
+
+broker:
+  paper_trading: true
+
+logging:
+  level: INFO
+  log_file: logs/etf_rotation_trader.log
