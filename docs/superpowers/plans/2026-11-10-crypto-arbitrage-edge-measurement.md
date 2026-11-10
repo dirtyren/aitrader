@@ -365,7 +365,7 @@ git commit -m "feat(arbitrage): net edge and distribution statistics"
 - Consumes: net stats (Task 6), `Config` (Task 1).
 - Produces:
   - `go_nogo(median_net_bps: float, persistence_median_ms: int, min_slippage_bps: float, min_persistence_ms: int) -> str` → `"real"` or `"not real"`.
-  - `build_report(results: dict, config: Config, json_path: Path, md_path: Path) -> None` — writes the JSON + markdown report; `results` is `{pair: {"venue_buy": ..., "venue_sell": ..., "slippage_bps": {slip: {"median_bps":..., "persistence_median_ms":...}}}}`.
+  - `build_report(results: dict, config: Config, json_path: Path, md_path: Path) -> None` — writes the JSON + markdown report. `results` shape: `{pair: {"venue_buy": str, "venue_sell": str, "slippage_bps": {slip: {"leg_risk": {lr: {"median_bps": float, "pct_positive": float, "persistence_median_ms": int}}}}}}`.
 
 - [ ] **Step 1: Write the failing tests** in `arbitrage/tests/test_report.py`
 
@@ -376,7 +376,8 @@ def test_go_nogo_thresholds():
     assert go_nogo(1.5, 500, 1.0, 1000) == "not real"
 
 def test_build_report_writes_files(tmp_path):
-    results = {"BTC/USDT": {"slippage_bps": {1.0: {"median_bps": 1.5, "persistence_median_ms": 2000}}}}
+    results = {"BTC/USDT": {"venue_buy": "A", "venue_sell": "B",
+        "slippage_bps": {1.0: {"leg_risk": {0.0: {"median_bps": 1.5, "pct_positive": 60.0, "persistence_median_ms": 2000}}}}}}
     build_report(results, load_config(), tmp_path/"r.json", tmp_path/"r.md")
     assert (tmp_path/"r.json").exists() and (tmp_path/"r.md").exists()
     assert "real" in (tmp_path/"r.md").read_text()
@@ -414,8 +415,8 @@ git commit -m "feat(arbitrage): report generation and go/no-go verdict"
 **Interfaces:**
 - Consumes: everything from Tasks 1–7.
 - Produces:
-  - `measure_pair(pair: str, venues: list[str], config: Config, connector: VenueConnector, start: date, end: date) -> dict` — load → align → gross/mid → sweep slippage+leg-risk+rebalancing → net → stats → per-slippage result dict (the `results` shape Task 7 consumes).
-  - `main()` CLI entry (`python -m arbitrage.measure --pair BTC/USDT --venues binance okx ...`).
+  - `measure_pair(pair: str, config: Config, connectors: dict[str, VenueConnector], start: date, end: date) -> dict` — one connector per venue (key = venue name); loads `connectors[v].load_quotes(pair, start, end)` per venue, aligns, computes gross/mid, sweeps `slippage_bps_grid × leg_risk_grid` (with `adverse_move_bps` + `rebalancing_bps`), evaluates both directions (buy-A/sell-B and buy-B/sell-A) and reports the better one, and returns the `results` shape Task 7 consumes.
+  - `main()` CLI entry (`python -m arbitrage.measure --pair BTC/USDT --venues binance ...`). v1 runs the Binance archive (spot + `um`) only; other venues join via the recorder in later tasks.
 
 - [ ] **Step 1: Write the failing tests** in `arbitrage/tests/test_measure.py`
 
@@ -423,22 +424,25 @@ A `FakeConnector` returns synthetic quotes for two venues where venue `sell`'s b
 
 ```python
 class FakeConnector(VenueConnector):
-    def __init__(self, frames): self.frames = frames
+    def __init__(self, frame): self.frame = frame
     def load_quotes(self, symbol, start, end):
-        return self.frames[symbol]
+        return self.frame
 
 def test_recovers_injected_spread_exactly():
     # venue A ask=100.0, venue B bid=100.05 -> gross = 0.05 -> 5 bps
     a = pd.DataFrame({"ts_utc_ms": [0, 10, 20], "bid": [99.9]*3, "ask": [100.0]*3})
     b = pd.DataFrame({"ts_utc_ms": [0, 10, 20], "bid": [100.05]*3, "ask": [100.15]*3})
     cfg = load_config()
-    cfg = replace(cfg, exchanges={"A": ExchangeConfig("A", 0.0), "B": ExchangeConfig("B", 0.0)})
-    res = measure_pair("X", ["A", "B"], cfg, FakeConnector({"X": {"A": a, "B": b}}), date.today(), date.today())
-    # buy on A (ask 100.0), sell on B (bid 100.05) -> gross 5 bps, no cost
-    assert res["slippage_bps"][0]["median_bps"] == pytest.approx(5.0)
+    # zero ALL costs so the injected gross edge must be recovered exactly
+    cfg = replace(cfg,
+        exchanges={"A": ExchangeConfig("A", 0.0), "B": ExchangeConfig("B", 0.0)},
+        rebalancing_bps=0.0, adverse_move_bps=0.0)
+    res = measure_pair("X", cfg, {"A": FakeConnector(a), "B": FakeConnector(b)}, date.today(), date.today())
+    # buy on A (ask 100.0), sell on B (bid 100.05) -> gross 5 bps, zero cost -> net 5 bps
+    assert res["slippage_bps"][0.0]["leg_risk"][0.0]["median_bps"] == pytest.approx(5.0)
 ```
 
-`measure_pair` must accept a mapping of venue→frame; the plan fixes that `measure_pair` takes a `connector` whose `load_quotes` is called per venue (the `FakeConnector` returns the frame for that venue).
+`measure_pair` takes one `VenueConnector` per venue (a `dict[str, VenueConnector]`); the `FakeConnector` above is instantiated once per venue and its `load_quotes` returns that venue's frame (the `from dataclasses import replace` import is required in the test).
 
 - [ ] **Step 2: Run tests to verify they fail**
 
