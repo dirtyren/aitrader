@@ -12,8 +12,8 @@ def net_edge_stats(net: pd.Series, grid_ms: int) -> dict:
     """Summary stats of net edge; persistence = runs of net > 0 scaled by grid_ms."""
     if len(net) == 0:
         return {
-            "median_bps": 0.0,
-            "mean_bps": 0.0,
+            "median_bps": float("nan"),  # no data != break-even
+            "mean_bps": float("nan"),
             "pct_positive": 0.0,
             "persistence_median_ms": 0.0,
             "persistence_max_ms": 0.0,

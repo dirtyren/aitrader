@@ -1,3 +1,4 @@
+import math
 import pandas as pd
 import pytest
 
@@ -19,6 +20,15 @@ def test_net_edge_stats_persistence():
     assert s["median_bps"] == pytest.approx(2.5)  # brief said 2.0; true median is 2.5
     assert s["mean_bps"] == pytest.approx(14 / 6)
     assert s["persistence_median_ms"] == pytest.approx(25.0)  # runs 2,3 -> 2.5 * 10
+
+
+def test_net_edge_stats_empty_returns_nan_center():
+    s = net_edge_stats(pd.Series([], dtype=float), grid_ms=10)
+    assert math.isnan(s["median_bps"])
+    assert math.isnan(s["mean_bps"])
+    assert s["pct_positive"] == 0
+    assert s["persistence_median_ms"] == 0
+    assert s["persistence_max_ms"] == 0
 
 
 def test_net_edge_stats_empty_and_all_negative():
