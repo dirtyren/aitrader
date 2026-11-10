@@ -4,7 +4,7 @@ import pandas as pd
 
 from arbitrage.config import load_config
 from arbitrage.report import build_report
-from arbitrage.ui.app import load_live_state, load_report, recorder_coverage
+from arbitrage.ui.app import load_live_state, load_report, pair_verdicts, recorder_coverage
 
 
 def _results():
@@ -47,3 +47,25 @@ def test_recorder_coverage(tmp_path):
     assert row["venue"] == "binance" and row["symbol"] == "BTC_USDT"
     assert row["rows"] == 3 and row["span_s"] == 11.0
     assert recorder_coverage(tmp_path / "missing").empty
+
+
+def _cell(median, pers):
+    return {"leg_risk": {0.0: {"median_bps": median, "pct_positive": 60.0,
+                               "persistence_median_ms": pers}}}
+
+
+def test_pair_verdicts():
+    cfg = load_config()
+    lo, hi = cfg.go_nogo_min_slippage_bps - 0.5, cfg.go_nogo_min_slippage_bps
+    pers = cfg.go_nogo_min_persistence_ms + 1
+    res = {
+        "REAL/USDT": {"slippage_bps": {lo: _cell(-1.0, 0), hi: _cell(1.5, pers)}},
+        "BELOW/USDT": {"slippage_bps": {lo: _cell(5.0, pers)}},  # slippage too low to count
+        "SHORT/USDT": {"slippage_bps": {hi: _cell(1.5, cfg.go_nogo_min_persistence_ms)}},
+        "NEG/USDT": {"slippage_bps": {hi: _cell(-0.1, pers)}},
+    }
+    assert pair_verdicts(res, cfg) == {
+        "REAL/USDT": "real", "BELOW/USDT": "not real",
+        "SHORT/USDT": "not real", "NEG/USDT": "not real"}
+    # works on the JSON-roundtripped report (string keys) too
+    assert pair_verdicts(json.loads(json.dumps(res, default=str)), cfg) == pair_verdicts(res, cfg)

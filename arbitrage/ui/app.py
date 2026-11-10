@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from arbitrage.config import Config, load_config
+from arbitrage.report import go_nogo
+
 DEFAULT_REPORT = "arbitrage/reports/report.json"
 DEFAULT_STATE = "arbitrage/live_state.json"
 DEFAULT_RECORDER_DIR = "arbitrage/data/recorder"
@@ -53,6 +56,21 @@ def report_rows(report: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def pair_verdicts(report: dict, config: Config) -> dict[str, str]:
+    """Per-pair go/no-go: 'real' iff any cell with slippage >= the configured minimum is
+    'real' by go_nogo (mirrors the headline logic in report.build_report)."""
+    return {
+        pair: "real" if any(
+            go_nogo(st["median_bps"], st["persistence_median_ms"],
+                    config.go_nogo_min_persistence_ms) == "real"
+            for slip, sdata in info.get("slippage_bps", {}).items()
+            if float(slip) >= config.go_nogo_min_slippage_bps
+            for st in sdata.get("leg_risk", {}).values()
+        ) else "not real"
+        for pair, info in report.items()
+    }
+
+
 def recorder_coverage(out_dir) -> pd.DataFrame:
     """Per venue/symbol capture coverage from <out_dir>/<venue>/<SYMBOL>.parquet."""
     cols = ["venue", "symbol", "rows", "first_ts_utc_ms", "last_ts_utc_ms", "span_s"]
@@ -76,6 +94,13 @@ def _measurement_tab(st, path: str) -> None:
     if report is None:
         st.info(f"No report at {path}")
         return
+    config = load_config()
+    st.subheader("Go/no-go verdict")
+    st.caption(f"real iff median net edge > 0 bps and median persistence > "
+               f"{config.go_nogo_min_persistence_ms} ms on cells with slippage >= "
+               f"{config.go_nogo_min_slippage_bps} bps")
+    for pair, verdict in pair_verdicts(report, config).items():
+        (st.success if verdict == "real" else st.error)(f"Pair {pair} \u2192 {verdict}")
     df = report_rows(report)
     st.subheader("Cells")
     st.dataframe(df, use_container_width=True)
