@@ -5,6 +5,7 @@ for USD-M futures (market "um", path ``data/futures/um/...``), roughly
 2023-05-16 .. 2024-03-30. Spot has no bookTicker archive.
 """
 import hashlib
+import logging
 import os
 import tempfile
 import zipfile
@@ -15,6 +16,8 @@ import pandas as pd
 import requests
 
 from arbitrage.connectors.base import VenueConnector
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://data.binance.vision"
 DEFAULT_CACHE_DIR = Path("runtime/bars_cache/arbitrage")
@@ -156,11 +159,20 @@ class BinanceArchiveConnector(VenueConnector):
         day = start.astimezone(timezone.utc).date()
         last = end.astimezone(timezone.utc).date()
         while day <= last:
-            p = download_and_cache(sym, self.market, day, self.cache_dir, self.base_url)
-            frames.append(pd.read_parquet(p))
+            try:
+                p = download_and_cache(sym, self.market, day, self.cache_dir, self.base_url)
+            except requests.HTTPError as e:
+                status = getattr(e.response, "status_code", None)
+                if status != 404:
+                    raise
+                logger.warning("no archive for %s %s %s (404); skipping", self.market, sym, day)
+            else:
+                # Filter per day so peak memory is the window plus one day's frame.
+                d = pd.read_parquet(p)
+                frames.append(d[(d["ts_utc_ms"] >= start_ms) & (d["ts_utc_ms"] <= end_ms)])
+                del d
             day += timedelta(days=1)
         df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
             columns=["ts_utc_ms", "bid", "ask"]
         )
-        df = df[(df["ts_utc_ms"] >= start_ms) & (df["ts_utc_ms"] <= end_ms)]
         return df.sort_values("ts_utc_ms", kind="stable").reset_index(drop=True)

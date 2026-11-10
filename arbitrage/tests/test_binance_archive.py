@@ -139,3 +139,73 @@ def test_connector_load_quotes_filters_window(tmp_path, monkeypatch):
     # window excluding both rows
     df2 = conn.load_quotes("BTC/USDT", s.replace(hour=12), s.replace(hour=23))
     assert df2.empty
+
+
+def _http_error(status: int):
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = status
+    return requests.HTTPError(f"{status}", response=resp)
+
+
+def _fetch_only_jan1(data: bytes, status: int = 404):
+    good, _ = _fake_fetch(data, hashlib.sha256(data).hexdigest() + "  x.zip\n")
+
+    def fetch(url: str, dest: Path) -> None:
+        if "2024-01-01" not in url:
+            raise _http_error(status)
+        good(url, dest)
+
+    return fetch
+
+
+def test_load_quotes_skips_days_without_archive(tmp_path, monkeypatch, caplog):
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(ba, "_fetch", _fetch_only_jan1(_zip_bytes()))
+    conn = ba.BinanceArchiveConnector(market="um", cache_dir=tmp_path)
+    s = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    # range spans day before (missing), Jan 1 (present), Jan 2 (missing)
+    with caplog.at_level("WARNING"):
+        df = conn.load_quotes("BTCUSDT", s - pd.Timedelta(days=1), s.replace(day=2, hour=23))
+    assert len(df) == 2
+    assert "no archive" in caplog.text
+    # entirely unavailable range -> empty frame, correct columns, no raise
+    empty = conn.load_quotes("BTCUSDT", s.replace(day=5), s.replace(day=6))
+    assert empty.empty and list(empty.columns) == ["ts_utc_ms", "bid", "ask"]
+
+
+def test_load_quotes_non_404_error_propagates(tmp_path, monkeypatch):
+    import requests
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(ba, "_fetch", _fetch_only_jan1(_zip_bytes(), status=500))
+    conn = ba.BinanceArchiveConnector(market="um", cache_dir=tmp_path)
+    s = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    with pytest.raises(requests.HTTPError):
+        conn.load_quotes("BTCUSDT", s, s.replace(day=2))
+
+
+def test_load_quotes_filters_each_day_before_concat(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    data = _zip_bytes()
+    fetch, _ = _fake_fetch(data, hashlib.sha256(data).hexdigest() + "  x.zip\n")
+    monkeypatch.setattr(ba, "_fetch", fetch)
+    conn = ba.BinanceArchiveConnector(market="um", cache_dir=tmp_path)
+    s = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    # window starts after the first row (…011) but includes the second (…013)
+    start = datetime.fromtimestamp(1704067200012 / 1000, tz=timezone.utc)
+    seen = []
+    real_concat = pd.concat
+
+    def spy(objs, *a, **k):
+        objs = list(objs)
+        seen.extend(len(o) for o in objs)
+        return real_concat(objs, *a, **k)
+
+    monkeypatch.setattr(ba.pd, "concat", spy)
+    df = conn.load_quotes("BTCUSDT", start, s.replace(hour=23))
+    assert df["ts_utc_ms"].tolist() == [1704067200013]
+    assert seen == [1]  # only the filtered slice was concatenated, not the full day (2 rows)
