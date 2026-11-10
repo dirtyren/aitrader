@@ -24,7 +24,7 @@ def align_pair(
         q = quotes_by_venue[venue][["ts_utc_ms", "bid", "ask"]].copy()
         q["ts_utc_ms"] = q["ts_utc_ms"].astype("int64")
         q["_venue_ts"] = q["ts_utc_ms"]
-        q = q.sort_values("ts_utc_ms").rename(
+        q = q.sort_values("ts_utc_ms", kind="stable").rename(
             columns={"bid": f"bid_{venue}", "ask": f"ask_{venue}"}
         )
         merged = pd.merge_asof(grid, q, on="ts_utc_ms", direction="backward")

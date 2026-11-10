@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 import pandas as pd
 
 
@@ -8,9 +9,12 @@ import pandas as pd
 class Quote:
     venue: str
     symbol: str
-    ts_utc_ms: int
+    ts_utc_ms: Optional[int]  # exchange timestamp; None when the exchange gave none
     bid: float
     ask: float
+    recv_ts_utc_ms: Optional[int] = None  # local receive time
+    bid_sz: Optional[float] = None
+    ask_sz: Optional[float] = None
 
 
 class VenueConnector(ABC):

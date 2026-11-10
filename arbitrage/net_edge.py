@@ -19,9 +19,12 @@ def net_edge_stats(net: pd.Series, grid_ms: int) -> dict:
             "persistence_max_ms": 0.0,
         }
     pos = (net > 0).to_numpy()
-    # run lengths of consecutive True values
-    edges = np.diff(np.concatenate(([0], pos.astype(int), [0])))
-    runs = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)
+    # a run is consecutive positives with no time gap larger than grid_ms
+    brk = np.zeros(len(pos), dtype=bool)
+    brk[1:] = np.diff(net.index.to_numpy()) > grid_ms
+    prev = np.concatenate(([False], pos[:-1]))
+    run_id = np.cumsum(pos & (~prev | brk))
+    runs = np.bincount(run_id[pos])[1:]
     return {
         "median_bps": float(net.median()),
         "mean_bps": float(net.mean()),

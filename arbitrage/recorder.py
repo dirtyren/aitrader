@@ -1,13 +1,15 @@
 """Live L1 recorder: ccxt.pro watch_order_book -> per-venue/pair parquet files."""
+import argparse
 import asyncio
 import logging
+import signal
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import pandas as pd
 
-from arbitrage.config import Config
+from arbitrage.config import Config, load_config
 from arbitrage.connectors.base import Quote
 from arbitrage.connectors.ccxt_venue import CcxtVenue, make_exchange
 
@@ -50,9 +52,12 @@ class Recorder:
         path.parent.mkdir(parents=True, exist_ok=True)
         new = pd.DataFrame(
             {
-                "ts_utc_ms": [q.ts_utc_ms for q in rows],
+                "ts_utc_ms": pd.array([q.ts_utc_ms for q in rows], dtype="Int64"),
+                "recv_ts_utc_ms": pd.array([q.recv_ts_utc_ms for q in rows], dtype="Int64"),
                 "bid": [q.bid for q in rows],
                 "ask": [q.ask for q in rows],
+                "bid_sz": pd.array([q.bid_sz for q in rows], dtype="Float64"),
+                "ask_sz": pd.array([q.ask_sz for q in rows], dtype="Float64"),
             }
         )
         if path.exists():
@@ -129,3 +134,27 @@ class Recorder:
             }
             for v in self.config.exchanges
         }
+
+
+async def _amain(args: argparse.Namespace) -> None:
+    rec = Recorder(load_config(args.config), Path(args.out_dir))
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGINT, rec.stop)
+        loop.add_signal_handler(signal.SIGTERM, rec.stop)
+    except NotImplementedError:  # e.g. Windows event loops
+        pass
+    await rec.run()  # run() flushes buffers and closes exchanges on exit
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    p = argparse.ArgumentParser(prog="python -m arbitrage.recorder")
+    p.add_argument("--config", default="arbitrage/config.yaml")
+    p.add_argument("--out-dir", default="arbitrage/data")
+    args = p.parse_args(argv)
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(_amain(args))
+
+
+if __name__ == "__main__":
+    main()

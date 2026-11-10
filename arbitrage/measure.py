@@ -9,6 +9,7 @@ from arbitrage.align import align_pair, clock_skew_stats
 from arbitrage.config import Config, load_config
 from arbitrage.connectors.base import VenueConnector
 from arbitrage.connectors.binance_archive import BinanceArchiveConnector
+from arbitrage.connectors.recorder_parquet import RecorderParquetConnector
 from arbitrage.costs import round_trip_cost_bps
 from arbitrage.net_edge import net_bps, net_edge_stats
 from arbitrage.report import build_report
@@ -94,7 +95,7 @@ def measure_pair(
     }
 
 
-# v1: Binance UM-futures archive only. Other venues join via the recorder later.
+# Binance UM-futures archive; any other venue is read from recorder output via --data-dir.
 CONNECTOR_FACTORIES = {"binance": lambda: BinanceArchiveConnector(market="um")}
 
 
@@ -105,17 +106,28 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--start", required=True, type=date.fromisoformat)
     p.add_argument("--end", required=True, type=date.fromisoformat)
     p.add_argument("--config", default="arbitrage/config.yaml")
+    p.add_argument(
+        "--data-dir",
+        default=None,
+        help="recorder output dir (<data-dir>/<venue>/<SYM>.parquet); "
+        "if given, all venues are read from it instead of the archive",
+    )
     p.add_argument("--out-dir", default="arbitrage/reports")
     args = p.parse_args(argv)
 
-    unknown = [v for v in args.venues if v not in CONNECTOR_FACTORIES]
+    unknown = (
+        [] if args.data_dir else [v for v in args.venues if v not in CONNECTOR_FACTORIES]
+    )
     if unknown:
         p.error(f"no connector for {unknown}; available: {sorted(CONNECTOR_FACTORIES)}")
     if len(args.venues) != 2 or len(set(args.venues)) != 2:
         p.error("need exactly two distinct venues to measure a spread")
 
     config = load_config(args.config)
-    connectors = {v: CONNECTOR_FACTORIES[v]() for v in args.venues}
+    if args.data_dir:
+        connectors = {v: RecorderParquetConnector(args.data_dir, v) for v in args.venues}
+    else:
+        connectors = {v: CONNECTOR_FACTORIES[v]() for v in args.venues}
     results = {args.pair: measure_pair(args.pair, config, connectors, args.start, args.end)}
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

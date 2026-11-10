@@ -60,7 +60,12 @@ def test_recorder_writes_quotes(tmp_path):
     path = tmp_path / "binance" / "BTC_USDT.parquet"
     assert path.exists()
     df = pd.read_parquet(path)
-    assert list(df.columns) == ["ts_utc_ms", "bid", "ask"]
+    assert list(df.columns) == [
+        "ts_utc_ms", "recv_ts_utc_ms", "bid", "ask", "bid_sz", "ask_sz"
+    ]
+    assert df["bid_sz"].tolist() == [1.0, 1.0]
+    assert df["ask_sz"].tolist() == [1.0, 1.0]
+    assert (df["recv_ts_utc_ms"] > 1_700_000_000_000).all()
     assert df["ts_utc_ms"].tolist() == [1_700_000_000_000, 1_700_000_000_050]
     assert df["bid"].tolist() == [100.0, 100.5]
     assert df["ask"].tolist() == [101.0, 101.5]
@@ -107,3 +112,36 @@ def test_live_state_before_data(tmp_path):
     state = rec.live_state()
     assert state["binance"]["rows"] == 0
     assert state["binance"]["last_quote_age_ms"] is None
+
+
+def test_missing_exchange_timestamp_is_nan_not_local_time(tmp_path):
+    book = {"timestamp": None, "bids": [[10.0, 1.0]], "asks": [[11.0, 2.0]]}
+    ex = FakeExchange([book])
+    rec = Recorder(_cfg(), tmp_path, exchange_factory=lambda name: ex,
+                   max_updates_per_stream=1)
+    asyncio.run(rec.run())
+    df = pd.read_parquet(tmp_path / "binance" / "BTC_USDT.parquet")
+    assert df["ts_utc_ms"].isna().all()
+    assert df["recv_ts_utc_ms"].notna().all()
+    assert df["ask_sz"].tolist() == [2.0]
+
+
+def test_main_builds_recorder_and_runs(tmp_path, monkeypatch):
+    import arbitrage.recorder as r
+
+    ran = {}
+
+    class FakeRecorder:
+        def __init__(self, config, out_dir):
+            ran["out_dir"] = out_dir
+
+        async def run(self):
+            ran["ran"] = True
+
+        def stop(self):
+            ran["stopped"] = True
+
+    monkeypatch.setattr(r, "Recorder", FakeRecorder)
+    monkeypatch.setattr(r, "load_config", lambda path: _cfg())
+    r.main(["--out-dir", str(tmp_path)])
+    assert ran["ran"] and str(ran["out_dir"]) == str(tmp_path)

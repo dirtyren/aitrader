@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -112,3 +112,41 @@ def test_requires_exactly_two_venues():
 def test_cli_rejects_single_venue():
     with pytest.raises(SystemExit):
         main(["--pair", "BTC/USDT", "--venues", "binance", "--start", "2024-01-01", "--end", "2024-01-01"])
+
+
+def test_recorder_parquet_connector_reads_fixture(tmp_path):
+    from arbitrage.connectors.recorder_parquet import RecorderParquetConnector
+
+    d = tmp_path / "binance"
+    d.mkdir()
+    pd.DataFrame({
+        "ts_utc_ms": [1_704_067_200_020, 1_704_067_200_010, float("nan"), 1_704_153_600_000],
+        "recv_ts_utc_ms": [1, 2, 3, 4],
+        "bid": [2.0, 1.0, 9.0, 3.0],
+        "ask": [2.5, 1.5, 9.5, 3.5],
+    }).to_parquet(d / "BTC_USDT.parquet", index=False)
+    c = RecorderParquetConnector(tmp_path, "binance")
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=1) - timedelta(milliseconds=1)
+    df = c.load_quotes("BTC/USDT", start, end)
+    assert list(df.columns) == ["ts_utc_ms", "bid", "ask"]
+    assert df["ts_utc_ms"].tolist() == [1_704_067_200_010, 1_704_067_200_020]
+    assert df["bid"].tolist() == [1.0, 2.0]
+
+
+def test_cli_data_dir_produces_cross_exchange_report(tmp_path):
+    base = 1_704_067_200_000
+    for venue, off in (("binance", 0.0), ("coinbase", 5.0)):
+        d = tmp_path / "rec" / venue
+        d.mkdir(parents=True)
+        ts = [base + i * 10 for i in range(200)]
+        pd.DataFrame({
+            "ts_utc_ms": ts, "recv_ts_utc_ms": ts,
+            "bid": [100.0 + off] * 200, "ask": [100.1 + off] * 200,
+        }).to_parquet(d / "BTC_USDT.parquet", index=False)
+    out = tmp_path / "out"
+    main(["--pair", "BTC/USDT", "--venues", "binance", "coinbase",
+          "--start", "2024-01-01", "--end", "2024-01-01",
+          "--data-dir", str(tmp_path / "rec"), "--out-dir", str(out),
+          "--config", "arbitrage/config.yaml"])
+    assert (out / "BTCUSDT.md").exists()

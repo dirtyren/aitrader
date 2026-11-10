@@ -37,3 +37,11 @@ def test_net_edge_stats_empty_and_all_negative():
         assert s["persistence_median_ms"] == 0
         assert s["persistence_max_ms"] == 0
         assert s["pct_positive"] == 0
+
+
+def test_net_edge_stats_persistence_breaks_at_time_gap():
+    # two positive runs separated by a 2*grid_ms gap must not merge
+    net = pd.Series([1.0, 2.0, 3.0], index=[0, 10, 30])
+    s = net_edge_stats(net, grid_ms=10)
+    assert s["persistence_max_ms"] == 20  # not 30
+    assert s["persistence_median_ms"] == pytest.approx(15.0)  # runs 2,1

@@ -34,13 +34,16 @@ class CcxtVenue:
         if not bids or not asks:
             return None
         ts = book.get("timestamp")
-        ts_ms = int(ts) if ts is not None else int(time.time() * 1000)
+        recv_ms = int(time.time() * 1000)
         return Quote(
             venue=self.venue,
             symbol=self.normalize(symbol),
-            ts_utc_ms=ts_ms,
+            ts_utc_ms=int(ts) if ts is not None else None,  # never substitute local time
             bid=float(bids[0][0]),
             ask=float(asks[0][0]),
+            recv_ts_utc_ms=recv_ms,
+            bid_sz=float(bids[0][1]) if len(bids[0]) > 1 else None,
+            ask_sz=float(asks[0][1]) if len(asks[0]) > 1 else None,
         )
 
     async def close(self) -> None:
