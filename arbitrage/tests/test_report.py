@@ -5,11 +5,26 @@ from arbitrage.report import build_report, go_nogo
 
 
 def test_go_nogo_thresholds():
-    assert go_nogo(1.5, 2000, 1.0, 1000) == "real"
-    assert go_nogo(0.5, 2000, 1.0, 1000) == "not real"
-    assert go_nogo(1.5, 500, 1.0, 1000) == "not real"
-    assert go_nogo(1.0, 1000, 1.0, 1000) == "real"  # thresholds inclusive
-    assert go_nogo(float("nan"), 2000, 1.0, 1000) == "not real"
+    assert go_nogo(1.5, 2000, 1000) == "real"
+    assert go_nogo(0.5, 2000, 1000) == "real"  # positive median, persistent
+    assert go_nogo(-0.5, 2000, 1000) == "not real"  # negative median
+    assert go_nogo(1.5, 500, 1000) == "not real"  # not persistent
+    assert go_nogo(float("nan"), 2000, 1000) == "not real"
+
+
+def test_headline_uses_only_cells_at_min_slippage(tmp_path):
+    cell = {"median_bps": 1.5, "pct_positive": 60.0, "persistence_median_ms": 2000}
+    bad = {"median_bps": -1.0, "pct_positive": 10.0, "persistence_median_ms": 2000}
+    res = {
+        "LOW/USDT": {"venue_buy": "A", "venue_sell": "B", "slippage_bps": {
+            0.0: {"leg_risk": {0.0: cell}}, 1.0: {"leg_risk": {0.0: bad}}}},
+        "HIGH/USDT": {"venue_buy": "A", "venue_sell": "B", "slippage_bps": {
+            0.0: {"leg_risk": {0.0: bad}}, 1.0: {"leg_risk": {0.0: cell}}}},
+    }
+    build_report(res, load_config(), tmp_path / "r.json", tmp_path / "r.md")
+    md = (tmp_path / "r.md").read_text()
+    assert "LOW/USDT headline: not real" in md
+    assert "HIGH/USDT headline: real" in md
 
 
 def _results():
