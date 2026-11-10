@@ -1,0 +1,46 @@
+test_mode: true
+pairs:
+  - "BTC/USDT"
+  - "ETH/USDT"
+alignment_grid_ms: 10
+staleness_ms: 1000
+slippage_bps_grid:
+  - 0
+  - 1
+  - 2
+  - 5
+  - 10
+leg_risk_grid:
+  - 0.0
+  - 0.1
+  - 0.5
+  - 1.0
+latency_ms_grid:
+  - 10
+  - 50
+  - 100
+  - 250
+reference_notional_usd:
+  - 10000
+  - 100000
+adverse_move_bps: 5.0
+rebalancing_bps: 2.0
+go_nogo_min_slippage_bps: 1.0
+go_nogo_min_persistence_ms: 1000
+
+exchanges:
+  binance:
+    taker_fee_bps: 10.0
+    maker_fee_bps: 0.0
+  okx:
+    taker_fee_bps: 10.0
+    maker_fee_bps: 0.0
+  bybit:
+    taker_fee_bps: 10.0
+    maker_fee_bps: 0.0
+  kraken:
+    taker_fee_bps: 26.0
+    maker_fee_bps: 0.0
+  coinbase:
+    taker_fee_bps: 60.0
+    maker_fee_bps: 0.0
