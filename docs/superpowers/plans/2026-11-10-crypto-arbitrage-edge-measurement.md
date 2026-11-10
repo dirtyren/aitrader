@@ -364,16 +364,17 @@ git commit -m "feat(arbitrage): net edge and distribution statistics"
 **Interfaces:**
 - Consumes: net stats (Task 6), `Config` (Task 1).
 - Produces:
-  - `go_nogo(median_net_bps: float, persistence_median_ms: int, min_slippage_bps: float, min_persistence_ms: int) -> str` → `"real"` or `"not real"`.
+  - `go_nogo(median_net_bps: float, persistence_median_ms: int, min_persistence_ms: int) -> str` → `"real"` iff `median_net_bps > 0` AND `persistence_median_ms > min_persistence_ms`, else `"not real"` (NaN median → "not real"). The "at slippage ≥ 1 bp" condition is applied by the caller over cells with slippage ≥ `config.go_nogo_min_slippage_bps`.
   - `build_report(results: dict, config: Config, json_path: Path, md_path: Path) -> None` — writes the JSON + markdown report. `results` shape: `{pair: {"venue_buy": str, "venue_sell": str, "slippage_bps": {slip: {"leg_risk": {lr: {"median_bps": float, "pct_positive": float, "persistence_median_ms": int}}}}}}`.
 
 - [ ] **Step 1: Write the failing tests** in `arbitrage/tests/test_report.py`
 
 ```python
 def test_go_nogo_thresholds():
-    assert go_nogo(1.5, 2000, 1.0, 1000) == "real"
-    assert go_nogo(0.5, 2000, 1.0, 1000) == "not real"
-    assert go_nogo(1.5, 500, 1.0, 1000) == "not real"
+    assert go_nogo(1.5, 2000, 1000) == "real"
+    assert go_nogo(0.5, 2000, 1000) == "real"       # positive median, persistent
+    assert go_nogo(-0.5, 2000, 1000) == "not real"   # negative median
+    assert go_nogo(1.5, 500, 1000) == "not real"     # not persistent
 
 def test_build_report_writes_files(tmp_path):
     results = {"BTC/USDT": {"venue_buy": "A", "venue_sell": "B",
